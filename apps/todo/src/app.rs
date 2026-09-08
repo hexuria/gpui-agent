@@ -297,19 +297,21 @@ impl TodoApp {
         let record_id = semantic_id.to_string();
         // No element id on the tracker — a stateful wrapper would steal hit-tests
         // from the real widget that virtual clicks must reach.
-        div().child(child).on_prepaint(move |bounds, _window, app| {
-            entity.update(app, |this, _| {
-                this.layout_bounds.insert(
-                    record_id.clone(),
-                    gpui_agent::Bounds {
-                        x: f32::from(bounds.origin.x),
-                        y: f32::from(bounds.origin.y),
-                        w: f32::from(bounds.size.width),
-                        h: f32::from(bounds.size.height),
-                    },
-                );
-            });
-        })
+        div()
+            .child(child)
+            .on_prepaint(move |bounds, _window, app| {
+                entity.update(app, |this, _| {
+                    this.layout_bounds.insert(
+                        record_id.clone(),
+                        gpui_agent::Bounds {
+                            x: f32::from(bounds.origin.x),
+                            y: f32::from(bounds.origin.y),
+                            w: f32::from(bounds.size.width),
+                            h: f32::from(bounds.size.height),
+                        },
+                    );
+                });
+            })
     }
 
     #[cfg(not(feature = "agent"))]
