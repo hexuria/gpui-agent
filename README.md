@@ -118,6 +118,7 @@ docs/PROTOCOL.md           Wire format
 docs/INTEGRATING.md        How to embed AgentHost in another app
 docs/RECIPES.md            Experimental recipes / mapping / session reuse
 docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
+docs/RECORDING.md          Recipe recording (CI frames + Mac window script)
 docs/SECURITY.md           Trust model, caps, recipe threat model
 examples/todo.sh           Demo-only invoke wrappers
 examples/recipes/          Sample todo CRUD recipe (JSON + wants)
@@ -287,7 +288,7 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 - **Semantic remains the default.** Virtual is opt-in per op (`delivery: virtual`) and still requires `GPUI_AGENT=1`.
 - **Virtual is a first slice:** pointer move/down/up at node bounds + keystrokes into a focused field. No OS cursor warping APIs.
 - **Bounds are zero** on the headless host. Desktop fills them from the last painted frame when the agent bridge is on.
-- **No screenshot command** yet. Snapshot is structured; add a PNG later via GPUI’s render path if a display exists.
+- **No protocol `screenshot` op yet.** Experimental `--record` dumps semantic SVG/PPM frames (headless) or uses a Mac window script. See [docs/RECORDING.md](docs/RECORDING.md).
 - **The desktop window needs a GPU/display.** Cloud agents should use a headless `AgentHost` + `cargo test`.
 - **Not a GPUI patch.** No fork of `gpui-kit`. When GPUI exposes a first-class test-id / a11y export, this crate should consume it instead of a parallel registry.
 - **Single-app, local only.** No multi-window routing, no remote attach.
@@ -295,7 +296,7 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 ## Next steps
 
 1. Richer virtual input (scroll, drag, IME composition, multi-click)
-2. `screenshot` on desktop when a GPU is present
+2. Protocol `screenshot` / GPUI offscreen frames when a GPU is present ([docs/RECORDING.md](docs/RECORDING.md))
 3. WASM host implementing `AgentHost` for `platform: web`
 4. Auto-export nodes from AccessKit so apps register fewer ids by hand
 5. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store

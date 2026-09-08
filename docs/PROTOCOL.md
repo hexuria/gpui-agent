@@ -43,7 +43,8 @@ These are also the **only** first-class `gpui-agent` CLI commands (plus
 or click targets — not new subcommands. `recipe` is a **client-side**
 batch of the ops above (`AgentClient` reuses one TCP session; `rpc_once`
 is the old reconnect path for benches). It is not a new wire `op`.
-See [RECIPES.md](RECIPES.md) and the laptop runbook [TRY_ON_MAC.md](TRY_ON_MAC.md).
+See [RECIPES.md](RECIPES.md), [RECORDING.md](RECORDING.md), and the
+laptop runbook [TRY_ON_MAC.md](TRY_ON_MAC.md).
 
 ## Response
 

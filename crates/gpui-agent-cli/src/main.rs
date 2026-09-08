@@ -431,6 +431,37 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+
+        let recorded = Cli::try_parse_from([
+            "gpui-agent",
+            "recipe",
+            "run",
+            "x.json",
+            "--record",
+            "artifacts/recipe-run.mp4",
+            "--record-backend",
+            "semantic",
+        ])
+        .unwrap();
+        match recorded.command {
+            Command::Recipe {
+                action:
+                    RecipeCommand::Run {
+                        record,
+                        record_backend,
+                        record_values,
+                        ..
+                    },
+            } => {
+                assert_eq!(
+                    record.as_deref(),
+                    Some(std::path::Path::new("artifacts/recipe-run.mp4"))
+                );
+                assert_eq!(record_backend, "semantic");
+                assert!(!record_values);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

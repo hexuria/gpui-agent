@@ -8,6 +8,7 @@
 pub mod plan;
 pub mod receipt;
 pub mod recipe;
+pub mod record;
 pub mod registry;
 pub mod resolve;
 pub mod run;
@@ -19,7 +20,11 @@ pub use recipe::{
     MAX_RECIPE_STEPS, RECIPE_FORMAT_VERSION, Recipe, RecipeStep, apply_params, parse_recipe,
     parse_recipe_source, parse_wants, validate_recipe,
 };
+pub use record::{
+    RecipeRecorder, RecordBackend, RecordTarget, SemanticRecorder, os_record_help,
+    resolve_record_target,
+};
 pub use registry::{Registry, todo_registry};
 pub use resolve::{ResolveResult, TokenFill, resolve_intent};
-pub use run::{RunError, run_plan};
+pub use run::{RunError, run_plan, run_plan_with_recorder};
 pub use schema::{ArgSchema, Effect, OpSchema, SchemaKind};

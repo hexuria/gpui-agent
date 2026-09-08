@@ -11,7 +11,8 @@ protocol drive a GPUI window.
 
 Format, threat model, and `--yes` / session-reuse notes:
 [RECIPES.md](RECIPES.md). Caps that recipes must not bypass:
-[SECURITY.md](SECURITY.md#recipes-experimental).
+[SECURITY.md](SECURITY.md#recipes-experimental). Recording (CI frames vs
+Mac window): [RECORDING.md](RECORDING.md).
 
 ## 1. Fetch the PR branch (do not merge)
 
@@ -224,4 +225,45 @@ cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 ```
 
 That suite includes the recipe parse / resolve / run / session-reuse
-edge cases. It does not need a display.
+edge cases and semantic `--record` start/stop. It does not need a display.
+
+## 8. Optional: record a recipe
+
+**CI / this laptop without watching the window** — semantic frames (no
+GPU). Values are redacted unless you pass `--record-values`.
+
+```bash
+mkdir -p artifacts
+$CLI recipe run examples/recipes/todo-crud.json --set title="Buy milk" \
+  --record artifacts/recipe-run
+ls artifacts/recipe-run
+# manifest.json  0000-_start.svg  0000-_start.ppm  …
+```
+
+Expect the same `"ok": true` receipt. `recording.flag` should be gone
+when the run finishes. Mux only if you have ffmpeg:
+
+```bash
+./scripts/mux-record-frames.sh artifacts/recipe-run
+```
+
+`--record-backend os` is a stub and should **error** (use the script
+below for real pixels).
+
+**Desktop window only (display + Screen Recording permission):**
+
+```bash
+# terminal 1
+GPUI_AGENT=1 ./target/debug/todo
+
+# terminal 2
+./scripts/record-window.sh --out artifacts/recipe-run --title "Agent Todo"
+
+# terminal 3 (fresh empty list)
+$CLI recipe run examples/recipes/todo-crud.json --set title="Buy milk" \
+  --record artifacts/recipe-run
+```
+
+`screencapture -l` is that window only — not the full desktop, and it
+does not click or type. Headless is enough to verify recipes; this is
+a demo artifact.

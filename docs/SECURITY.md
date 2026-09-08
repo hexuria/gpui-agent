@@ -125,6 +125,11 @@ Treat `recipe run` / `recipe_run` as equivalent to holding the token
 [RECIPES.md](RECIPES.md#edge-case-coverage) and
 [RECIPES.md](RECIPES.md#threat-model-recipes-must-not-bypass-caps).
 
+Optional `--record` writes local SVG/PPM frames (or a Mac window PNG
+sequence). It does not skip auth. Default semantic frames redact
+`value`; `role=password` is always redacted. Do not put CI secrets on
+the painted window. Design: [RECORDING.md](RECORDING.md).
+
 ### Logging of secrets
 
 Startup logs print the bind address, not the token. Responses do not

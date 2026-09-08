@@ -6,7 +6,8 @@ use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::PlatformKind;
 use gpui_agent::server::spawn_host;
 use gpui_agent_recipe::{
-    RunError, compile_plan, parse_wants, run_plan, todo_registry, validate_recipe,
+    RecordTarget, RunError, SemanticRecorder, compile_plan, parse_wants, run_plan,
+    run_plan_with_recorder, todo_registry, validate_recipe,
 };
 use todo_core::TodoStore;
 
@@ -217,5 +218,53 @@ fn second_recipe_reuses_same_client_session() {
         "second recipe on the same AgentClient must reuse the connection"
     );
 
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn semantic_record_captures_start_and_stops_on_assert_fail() {
+    use gpui_agent_recipe::RecipeRecorder;
+
+    let wants = r#"
+wait
+invoke todo.add title="Buy milk"
+assert todo-item-1 name="NOPE"
+invoke todo.toggle id=1
+"#;
+    let recipe = parse_wants(wants, "rec").unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let dir = std::env::temp_dir().join(format!("gpui-agent-rec-int-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut recorder = SemanticRecorder::create(
+        RecordTarget {
+            dir: dir.clone(),
+            mux_target: None,
+        },
+        false,
+    )
+    .unwrap();
+
+    let (mut client, shutdown) = spawn_todo();
+    let err = run_plan_with_recorder(&mut client, &plan, false, Some(&mut recorder)).unwrap_err();
+    match err {
+        RunError::Step { receipt, .. } => {
+            recorder.on_finish(&receipt).unwrap();
+            assert!(!receipt.ok);
+        }
+        other => panic!("{other}"),
+    }
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+    let frames = manifest["frames"].as_array().unwrap();
+    // _start + wait + add + failing assert (toggle never runs)
+    assert!(frames.len() >= 3, "{frames:?}");
+    assert!(frames.iter().any(|f| f["step_id"] == "_start"));
+    assert!(frames.iter().any(|f| f["step_id"] == "s3"));
+    assert!(!frames.iter().any(|f| f["step_id"] == "s4"));
+    assert!(dir.join("0000-_start.svg").exists());
+    assert!(!dir.join("recording.flag").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }

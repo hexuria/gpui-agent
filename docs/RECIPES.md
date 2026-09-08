@@ -11,6 +11,7 @@ TCP session, many ops — instead of a tool round-trip per action.
 **Laptop (pull + run only):** [TRY_ON_MAC.md](TRY_ON_MAC.md).
 Threat model vs PR #3 caps: [SECURITY.md](SECURITY.md#recipes-experimental).
 Wire ops stay one NDJSON request each: [PROTOCOL.md](PROTOCOL.md).
+Window / CI recording (semantic frames + Mac script): [RECORDING.md](RECORDING.md).
 
 ## What was borrowed
 
@@ -117,7 +118,7 @@ Restart the host before a second run.
 | --- | --- | --- |
 | `recipe validate <path>` | No | Parse + lint (version, ids, `needs`, declared `$params`, invoke allow-list) |
 | `recipe plan <path> [--set k=v] [--order-check]` | No | Bind params, schedule waves, print effects / fingerprint / `requires_yes` |
-| `recipe run <path> [--set k=v] [--yes] [--receipt-out FILE]` | Yes | Compile, then execute each `Op` on **one** reused TCP session |
+| `recipe run <path> [--set k=v] [--yes] [--receipt-out FILE] [--record PATH]` | Yes | Compile, then execute each `Op` on **one** reused TCP session. Optional observe-only frames: [RECORDING.md](RECORDING.md) |
 | `recipe resolve '…'` | No | Map prose through the local schema registry (fail closed) |
 
 MCP tools with the same jobs: `recipe_validate`, `recipe_plan`,
@@ -226,7 +227,7 @@ do the same things the CLI already can. They do not add privilege.
 | Bind | CLI still `ensure_loopback` before connect |
 | Token | Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. |
 | Line / conn / idle / mailbox | Unchanged. Recipe cap 256 is extra, not a replacement. |
-| No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. |
+| No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--record` is observe-only (snapshots / optional Mac `screencapture -l`). |
 | No shell | Resolve/plan/run never call `Command`. `invoke` is still an in-process host callback. Unknown invoke names are rejected. |
 | Shutdown | Plans with `Effect::Exit` require `--yes` (rwmcp-style). |
 
@@ -318,5 +319,6 @@ crates/gpui-agent-cli      recipe validate|plan|run|resolve + MCP tools
 examples/recipes/          Sample todo CRUD (JSON + wants)
 docs/RECIPES.md            This note
 docs/TRY_ON_MAC.md         Pull this branch and run it on a laptop
+docs/RECORDING.md          Recipe recording + CI vs Mac window capture
 docs/SECURITY.md           Caps + recipe threat model
 ```
