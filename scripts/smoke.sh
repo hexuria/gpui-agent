@@ -38,6 +38,12 @@ echo "==> wait until ready"
 echo "==> snapshot (empty)"
 "$CLI" --addr "$ADDR" snapshot --pretty
 
+echo "==> virtual delivery is unavailable on headless (honest error)"
+if "$CLI" --addr "$ADDR" click --delivery virtual todo-add; then
+  echo "expected virtual_unavailable from headless" >&2
+  exit 1
+fi
+
 echo "==> create via widgets (todo demo ids)"
 "$CLI" --addr "$ADDR" set-value todo-input "Buy milk"
 "$CLI" --addr "$ADDR" click todo-add

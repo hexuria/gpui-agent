@@ -25,12 +25,12 @@ See [INTEGRATING.md](INTEGRATING.md).
 
 | `op` | Fields | Effect |
 | --- | --- | --- |
-| `hello` | | Protocol, app name, platform, ready |
+| `hello` | | Protocol, app name, platform, ready, supported `deliveries` |
 | `snapshot` | | Semantic UI tree |
-| `click` | `target` | Activate a widget by stable id |
-| `type` | `target`, `text` | Append to an editable widget |
-| `set_value` | `target`, `value` | Replace editable value |
-| `key` | `target`, `key` | `Enter`, `Backspace`, … |
+| `click` | `target`, optional `delivery` | Activate a widget by stable id |
+| `type` | `target`, `text`, optional `delivery` | Append to an editable widget |
+| `set_value` | `target`, `value` | Replace editable value (semantic only) |
+| `key` | `target`, `key`, optional `delivery` | `Enter`, `Backspace`, … |
 | `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists` | Check snapshot fields |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
 | `wait` | optional `timeout_ms` | Block until hello/ready |
@@ -47,7 +47,7 @@ subcommands.
   "v": 1,
   "id": "1",
   "ok": true,
-  "hello": { "protocol": 1, "app": "my-app", "platform": "headless", "ready": true },
+  "hello": { "protocol": 1, "app": "my-app", "platform": "headless", "ready": true, "deliveries": ["semantic"] },
   "tree": { "app": "my-app", "platform": "headless", "ready": true, "nodes": [] },
   "result": {},
   "error": null
@@ -79,8 +79,46 @@ Prefer **stable ids** over tree indices. The app chooses the scheme
 (`nav-settings`, `page-settings`, `row-3`). Numbered suffixes can be
 parsed with `gpui_agent::parse_numbered_id`.
 
-`bounds` are logical pixels. Headless hosts send zeros; a future desktop
-walker can fill them from layout/AccessKit.
+`bounds` are logical pixels. Headless hosts send zeros. The desktop todo
+host fills them from the last painted frame when `GPUI_AGENT=1`.
+
+## Delivery modes (`click` / `type` / `key`)
+
+`delivery` is optional and defaults to **`semantic`**. Omitted on the wire
+so v1 clients stay valid.
+
+| Mode | When to use | What happens |
+| --- | --- | --- |
+| `semantic` (default) | CI, agents, happy-path automation | Call the same handler the widget uses. No focus steal, no pointer. Fast and deterministic. |
+| `virtual` | Bugs that only appear on the real input path (hover, hit-test, focus, press/release, IME) | Resolve the id → bounds from the semantic tree, then synthesize **in-process GPUI** mouse/key events on the UI thread. |
+
+Virtual delivery is **not** OS HID:
+
+- It never warps the real cursor (`XWarpPointer`, `CGWarpMouseCursorPosition`, …).
+- It never raises/focuses the OS window as a side effect if GPUI can avoid it.
+- The painted **agent cursor** is a Div overlay inside the app window (session-colored). It does not control the OS pointer.
+
+```bash
+gpui-agent click todo-add                    # semantic (default)
+gpui-agent click --delivery virtual todo-add
+gpui-agent type --delivery virtual todo-input "Hi"
+gpui-agent key --delivery virtual todo-input Enter
+```
+
+```json
+{"v":1,"id":"1","op":"click","target":"todo-add","delivery":"virtual"}
+```
+
+Hosts that cannot run the GPUI event pipeline (headless, or desktop before
+the first paint / zero bounds) return:
+
+```text
+virtual_unavailable: …
+```
+
+Do not treat that as success. Use `delivery=semantic`, or a painted desktop
+window. `hello.deliveries` lists what the host actually implements
+(`["semantic"]` on headless; `["semantic","virtual"]` on desktop).
 
 ## Navigation
 

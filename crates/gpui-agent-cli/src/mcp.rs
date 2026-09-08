@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use gpui_agent::client::AgentClient;
-use gpui_agent::protocol::{AssertSpec, Op};
+use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
 use serde_json::{Value, json};
 
 /// Minimal MCP stdio server: `initialize`, `tools/list`, `tools/call`.
@@ -65,7 +65,10 @@ pub fn run(addr: SocketAddr, token: Option<String>) -> Result<()> {
                 continue;
             }
         };
-        write_msg(&mut stdout, json!({"jsonrpc":"2.0","id":id,"result":result}))?;
+        write_msg(
+            &mut stdout,
+            json!({"jsonrpc":"2.0","id":id,"result":result}),
+        )?;
     }
     Ok(())
 }
@@ -100,13 +103,13 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "click",
-            "Activate a widget by stable id. Use this to navigate (click a nav id, then assert the page root).",
-            object_schema(&["target"]),
+            "Activate a widget by stable id. delivery=semantic (default) calls the handler; delivery=virtual synthesizes in-window GPUI pointer events (never OS HID).",
+            input_schema_with_delivery(&["target"]),
         ),
         tool(
             "type",
-            "Append text to an editable widget.",
-            object_schema(&["target", "text"]),
+            "Append text to an editable widget. Optional delivery=virtual types through GPUI keystrokes after focusing the target.",
+            input_schema_with_delivery(&["target", "text"]),
         ),
         tool(
             "set_value",
@@ -115,8 +118,8 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "key",
-            "Send a key (Enter, Backspace, …) to a widget.",
-            object_schema(&["target", "key"]),
+            "Send a key (Enter, Backspace, …) to a widget. Optional delivery=virtual uses GPUI dispatch_keystroke.",
+            input_schema_with_delivery(&["target", "key"]),
         ),
         tool(
             "assert",
@@ -175,6 +178,24 @@ fn object_schema(required: &[&str]) -> Value {
     })
 }
 
+fn input_schema_with_delivery(required: &[&str]) -> Value {
+    let mut schema = object_schema(required);
+    schema["properties"]["delivery"] = json!({
+        "type": "string",
+        "enum": ["semantic", "virtual"],
+        "description": "semantic (default) calls the widget handler. virtual synthesizes GPUI pointer/key events in-process; never warps the OS cursor."
+    });
+    schema
+}
+
+fn parse_delivery(args: &Value) -> Result<DeliveryMode, String> {
+    match args.get("delivery") {
+        None => Ok(DeliveryMode::Semantic),
+        Some(Value::String(s)) => s.parse(),
+        Some(_) => Err("delivery must be a string (`semantic` or `virtual`)".into()),
+    }
+}
+
 fn call_tool(client: &mut AgentClient, params: &Value) -> Result<Value, String> {
     let name = params
         .get("name")
@@ -190,16 +211,18 @@ fn call_tool(client: &mut AgentClient, params: &Value) -> Result<Value, String> 
         }
         "hello" => client.expect_ok(Op::Hello)?,
         "snapshot" => client.snapshot()?,
-        "click" => client.click(args.string("target")?)?,
-        "type" => client.expect_ok(Op::Type {
-            target: args.string("target")?,
-            text: args.string("text")?,
-        })?,
+        "click" => client.click_with_delivery(args.string("target")?, parse_delivery(&args)?)?,
+        "type" => client.type_with_delivery(
+            args.string("target")?,
+            args.string("text")?,
+            parse_delivery(&args)?,
+        )?,
         "set_value" => client.set_value(args.string("target")?, args.string("value")?)?,
-        "key" => client.expect_ok(Op::Key {
-            target: args.string("target")?,
-            key: args.string("key")?,
-        })?,
+        "key" => client.key_with_delivery(
+            args.string("target")?,
+            args.string("key")?,
+            parse_delivery(&args)?,
+        )?,
         "assert" => {
             let target = args
                 .opt_string("target")
@@ -271,5 +294,14 @@ mod tests {
             ]
         );
         assert!(names.iter().all(|n| !n.starts_with("todo")));
+    }
+
+    #[test]
+    fn click_schema_advertises_delivery() {
+        let click = tools().into_iter().find(|t| t["name"] == "click").unwrap();
+        assert_eq!(
+            click["inputSchema"]["properties"]["delivery"]["enum"],
+            json!(["semantic", "virtual"])
+        );
     }
 }

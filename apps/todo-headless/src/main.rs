@@ -24,11 +24,12 @@ fn main() {
     };
 
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-    let (addr, shutdown) = spawn_host(config.addr, config.token, store.clone())
-        .expect("bind agent server");
+    let (addr, shutdown) =
+        spawn_host(config.addr, config.token, store.clone()).expect("bind agent server");
 
     eprintln!("gpui-agent listening on {addr} (platform=headless, app=todo)");
     eprintln!("opt-in: GPUI_AGENT=1 · loopback only · protocol v1");
+    eprintln!("delivery: semantic only (virtual_unavailable — no GPUI event pipeline)");
 
     while !shutdown.load(std::sync::atomic::Ordering::SeqCst) {
         if store.lock().expect("store").wants_shutdown() {

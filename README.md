@@ -27,9 +27,11 @@ gpui-agent wait
 gpui-agent hello
 gpui-agent snapshot --pretty
 gpui-agent click nav-settings
+gpui-agent click --delivery virtual nav-settings
 gpui-agent assert --id page-settings
 gpui-agent set-value search-input "query"
 gpui-agent type composer "hello"
+gpui-agent type --delivery virtual composer "hello"
 gpui-agent key composer Enter
 gpui-agent invoke prefs.set --arg theme=dark
 gpui-agent shutdown
@@ -125,8 +127,8 @@ cargo test -p gpui-agent -p todo-core -p gpui-agent-cli
 This is the Flutter `ai_flutter_agent` / semantics-tree loop, adapted to GPUI Kit:
 
 1. **Perceive.** `gpui-agent snapshot` (or MCP tool `snapshot`). You get widgets with **stable ids the app assigned**, plus roles, names, and state. Do **not** scrape pixels to decide what to click.
-2. **Plan.** Choose an action against those ids. Prefer `invoke` when the host exposes a named command; use `set-value` + `click` to exercise the same path as a human.
-3. **Act.** `click`, `type`, `set-value`, `key`, or `invoke`.
+2. **Plan.** Choose an action against those ids. Prefer `invoke` when the host exposes a named command; use `set-value` + `click` (`delivery=semantic`, the default) for CI. Use `--delivery virtual` only when you need the real GPUI pointer/key path (hover, hit-test, focus, IME).
+3. **Act.** `click`, `type`, `set-value`, `key`, or `invoke`. Virtual delivery never shares the host HID — it synthesizes events inside the app window and paints an agent cursor overlay.
 4. **Verify.** `assert --id page-root` (or re-snapshot and inspect JSON). If the node is missing or the field is wrong, the CLI exits non-zero.
 
 To change screens: click a nav control, then assert the destination root id is present.
@@ -223,10 +225,28 @@ A later web host (GPUI WASM) or mobile shell should:
 
 Do not add CDP compatibility shims; agents should speak this protocol (or MCP tools that wrap it).
 
+## Semantic vs virtual delivery
+
+| | `semantic` (default) | `virtual` |
+| --- | --- | --- |
+| Path | Handler by stable id | In-process GPUI `dispatch_event` / `dispatch_keystroke` on the UI thread |
+| OS mouse / keyboard | Untouched | Untouched (no warp, no PostMessage/XTEST) |
+| Window raise | No | Not requested; GPUI may still style an in-window focus ring |
+| Agent cursor overlay | No | Painted Div inside the GPUI window (session-colored) |
+| Headless | Works | `virtual_unavailable` (honest — no event pipeline, bounds are zero) |
+| Use when | CI, agents, fast CRUD | Debugging bugs that only appear on the real input path |
+
+```bash
+gpui-agent click --delivery virtual todo-add
+```
+
+See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
+
 ## Limitations
 
-- **v1 dispatches semantic actions**, not synthesized OS pointer events. A click on a stable id calls that widget’s handler; it does not move a real cursor. That is more reliable for agents and less complete for “did the hit-test match the pixel?”
-- **Bounds are zero** on the headless host and not yet read back from GPUI layout.
+- **Semantic remains the default.** Virtual is opt-in per op (`delivery: virtual`) and still requires `GPUI_AGENT=1`.
+- **Virtual is a first slice:** pointer move/down/up at node bounds + keystrokes into a focused field. No OS cursor warping APIs.
+- **Bounds are zero** on the headless host. Desktop fills them from the last painted frame when the agent bridge is on.
 - **No screenshot command** yet. Snapshot is structured; add a PNG later via GPUI’s render path if a display exists.
 - **The desktop window needs a GPU/display.** Cloud agents should use a headless `AgentHost` + `cargo test`.
 - **Not a GPUI patch.** No fork of `gpui-kit`. When GPUI exposes a first-class test-id / a11y export, this crate should consume it instead of a parallel registry.
@@ -234,12 +254,11 @@ Do not add CDP compatibility shims; agents should speak this protocol (or MCP to
 
 ## Next steps
 
-1. Fill `bounds` from GPUI layout / AccessKit after each frame
-2. Optional synthesized pointer/key events for widgets that have no semantic handler
-3. `screenshot` on desktop when a GPU is present
-4. WASM host implementing `AgentHost` for `platform: web`
-5. Auto-export nodes from AccessKit so apps register fewer ids by hand
-6. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store
+1. Richer virtual input (scroll, drag, IME composition, multi-click)
+2. `screenshot` on desktop when a GPU is present
+3. WASM host implementing `AgentHost` for `platform: web`
+4. Auto-export nodes from AccessKit so apps register fewer ids by hand
+5. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store
 
 ## License
 

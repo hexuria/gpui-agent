@@ -17,17 +17,22 @@ pub mod protocol;
 pub mod security;
 pub mod server;
 pub mod tree;
+pub mod virtual_input;
 
 pub use client::AgentClient;
 pub use dispatch::{DispatchResult, handle_request};
 pub use host::AgentHost;
 pub use mailbox::{AgentMailbox, MailboxRequest};
 pub use protocol::{
-    AssertSpec, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response,
+    AssertSpec, DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response,
 };
 pub use security::{AgentConfig, SecurityError, from_env};
 pub use server::{AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, default_addr};
 pub use tree::{Bounds, UiNode, UiTree};
+pub use virtual_input::{
+    AgentCursor, VIRTUAL_UNAVAILABLE, VirtualPointerClick, hit_point, keystroke_token, plan_click,
+    text_keystrokes, virtual_unavailable,
+};
 
 /// Parse `"{prefix}{n}"` into `n`. Apps use this for numbered stable ids
 /// (`row-3`, `tab-1`); prefixes themselves are app-defined.

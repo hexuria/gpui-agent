@@ -5,8 +5,9 @@
 
 use gpui_agent::dispatch::DispatchResult;
 use gpui_agent::host::AgentHost;
-use gpui_agent::protocol::{HelloInfo, Op, PROTOCOL_VERSION, PlatformKind};
+use gpui_agent::protocol::{DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind};
 use gpui_agent::tree::{UiNode, UiTree};
+use gpui_agent::virtual_unavailable;
 use serde::{Deserialize, Serialize};
 
 /// Stable ids for the sample todo app. Other GPUI Kit apps define their own.
@@ -129,7 +130,11 @@ impl TodoStore {
         };
 
         let list_children = if self.items.is_empty() {
-            vec![UiNode::new(ids::EMPTY, "note", "No todos yet. Add one above.")]
+            vec![UiNode::new(
+                ids::EMPTY,
+                "note",
+                "No todos yet. Add one above.",
+            )]
         } else {
             self.items
                 .iter()
@@ -139,7 +144,11 @@ impl TodoStore {
                         .with_children(vec![
                             UiNode::new(ids::toggle(item.id), "checkbox", item.title.clone())
                                 .with_checked(item.done),
-                            UiNode::new(ids::delete(item.id), "button", format!("Delete {}", item.title)),
+                            UiNode::new(
+                                ids::delete(item.id),
+                                "button",
+                                format!("Delete {}", item.title),
+                            ),
                         ])
                 })
                 .collect()
@@ -147,7 +156,8 @@ impl TodoStore {
 
         let window = UiNode::new(ids::WINDOW, "window", "Agent Todo")
             .with_child(
-                UiNode::new(ids::INPUT, "textbox", "What needs doing?").with_value(self.draft.clone()),
+                UiNode::new(ids::INPUT, "textbox", "What needs doing?")
+                    .with_value(self.draft.clone()),
             )
             .with_child(UiNode::new(ids::ADD, "button", "Add"))
             .with_child(UiNode::new(ids::LIST, "list", "Todos").with_children(list_children))
@@ -182,7 +192,9 @@ impl TodoStore {
             return Err(format!("`{target}` is not editable"));
         }
         self.draft.push_str(text);
-        Ok(DispatchResult::json(serde_json::json!({ "value": self.draft })))
+        Ok(DispatchResult::json(
+            serde_json::json!({ "value": self.draft }),
+        ))
     }
 
     fn set_value(&mut self, target: &str, value: &str) -> Result<DispatchResult, String> {
@@ -190,7 +202,9 @@ impl TodoStore {
             return Err(format!("`{target}` is not editable"));
         }
         self.draft = value.to_string();
-        Ok(DispatchResult::json(serde_json::json!({ "value": self.draft })))
+        Ok(DispatchResult::json(
+            serde_json::json!({ "value": self.draft }),
+        ))
     }
 
     fn key(&mut self, target: &str, key: &str) -> Result<DispatchResult, String> {
@@ -221,7 +235,9 @@ impl TodoStore {
                 let id = arg_id(args)?;
                 self.delete(id).map(todo_result)
             }
-            "todo.list" => Ok(DispatchResult::json(serde_json::to_value(&self.items).unwrap())),
+            "todo.list" => Ok(DispatchResult::json(
+                serde_json::to_value(&self.items).unwrap(),
+            )),
             other => Err(format!("unknown invoke `{other}`")),
         }
     }
@@ -244,6 +260,10 @@ impl AgentHost for TodoStore {
             app: "todo".into(),
             platform: self.platform,
             ready: true,
+            deliveries: match self.platform {
+                PlatformKind::Desktop => vec![DeliveryMode::Semantic, DeliveryMode::Virtual],
+                _ => vec![DeliveryMode::Semantic],
+            },
         }
     }
 
@@ -252,11 +272,19 @@ impl AgentHost for TodoStore {
     }
 
     fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+        if op.is_virtual_input() {
+            return Err(virtual_unavailable(
+                "this host has no GPUI pointer/key pipeline. \
+                 Virtual delivery synthesizes in-window events on the desktop GPUI host \
+                 after a painted frame. Headless and store-only hosts implement semantic \
+                 dispatch only — use delivery=semantic, or run apps/todo with GPUI_AGENT=1.",
+            ));
+        }
         match op {
-            Op::Click { target } => self.click(target),
-            Op::Type { target, text } => self.type_into(target, text),
+            Op::Click { target, .. } => self.click(target),
+            Op::Type { target, text, .. } => self.type_into(target, text),
             Op::SetValue { target, value } => self.set_value(target, value),
-            Op::Key { target, key } => self.key(target, key),
+            Op::Key { target, key, .. } => self.key(target, key),
             Op::Invoke { name, args } => self.invoke(name, args),
             Op::Shutdown => {
                 self.shutdown = true;
@@ -288,29 +316,26 @@ mod tests {
                 value: "Buy milk".into(),
             })
             .unwrap();
-        store
-            .dispatch(&Op::Click {
-                target: ids::ADD.into(),
-            })
-            .unwrap();
+        store.dispatch(&Op::click(ids::ADD)).unwrap();
 
         let id = store.items()[0].id;
         assert_eq!(store.items()[0].title, "Buy milk");
         assert!(!store.items()[0].done);
 
-        store
-            .dispatch(&Op::Click {
-                target: ids::toggle(id),
-            })
-            .unwrap();
+        store.dispatch(&Op::click(ids::toggle(id))).unwrap();
         assert!(store.items()[0].done);
 
-        store
-            .dispatch(&Op::Click {
-                target: ids::delete(id),
-            })
-            .unwrap();
+        store.dispatch(&Op::click(ids::delete(id))).unwrap();
         assert!(store.items().is_empty());
+    }
+
+    #[test]
+    fn virtual_delivery_is_unavailable_on_store_host() {
+        let mut store = TodoStore::default();
+        let err = store.dispatch(&Op::click_virtual(ids::ADD)).unwrap_err();
+        assert!(err.starts_with(gpui_agent::VIRTUAL_UNAVAILABLE), "{err}");
+        let hello = store.hello();
+        assert_eq!(hello.deliveries, vec![DeliveryMode::Semantic]);
     }
 
     #[test]

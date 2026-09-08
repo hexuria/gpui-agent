@@ -2,15 +2,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_agent::client::AgentClient;
-use gpui_agent::protocol::{AssertSpec, Op, PlatformKind};
+use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op, PlatformKind};
 use gpui_agent::server::spawn_host;
-use todo_core::ids;
 use todo_core::TodoStore;
+use todo_core::ids;
 
 #[test]
 fn agent_can_create_toggle_delete_over_tcp() {
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-    let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store.clone()).expect("bind");
+    let (addr, shutdown) =
+        spawn_host("127.0.0.1:0".parse().unwrap(), None, store.clone()).expect("bind");
 
     let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
     client.wait_ready().expect("hello");
@@ -47,6 +48,14 @@ fn agent_can_create_toggle_delete_over_tcp() {
 
     let list = client.invoke("todo.list", serde_json::json!({})).unwrap();
     assert_eq!(list.result.unwrap(), serde_json::json!([]));
+
+    let virt = client.rpc(Op::click_virtual(ids::ADD)).expect("rpc");
+    assert!(!virt.ok);
+    let err = virt.error.expect("virtual error");
+    assert!(err.starts_with(gpui_agent::VIRTUAL_UNAVAILABLE), "{err}");
+
+    let hello = client.expect_ok(Op::Hello).unwrap().hello.unwrap();
+    assert_eq!(hello.deliveries, vec![DeliveryMode::Semantic]);
 
     client.expect_ok(Op::Shutdown).unwrap();
     std::thread::sleep(Duration::from_millis(30));

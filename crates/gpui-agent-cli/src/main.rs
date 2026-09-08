@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use gpui_agent::client::AgentClient;
-use gpui_agent::protocol::{AssertSpec, Op};
 use gpui_agent::DEFAULT_ADDR_STR;
+use gpui_agent::client::AgentClient;
+use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
 
 /// Drive any GPUI Kit app over the opt-in agent protocol (not CDP).
 ///
@@ -49,13 +49,28 @@ enum Command {
         pretty: bool,
     },
     /// Activate a widget by stable id (`nav-settings`, `submit`, …).
-    Click { target: String },
+    Click {
+        target: String,
+        /// `semantic` (default) calls the handler. `virtual` synthesizes GPUI events.
+        #[arg(long, default_value = "semantic")]
+        delivery: DeliveryMode,
+    },
     /// Append text to an editable widget.
-    Type { target: String, text: String },
+    Type {
+        target: String,
+        text: String,
+        #[arg(long, default_value = "semantic")]
+        delivery: DeliveryMode,
+    },
     /// Replace the value of an editable widget.
     SetValue { target: String, value: String },
     /// Send a key (`Enter`, `Backspace`) to a widget.
-    Key { target: String, key: String },
+    Key {
+        target: String,
+        key: String,
+        #[arg(long, default_value = "semantic")]
+        delivery: DeliveryMode,
+    },
     /// Assert fields on a node from the current snapshot.
     Assert {
         /// Stable id of the node (protocol field: `target`).
@@ -127,12 +142,20 @@ fn run() -> Result<()> {
                 print_resp(resp);
             }
         }
-        Command::Click { target } => print_resp(rpc(client.click(target))?),
-        Command::Type { target, text } => {
-            print_resp(rpc(client.expect_ok(Op::Type { target, text }))?)
+        Command::Click { target, delivery } => {
+            print_resp(rpc(client.click_with_delivery(target, delivery))?)
         }
+        Command::Type {
+            target,
+            text,
+            delivery,
+        } => print_resp(rpc(client.type_with_delivery(target, text, delivery))?),
         Command::SetValue { target, value } => print_resp(rpc(client.set_value(target, value))?),
-        Command::Key { target, key } => print_resp(rpc(client.expect_ok(Op::Key { target, key }))?),
+        Command::Key {
+            target,
+            key,
+            delivery,
+        } => print_resp(rpc(client.key_with_delivery(target, key, delivery))?),
         Command::Assert {
             id,
             name,
@@ -152,9 +175,7 @@ fn run() -> Result<()> {
             };
             print_resp(rpc(client.assert(spec))?);
         }
-        Command::Invoke { name, args } => {
-            print_resp(rpc(client.invoke(name, parse_args(&args)?))?)
-        }
+        Command::Invoke { name, args } => print_resp(rpc(client.invoke(name, parse_args(&args)?))?),
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
         Command::Mcp => unreachable!(),
     }
@@ -171,7 +192,8 @@ fn parse_args(pairs: &[String]) -> Result<serde_json::Value> {
         let (key, raw) = pair
             .split_once('=')
             .with_context(|| format!("expected KEY=VALUE, got {pair}"))?;
-        let value = serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.into()));
+        let value =
+            serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.into()));
         map.insert(key.to_string(), value);
     }
     Ok(serde_json::Value::Object(map))
@@ -217,7 +239,9 @@ mod tests {
     fn help_does_not_advertise_todo() {
         let help = Cli::command().render_long_help().to_string();
         assert!(
-            !help.lines().any(|line| line.trim_start().starts_with("todo")),
+            !help
+                .lines()
+                .any(|line| line.trim_start().starts_with("todo")),
             "help should not list a todo subcommand:\n{help}"
         );
     }
@@ -313,6 +337,43 @@ mod tests {
                 .expect("bare checked");
         match bare_checked.command {
             Command::Assert { checked, .. } => assert_eq!(checked, Some(true)),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn click_delivery_defaults_to_semantic() {
+        let cli = Cli::try_parse_from(["gpui-agent", "click", "todo-add"]).unwrap();
+        match cli.command {
+            Command::Click { target, delivery } => {
+                assert_eq!(target, "todo-add");
+                assert_eq!(delivery, DeliveryMode::Semantic);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let virt =
+            Cli::try_parse_from(["gpui-agent", "click", "--delivery", "virtual", "todo-add"])
+                .unwrap();
+        match virt.command {
+            Command::Click { delivery, .. } => assert_eq!(delivery, DeliveryMode::Virtual),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let typed = Cli::try_parse_from([
+            "gpui-agent",
+            "type",
+            "--delivery",
+            "virtual",
+            "todo-input",
+            "Hi",
+        ])
+        .unwrap();
+        match typed.command {
+            Command::Type { delivery, text, .. } => {
+                assert_eq!(delivery, DeliveryMode::Virtual);
+                assert_eq!(text, "Hi");
+            }
             other => panic!("unexpected {other:?}"),
         }
     }

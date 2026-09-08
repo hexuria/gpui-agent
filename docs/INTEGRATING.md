@@ -26,11 +26,16 @@ impl AgentHost for MyStore {
     fn hello(&self) -> HelloInfo { /* app name, platform, ready */ }
     fn snapshot(&self) -> UiTree { /* nodes with stable ids */ }
     fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+        if op.is_virtual_input() {
+            return Err(gpui_agent::virtual_unavailable(
+                "this host has no GPUI event pipeline",
+            ));
+        }
         match op {
-            Op::Click { target } => self.click(target),
+            Op::Click { target, .. } => self.click(target),
             Op::SetValue { target, value } => self.set_value(target, value),
-            Op::Type { target, text } => self.type_into(target, text),
-            Op::Key { target, key } => self.key(target, key),
+            Op::Type { target, text, .. } => self.type_into(target, text),
+            Op::Key { target, key, .. } => self.key(target, key),
             Op::Invoke { name, args } => self.invoke(name, args),
             Op::Shutdown => { self.shutdown = true; Ok(DispatchResult::empty()) }
             _ => Ok(DispatchResult::empty()),
@@ -40,8 +45,11 @@ impl AgentHost for MyStore {
 ```
 
 Desktop GPUI: spawn `spawn_mailbox` and drain `AgentMailbox` on the UI
-thread (the TCP thread must not touch GPUI objects). Headless / tests:
-`spawn_host` with `Arc<Mutex<YourStore>>`.
+thread (the TCP thread must not touch GPUI objects). Intercept
+`delivery=virtual` there and call `Window::dispatch_event` /
+`dispatch_keystroke` — never OS HID. Headless / tests: `spawn_host`
+with `Arc<Mutex<YourStore>>` and return `virtual_unavailable` for
+virtual ops.
 
 ## 3. Assign stable ids
 
@@ -106,3 +114,6 @@ the project instructions.
 - [ ] Page roots assertable after nav clicks
 - [ ] Optional `invoke` map documented for agents
 - [ ] Product builds leave the feature off
+- [ ] `hello.deliveries` lists `semantic` and, on a painted GPUI window, `virtual`
+- [ ] Virtual click/type/key go through the mailbox → UI thread → `Window::dispatch_event` / `dispatch_keystroke` (never OS HID)
+- [ ] Headless returns `virtual_unavailable` instead of pretending

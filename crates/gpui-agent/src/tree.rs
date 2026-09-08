@@ -10,6 +10,16 @@ pub struct Bounds {
     pub h: f32,
 }
 
+impl Bounds {
+    pub fn has_area(self) -> bool {
+        self.w > 0.0 && self.h > 0.0
+    }
+
+    pub fn center(self) -> (f32, f32) {
+        (self.x + self.w / 2.0, self.y + self.h / 2.0)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiNode {
     pub id: String,
@@ -86,6 +96,15 @@ impl UiNode {
         }
         out
     }
+
+    pub fn apply_bounds_map(&mut self, map: &std::collections::HashMap<String, Bounds>) {
+        if let Some(bounds) = map.get(&self.id) {
+            self.bounds = *bounds;
+        }
+        for child in &mut self.children {
+            child.apply_bounds_map(map);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,5 +122,11 @@ impl UiTree {
 
     pub fn flatten(&self) -> Vec<&UiNode> {
         self.nodes.iter().flat_map(UiNode::flatten).collect()
+    }
+
+    pub fn apply_bounds_map(&mut self, map: &std::collections::HashMap<String, Bounds>) {
+        for node in &mut self.nodes {
+            node.apply_bounds_map(map);
+        }
     }
 }
