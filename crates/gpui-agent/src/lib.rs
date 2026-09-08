@@ -29,30 +29,23 @@ pub use security::{AgentConfig, SecurityError, from_env};
 pub use server::{AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, default_addr};
 pub use tree::{Bounds, UiNode, UiTree};
 
-/// Semantic-id helpers shared by hosts and agents.
-pub mod ids {
-    pub const INPUT: &str = "todo-input";
-    pub const ADD: &str = "todo-add";
-    pub const LIST: &str = "todo-list";
-    pub const EMPTY: &str = "todo-empty";
-    pub const STATUS: &str = "todo-status";
-    pub const WINDOW: &str = "todo-window";
+/// Parse `"{prefix}{n}"` into `n`. Apps use this for numbered stable ids
+/// (`row-3`, `tab-1`); prefixes themselves are app-defined.
+pub fn parse_numbered_id(prefix: &str, target: &str) -> Option<u64> {
+    target
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.parse().ok())
+}
 
-    pub fn item(id: u64) -> String {
-        format!("todo-item-{id}")
-    }
+#[cfg(test)]
+mod parse_id_tests {
+    use super::parse_numbered_id;
 
-    pub fn toggle(id: u64) -> String {
-        format!("todo-toggle-{id}")
-    }
-
-    pub fn delete(id: u64) -> String {
-        format!("todo-delete-{id}")
-    }
-
-    pub fn parse_numbered(prefix: &str, target: &str) -> Option<u64> {
-        target
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.parse().ok())
+    #[test]
+    fn parses_app_defined_prefixes() {
+        assert_eq!(parse_numbered_id("row-", "row-3"), Some(3));
+        assert_eq!(parse_numbered_id("tab-", "tab-1"), Some(1));
+        assert_eq!(parse_numbered_id("row-", "other-3"), None);
+        assert_eq!(parse_numbered_id("row-", "row-x"), None);
     }
 }

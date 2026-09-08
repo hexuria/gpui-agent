@@ -123,7 +123,6 @@ mod tests {
     use super::*;
     use crate::protocol::{HelloInfo, PlatformKind};
     use crate::tree::{UiNode, UiTree};
-    use crate::ids;
 
     struct EmptyHost;
 
@@ -142,7 +141,7 @@ mod tests {
                 app: "test".into(),
                 platform: PlatformKind::Headless,
                 ready: true,
-                nodes: vec![UiNode::new(ids::WINDOW, "window", "Test")],
+                nodes: vec![UiNode::new("test-window", "window", "Test")],
             }
         }
 

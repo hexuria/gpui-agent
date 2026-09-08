@@ -2,6 +2,7 @@ mod mcp;
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
@@ -9,11 +10,13 @@ use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, Op};
 use gpui_agent::DEFAULT_ADDR_STR;
 
+/// Drive any GPUI Kit app over the opt-in agent protocol (not CDP).
+///
+/// First-class commands are the protocol ops only. App-specific verbs
+/// (`todo.add`, `nav.go`, …) belong in the host (`invoke`) or in agent
+/// prompts — not as CLI subcommands.
 #[derive(Parser)]
-#[command(
-    name = "gpui-agent",
-    about = "Drive a GPUI Kit app over the opt-in agent protocol (not CDP)."
-)]
+#[command(name = "gpui-agent", after_help = AFTER_HELP)]
 struct Cli {
     /// Host:port of the automation server (loopback only on the app side).
     #[arg(long, default_value = DEFAULT_ADDR_STR, env = "GPUI_AGENT_ADDR")]
@@ -25,8 +28,19 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Subcommand)]
+const AFTER_HELP: &str = "\
+App-specific helpers (for example the sample todo app) live in examples/,
+not in this CLI. Navigate pages with click + assert on stable ids, or invoke
+a command the host registered.";
+
+#[derive(Debug, Subcommand)]
 enum Command {
+    /// Block until the host answers hello/ready.
+    Wait {
+        /// How long the client retries connecting (milliseconds).
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+    },
     /// Handshake: protocol version, app name, platform, ready.
     Hello,
     /// Print the semantic UI tree as JSON.
@@ -34,7 +48,7 @@ enum Command {
         #[arg(long)]
         pretty: bool,
     },
-    /// Activate a widget by stable id (`todo-add`, `todo-toggle-1`, …).
+    /// Activate a widget by stable id (`nav-settings`, `submit`, …).
     Click { target: String },
     /// Append text to an editable widget.
     Type { target: String, text: String },
@@ -44,7 +58,8 @@ enum Command {
     Key { target: String, key: String },
     /// Assert fields on a node from the current snapshot.
     Assert {
-        #[arg(long)]
+        /// Stable id of the node (protocol field: `target`).
+        #[arg(long, visible_alias = "target")]
         id: String,
         #[arg(long)]
         name: Option<String>,
@@ -52,37 +67,27 @@ enum Command {
         value: Option<String>,
         #[arg(long)]
         role: Option<String>,
-        #[arg(long)]
+        /// `--checked` or `--checked true|false`. A following `true`/`false` is the value, not a positional.
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         checked: Option<bool>,
-        #[arg(long, default_value_t = true)]
+        /// `--exists` or `--exists true|false` (default true).
+        #[arg(long, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
         exists: bool,
+        /// Invert `--exists` (node must be absent). Flag only; takes no value.
         #[arg(long)]
         absent: bool,
     },
-    /// Call a named host command (`todo.add`, `todo.toggle`, …).
+    /// Call a named host command the app registered.
     Invoke {
         name: String,
         /// Repeatable `key=value` pairs. Values are JSON if they parse, else strings.
         #[arg(long = "arg", value_name = "KEY=VALUE")]
         args: Vec<String>,
     },
-    /// Block until the host answers hello/ready.
-    Wait,
     /// Ask the host to exit.
     Shutdown,
-    /// Todo helpers (compose invoke + snapshot).
-    #[command(subcommand)]
-    Todo(TodoCommand),
-    /// Tiny MCP stdio server exposing the same tools.
+    /// Tiny MCP stdio server exposing the same generic tools.
     Mcp,
-}
-
-#[derive(Subcommand)]
-enum TodoCommand {
-    Add { title: String },
-    Toggle { id: u64 },
-    Delete { id: u64 },
-    List,
 }
 
 fn main() -> ExitCode {
@@ -107,6 +112,12 @@ fn run() -> Result<()> {
     }
 
     match cli.command {
+        Command::Wait { timeout_ms } => {
+            if let Some(ms) = timeout_ms {
+                client = client.with_timeout(Duration::from_millis(ms));
+            }
+            print_resp(rpc(client.expect_ok(Op::Wait { timeout_ms }))?)
+        }
         Command::Hello => print_resp(rpc(client.expect_ok(Op::Hello))?),
         Command::Snapshot { pretty } => {
             let resp = rpc(client.snapshot())?;
@@ -138,31 +149,13 @@ fn run() -> Result<()> {
                 role,
                 checked,
                 exists: Some(if absent { false } else { exists }),
-                checked,
-                exists: Some(if absent { false } else { exists }),
             };
             print_resp(rpc(client.assert(spec))?);
         }
         Command::Invoke { name, args } => {
             print_resp(rpc(client.invoke(name, parse_args(&args)?))?)
         }
-        Command::Wait => print_resp(rpc(client.wait_ready())?),
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
-        Command::Todo(TodoCommand::Add { title }) => {
-            print_resp(rpc(client.invoke("todo.add", serde_json::json!({ "title": title })))?)
-        }
-        Command::Todo(TodoCommand::Toggle { id }) => {
-            print_resp(rpc(client.invoke("todo.toggle", serde_json::json!({ "id": id })))?)
-        }
-        Command::Todo(TodoCommand::Delete { id }) => {
-            print_resp(rpc(client.invoke("todo.delete", serde_json::json!({ "id": id })))?)
-        }
-        Command::Todo(TodoCommand::List) => {
-            let resp = rpc(client.invoke("todo.list", serde_json::json!({})))?;
-            if let Some(value) = resp.result {
-                println!("{}", serde_json::to_string_pretty(&value)?);
-            } else {
-        }
         Command::Mcp => unreachable!(),
     }
     Ok(())
@@ -186,4 +179,153 @@ fn parse_args(pairs: &[String]) -> Result<serde_json::Value> {
 
 fn print_resp(resp: gpui_agent::Response) {
     println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    use super::*;
+
+    #[test]
+    fn first_class_commands_are_generic_ops() {
+        let cmd = Cli::command();
+        let names: Vec<String> = cmd
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "wait",
+                "hello",
+                "snapshot",
+                "click",
+                "type",
+                "set-value",
+                "key",
+                "assert",
+                "invoke",
+                "shutdown",
+                "mcp",
+            ]
+        );
+        assert!(!names.iter().any(|n| n == "todo"));
+    }
+
+    #[test]
+    fn help_does_not_advertise_todo() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            !help.lines().any(|line| line.trim_start().starts_with("todo")),
+            "help should not list a todo subcommand:\n{help}"
+        );
+    }
+
+    #[test]
+    fn invoke_args_parse_json_or_string() {
+        let value = parse_args(&["title=Buy milk".into(), "id=1".into()]).unwrap();
+        assert_eq!(value["title"], "Buy milk");
+        assert_eq!(value["id"], 1);
+    }
+
+    #[test]
+    fn assert_bool_flags_do_not_leave_positional_true() {
+        let checked_true = Cli::try_parse_from([
+            "gpui-agent",
+            "assert",
+            "--id",
+            "page-root",
+            "--checked",
+            "true",
+        ])
+        .expect("checked true");
+        match checked_true.command {
+            Command::Assert {
+                id,
+                checked,
+                exists,
+                absent,
+                ..
+            } => {
+                assert_eq!(id, "page-root");
+                assert_eq!(checked, Some(true));
+                assert!(exists);
+                assert!(!absent);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let checked_false = Cli::try_parse_from([
+            "gpui-agent",
+            "assert",
+            "--id",
+            "page-root",
+            "--checked",
+            "false",
+        ])
+        .expect("checked false");
+        match checked_false.command {
+            Command::Assert { checked, .. } => assert_eq!(checked, Some(false)),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let exists_true = Cli::try_parse_from([
+            "gpui-agent",
+            "assert",
+            "--id",
+            "page-root",
+            "--exists",
+            "true",
+        ])
+        .expect("exists true");
+        match exists_true.command {
+            Command::Assert { exists, absent, .. } => {
+                assert!(exists);
+                assert!(!absent);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let exists_false = Cli::try_parse_from([
+            "gpui-agent",
+            "assert",
+            "--id",
+            "page-root",
+            "--exists",
+            "false",
+        ])
+        .expect("exists false");
+        match exists_false.command {
+            Command::Assert { exists, .. } => assert!(!exists),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let absent = Cli::try_parse_from(["gpui-agent", "assert", "--id", "page-root", "--absent"])
+            .expect("absent");
+        match absent.command {
+            Command::Assert { absent, .. } => assert!(absent),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let bare_checked =
+            Cli::try_parse_from(["gpui-agent", "assert", "--id", "page-root", "--checked"])
+                .expect("bare checked");
+        match bare_checked.command {
+            Command::Assert { checked, .. } => assert_eq!(checked, Some(true)),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invoke_without_args_is_empty_object() {
+        let cli = Cli::try_parse_from(["gpui-agent", "invoke", "demo.ping"]).unwrap();
+        match cli.command {
+            Command::Invoke { name, args } => {
+                assert_eq!(name, "demo.ping");
+                assert!(args.is_empty());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 }
