@@ -5,10 +5,31 @@
 
 use gpui_agent::dispatch::DispatchResult;
 use gpui_agent::host::AgentHost;
-use gpui_agent::ids;
 use gpui_agent::protocol::{HelloInfo, Op, PROTOCOL_VERSION, PlatformKind};
 use gpui_agent::tree::{UiNode, UiTree};
 use serde::{Deserialize, Serialize};
+
+/// Stable ids for the sample todo app. Other GPUI Kit apps define their own.
+pub mod ids {
+    pub const INPUT: &str = "todo-input";
+    pub const ADD: &str = "todo-add";
+    pub const LIST: &str = "todo-list";
+    pub const EMPTY: &str = "todo-empty";
+    pub const STATUS: &str = "todo-status";
+    pub const WINDOW: &str = "todo-window";
+
+    pub fn item(id: u64) -> String {
+        format!("todo-item-{id}")
+    }
+
+    pub fn toggle(id: u64) -> String {
+        format!("todo-toggle-{id}")
+    }
+
+    pub fn delete(id: u64) -> String {
+        format!("todo-delete-{id}")
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Todo {
@@ -144,13 +165,13 @@ impl TodoStore {
         if target == ids::ADD {
             return self.add_from_draft().map(todo_result);
         }
-        if let Some(id) = ids::parse_numbered("todo-toggle-", target) {
+        if let Some(id) = gpui_agent::parse_numbered_id("todo-toggle-", target) {
             return self.toggle(id).map(todo_result);
         }
-        if let Some(id) = ids::parse_numbered("todo-delete-", target) {
+        if let Some(id) = gpui_agent::parse_numbered_id("todo-delete-", target) {
             return self.delete(id).map(todo_result);
         }
-        if let Some(id) = ids::parse_numbered("todo-item-", target) {
+        if let Some(id) = gpui_agent::parse_numbered_id("todo-item-", target) {
             return self.toggle(id).map(todo_result);
         }
         Err(format!("cannot click `{target}`"))

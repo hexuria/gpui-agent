@@ -1,61 +1,50 @@
 # GPUI Agent Lab
-An experimental control plane that lets an AI agent **observe and drive a GPUI Kit 0.6 app without Chrome DevTools Protocol**.
 
-GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and CDP have nothing to attach to. This repo proves a smaller, in-process alternative: the app publishes a **semantic UI tree** and accepts **scripted actions** over localhost JSON — the same idea as [Vercel Native SDK automation](https://native-sdk.dev/automation), purpose-built for GPUI Kit.
+An experimental control plane that lets an AI agent **observe and drive any GPUI Kit 0.6 app without Chrome DevTools Protocol**.
+
+GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and CDP have nothing to attach to. This repo is a smaller, in-process alternative: the app publishes a **semantic UI tree** and accepts **scripted actions** over localhost JSON — the same idea as [Vercel Native SDK automation](https://native-sdk.dev/automation), purpose-built for GPUI Kit.
+
+The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `click`, `type`, `set-value`, `key`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
 
 ```mermaid
 flowchart LR
   agent["AI agent / CLI / MCP"]
   proto["GPUI Agent Protocol v1<br/>NDJSON on 127.0.0.1"]
   host["AgentHost"]
-  desktop["apps/todo<br/>GPUI Kit 0.6"]
-  headless["apps/todo-headless<br/>no GPU"]
-  store["todo-core<br/>same store + stable ids"]
+  desktop["Your GPUI Kit app"]
+  headless["Headless AgentHost"]
 
-  agent -->|"snapshot / click / type / assert"| proto
+  agent -->|"snapshot / click / type / assert / invoke"| proto
   proto --> host
   host --> desktop
   host --> headless
-  desktop --> store
-  headless --> store
 ```
 
-## What this proves
-
-A scripted agent (or `gpui-agent` CLI) can, without a human mouse or keyboard:
-
-1. Read a **structured snapshot** (ids, roles, names, checked state) — not just a screenshot
-2. **Create** a todo
-3. **Check / uncheck** it
-4. **Delete** it
-5. **Assert** the resulting tree
-
-The desktop app is a real `gpui-kit = "0.6"` window. The same protocol runs against a headless host so CI and display-less VMs can still prove the loop.
-
-## Layout
-
-```
-apps/todo             GPUI Kit 0.6 desktop todo
-apps/todo-headless    Same domain + protocol, no window
-crates/gpui-agent     Protocol, server, client, security, mailbox
-crates/gpui-agent-cli gpui-agent CLI + tiny MCP stdio shim
-crates/todo-core      Shared store and semantic ids
-docs/PROTOCOL.md      Wire format
-scripts/smoke.sh      Full CRUD against the headless host
-```
-
-## How to run
-
-Requires Rust 1.85+ (CI here uses 1.98). On Linux, GPUI also needs windowing/Vulkan headers (`libxkbcommon-dev`, `libwayland-dev`, `libfontconfig-dev`, `libvulkan-dev`, X11/xcb).
-
-### Headless proof (no display)
+## Generic CLI
 
 ```bash
-chmod +x scripts/smoke.sh
-./scripts/smoke.sh
+gpui-agent wait
+gpui-agent hello
+gpui-agent snapshot --pretty
+gpui-agent click nav-settings
+gpui-agent assert --id page-settings
+gpui-agent set-value search-input "query"
+gpui-agent type composer "hello"
+gpui-agent key composer Enter
+gpui-agent invoke prefs.set --arg theme=dark
+gpui-agent shutdown
 ```
 
-Or by hand:
+Navigation between pages is **click + assert** on stable ids (or `invoke` if the host registered a go-to command). There is no `open-page` CLI verb.
+
+```bash
+gpui-agent click nav-settings
+gpui-agent assert --id page-settings --role window
+```
+
+### Sample todo app (demo only)
+
+`apps/todo` is a demo that assigns ids such as `todo-input` and `todo-add`. Drive it with the **same generic commands**:
 
 ```bash
 # terminal 1
@@ -73,14 +62,48 @@ cargo run -p gpui-agent-cli -- assert --id todo-item-1 --absent
 cargo run -p gpui-agent-cli -- shutdown
 ```
 
-Helpers for agents that prefer named commands:
+The demo host also registers `todo.add` / `todo.toggle` / `todo.delete` / `todo.list` as **`invoke` names** (not CLI subcommands):
 
 ```bash
-gpui-agent todo add "Buy milk"
-gpui-agent todo toggle 1
-gpui-agent todo delete 1
-gpui-agent todo list
-gpui-agent snapshot --pretty
+gpui-agent invoke todo.add --arg title="Buy milk"
+gpui-agent invoke todo.list
+```
+
+Thin wrappers for that demo live in [`examples/todo.sh`](examples/todo.sh). Do not treat them as the public API.
+
+## What this proves
+
+A scripted agent (or `gpui-agent` CLI) can, without a human mouse or keyboard:
+
+1. Read a **structured snapshot** (ids, roles, names, checked state) — not just a screenshot
+2. **Act** with `click` / `type` / `set-value` / `key` / `invoke`
+3. **Assert** the resulting tree
+
+The desktop app is a real `gpui-kit = "0.6"` window. The same protocol runs against a headless host so CI and display-less VMs can still prove the loop.
+
+## Layout
+
+```
+apps/todo             GPUI Kit 0.6 desktop demo
+apps/todo-headless    Same domain + protocol, no window
+crates/gpui-agent     Protocol, server, client, security, mailbox
+crates/gpui-agent-cli gpui-agent CLI + tiny MCP stdio shim
+crates/todo-core      Demo store and semantic ids
+docs/PROTOCOL.md      Wire format
+docs/INTEGRATING.md   How to embed AgentHost in another app
+examples/todo.sh      Demo-only invoke wrappers
+scripts/smoke.sh      Full CRUD against the headless host
+```
+
+## How to run
+
+Requires Rust 1.85+ (CI here uses 1.98). On Linux, GPUI also needs windowing/Vulkan headers (`libxkbcommon-dev`, `libwayland-dev`, `libfontconfig-dev`, `libvulkan-dev`, X11/xcb).
+
+### Headless proof (no display)
+
+```bash
+chmod +x scripts/smoke.sh
+./scripts/smoke.sh
 ```
 
 ### Desktop app (needs a real display)
@@ -89,7 +112,7 @@ gpui-agent snapshot --pretty
 GPUI_AGENT=1 cargo run -p todo
 ```
 
-Then the same CLI commands. Without `GPUI_AGENT=1` the window is a normal todo app and no socket is opened.
+Then the same generic CLI commands. Without `GPUI_AGENT=1` the window is a normal app and no socket is opened.
 
 A cloud VM with Xvfb/`DISPLAY` may still fail if Vulkan/GPU is missing. That is a **display/GPU** limit, not a protocol limit. Use `todo-headless` and `cargo test` there.
 
@@ -101,17 +124,41 @@ cargo test -p gpui-agent -p todo-core -p gpui-agent-cli
 
 This is the Flutter `ai_flutter_agent` / semantics-tree loop, adapted to GPUI Kit:
 
-1. **Perceive.** `gpui-agent snapshot` (or MCP tool `snapshot`). You get widgets with stable ids (`todo-input`, `todo-add`, `todo-item-1`, `todo-toggle-1`, `todo-delete-1`), roles, names, and state. Do **not** scrape pixels to decide what to click.
-2. **Plan.** Choose an action against those ids. Prefer `invoke` / `todo add` for high-level work; use `set-value` + `click` when you want to exercise the same path as a human.
+1. **Perceive.** `gpui-agent snapshot` (or MCP tool `snapshot`). You get widgets with **stable ids the app assigned**, plus roles, names, and state. Do **not** scrape pixels to decide what to click.
+2. **Plan.** Choose an action against those ids. Prefer `invoke` when the host exposes a named command; use `set-value` + `click` to exercise the same path as a human.
 3. **Act.** `click`, `type`, `set-value`, `key`, or `invoke`.
-4. **Verify.** `assert --id todo-item-1 --checked true` (or re-snapshot and inspect JSON). If the node is missing or the field is wrong, the CLI exits non-zero.
+4. **Verify.** `assert --id page-root` (or re-snapshot and inspect JSON). If the node is missing or the field is wrong, the CLI exits non-zero.
 
-Tiny MCP stdio shim (same tools):
+To change screens: click a nav control, then assert the destination root id is present.
+
+## Claude Code / MCP
+
+The CLI includes a tiny MCP stdio server with the **same generic tools** (no app-specific `todo_*` tools):
+
+`wait`, `hello`, `snapshot`, `click`, `type`, `set_value`, `key`, `assert`, `invoke`, `shutdown`
 
 ```bash
 GPUI_AGENT=1 cargo run -p todo-headless
 cargo run -p gpui-agent-cli -- mcp
 ```
+
+Claude Code (`~/.claude/settings.json` or a project `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "gpui-agent": {
+      "command": "gpui-agent",
+      "args": ["mcp"],
+      "env": {
+        "GPUI_AGENT_ADDR": "127.0.0.1:17421"
+      }
+    }
+  }
+}
+```
+
+Start the target app with `GPUI_AGENT=1` first. Teach the agent your app’s ids and `invoke` names in a prompt or CLAUDE.md — do not add them as CLI subcommands.
 
 ## Why not CDP?
 
@@ -134,10 +181,10 @@ The first hypothesis — walk GPUI’s private element tree every frame — is t
 
 What shipped instead (closer to Flutter semantics + Native SDK):
 
-1. **`todo-core` owns the semantic tree.** Widgets and the agent call the same methods (`add`, `toggle`, `delete`). Ids are assigned by the app (`todo-toggle-{id}`), not inferred.
+1. **The app owns the semantic tree.** Widgets and the agent call the same methods. Ids are assigned by the app (`submit`, `row-3`), not inferred.
 2. **`AgentHost` is the platform seam.** Desktop GPUI, headless, and later web/mobile implement the trait. The wire format does not change.
-3. **Desktop bridge is a mailbox.** The TCP thread never touches GPUI objects. `TodoApp::render` drains the mailbox on the UI thread so InputState and the store stay in sync.
-4. **Protocol is small and versioned.** See [docs/PROTOCOL.md](docs/PROTOCOL.md).
+3. **Desktop bridge is a mailbox.** The TCP thread never touches GPUI objects. The UI thread drains the mailbox so InputState and the store stay in sync.
+4. **Protocol is small and versioned.** See [docs/PROTOCOL.md](docs/PROTOCOL.md). Embedding steps: [docs/INTEGRATING.md](docs/INTEGRATING.md).
 
 ## Security / trust model
 
@@ -145,7 +192,7 @@ Automation is **opt-in and off by default**.
 
 | Gate | Default |
 | --- | --- |
-| Compile | `todo` feature `agent` (on for this demo; a product build should default it **off**) |
+| Compile | Feature-gate the bridge (this demo’s `todo` feature `agent` is on; a product build should default it **off**) |
 | Runtime | `GPUI_AGENT=1` (`true`/`yes`/`on` also work) |
 | Release binaries | Also require `GPUI_AGENT_ALLOW_RELEASE=1` |
 | Bind address | Loopback only (`127.0.0.1:17421`). Non-loopback `GPUI_AGENT_ADDR` is refused |
@@ -163,7 +210,7 @@ Anyone who can connect to that loopback socket can drive the UI as the user. Tre
      AgentHost            AgentHost          AgentHost
      (desktop GPUI)       (headless)         (web / mobile)
            │                  │                  │
-     AccessKit + ids      todo-core          WASM / OS a11y
+     AccessKit + ids      your store         WASM / OS a11y
      mailbox drain        mutex host         same snapshots
 ```
 
@@ -178,10 +225,10 @@ Do not add CDP compatibility shims; agents should speak this protocol (or MCP to
 
 ## Limitations
 
-- **v1 dispatches semantic actions**, not synthesized OS pointer events. A click on `todo-add` calls the add handler; it does not move a real cursor. That is more reliable for agents and less complete for “did the hit-test match the pixel?”
+- **v1 dispatches semantic actions**, not synthesized OS pointer events. A click on a stable id calls that widget’s handler; it does not move a real cursor. That is more reliable for agents and less complete for “did the hit-test match the pixel?”
 - **Bounds are zero** on the headless host and not yet read back from GPUI layout.
 - **No screenshot command** yet. Snapshot is structured; add a PNG later via GPUI’s render path if a display exists.
-- **The desktop window needs a GPU/display.** Cloud agents should use `todo-headless` + `cargo test`.
+- **The desktop window needs a GPU/display.** Cloud agents should use a headless `AgentHost` + `cargo test`.
 - **Not a GPUI patch.** No fork of `gpui-kit`. When GPUI exposes a first-class test-id / a11y export, this crate should consume it instead of a parallel registry.
 - **Single-app, local only.** No multi-window routing, no remote attach.
 

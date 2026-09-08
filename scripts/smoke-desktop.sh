@@ -3,6 +3,9 @@
 # Vulkan ICD. On a GPU-less VM, Mesa lavapipe is enough:
 #   sudo apt-get install -y mesa-vulkan-drivers
 #   export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+#
+# Same generic CLI as the headless smoke — todo ids are the demo app's,
+# not part of gpui-agent.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,7 +41,8 @@ fi
 
 echo "==> wait until ready"
 "$CLI" --addr "$ADDR" wait
-"$CLI" --addr "$ADDR" todo add "From the desktop window"
+"$CLI" --addr "$ADDR" set-value todo-input "From the desktop window"
+"$CLI" --addr "$ADDR" click todo-add
 "$CLI" --addr "$ADDR" assert --id todo-item-1 --name "From the desktop window" --checked false
 "$CLI" --addr "$ADDR" click todo-toggle-1
 "$CLI" --addr "$ADDR" assert --id todo-item-1 --checked true

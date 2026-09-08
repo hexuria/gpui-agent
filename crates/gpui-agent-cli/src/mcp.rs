@@ -1,5 +1,6 @@
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use anyhow::Result;
 use gpui_agent::client::AgentClient;
@@ -7,6 +8,9 @@ use gpui_agent::protocol::{AssertSpec, Op};
 use serde_json::{Value, json};
 
 /// Minimal MCP stdio server: `initialize`, `tools/list`, `tools/call`.
+///
+/// Tools match the generic protocol ops. App-specific verbs are `invoke`
+/// names the host registered — they are not separate MCP tools.
 pub fn run(addr: SocketAddr, token: Option<String>) -> Result<()> {
     let mut client = AgentClient::connect(addr);
     if let Some(token) = token {
@@ -23,7 +27,10 @@ pub fn run(addr: SocketAddr, token: Option<String>) -> Result<()> {
         let msg: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(err) => {
-                write_msg(&mut stdout, json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":err.to_string()}}))?;
+                write_msg(
+                    &mut stdout,
+                    json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":err.to_string()}}),
+                )?;
                 continue;
             }
         };
@@ -69,42 +76,137 @@ fn write_msg(stdout: &mut std::io::Stdout, value: Value) -> Result<()> {
     Ok(())
 }
 
-fn tools() -> Vec<Value> {
+pub(crate) fn tools() -> Vec<Value> {
     vec![
-        tool("snapshot", "Read the semantic UI tree (ids, roles, names, state)."),
-        tool("click", "Click a widget by stable id."),
-        tool("set_value", "Set the value of an editable widget."),
-        tool("assert", "Assert name/value/checked/exists on a node."),
-        tool("todo_add", "Create a todo by title."),
-        tool("todo_toggle", "Toggle a todo by numeric id."),
-        tool("todo_delete", "Delete a todo by numeric id."),
-        tool("todo_list", "List todos from the host."),
+        tool(
+            "wait",
+            "Block until the host answers hello/ready.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "timeout_ms": { "type": "integer", "description": "Client connect retry budget in milliseconds." }
+                }
+            }),
+        ),
+        tool(
+            "hello",
+            "Handshake: protocol version, app name, platform, ready.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "snapshot",
+            "Read the semantic UI tree (stable ids, roles, names, state).",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "click",
+            "Activate a widget by stable id. Use this to navigate (click a nav id, then assert the page root).",
+            object_schema(&["target"]),
+        ),
+        tool(
+            "type",
+            "Append text to an editable widget.",
+            object_schema(&["target", "text"]),
+        ),
+        tool(
+            "set_value",
+            "Replace the value of an editable widget.",
+            object_schema(&["target", "value"]),
+        ),
+        tool(
+            "key",
+            "Send a key (Enter, Backspace, …) to a widget.",
+            object_schema(&["target", "key"]),
+        ),
+        tool(
+            "assert",
+            "Assert name/value/role/checked/exists on a node from the current snapshot.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "description": "Stable node id (alias: id)." },
+                    "id": { "type": "string", "description": "Alias for target." },
+                    "name": { "type": "string" },
+                    "value": { "type": "string" },
+                    "role": { "type": "string" },
+                    "checked": { "type": "boolean" },
+                    "exists": { "type": "boolean" }
+                },
+                "required": []
+            }),
+        ),
+        tool(
+            "invoke",
+            "Call a named host command the app registered (app-specific verbs belong here, not as extra tools).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Host command, e.g. demo.reset" },
+                    "args": { "type": "object", "description": "JSON object of arguments." }
+                },
+                "required": ["name"]
+            }),
+        ),
+        tool(
+            "shutdown",
+            "Ask the host to exit.",
+            json!({ "type": "object", "properties": {} }),
+        ),
     ]
 }
 
-fn tool(name: &str, description: &str) -> Value {
+fn tool(name: &str, description: &str, input_schema: Value) -> Value {
     json!({
         "name": name,
         "description": description,
-        "inputSchema": { "type": "object", "additionalProperties": true }
+        "inputSchema": input_schema
+    })
+}
+
+fn object_schema(required: &[&str]) -> Value {
+    let mut properties = serde_json::Map::new();
+    for key in required {
+        properties.insert((*key).into(), json!({ "type": "string" }));
+    }
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required
     })
 }
 
 fn call_tool(client: &mut AgentClient, params: &Value) -> Result<Value, String> {
-    let name = params.get("name").and_then(Value::as_str).ok_or("missing tool name")?;
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or("missing tool name")?;
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let resp = match name {
+        "wait" => {
+            if let Some(ms) = args.get("timeout_ms").and_then(Value::as_u64) {
+                client.set_timeout(Duration::from_millis(ms));
+            }
+            client.wait_ready()?
+        }
+        "hello" => client.expect_ok(Op::Hello)?,
         "snapshot" => client.snapshot()?,
-        "click" => {
-            let target = args.string("target")?;
-            client.click(target)?
-        }
-        "set_value" => {
-            client.set_value(args.string("target")?, args.string("value")?)?
-        }
+        "click" => client.click(args.string("target")?)?,
+        "type" => client.expect_ok(Op::Type {
+            target: args.string("target")?,
+            text: args.string("text")?,
+        })?,
+        "set_value" => client.set_value(args.string("target")?, args.string("value")?)?,
+        "key" => client.expect_ok(Op::Key {
+            target: args.string("target")?,
+            key: args.string("key")?,
+        })?,
         "assert" => {
+            let target = args
+                .opt_string("target")
+                .or_else(|| args.opt_string("id"))
+                .ok_or_else(|| "missing string `target`".to_string())?;
             let spec = AssertSpec {
-                target: args.string("target")?,
+                target,
                 name: args.opt_string("name"),
                 value: args.opt_string("value"),
                 role: args.opt_string("role"),
@@ -113,11 +215,12 @@ fn call_tool(client: &mut AgentClient, params: &Value) -> Result<Value, String> 
             };
             client.assert(spec)?
         }
-        "todo_add" => client.invoke("todo.add", json!({ "title": args.string("title")? }))?,
-        "todo_toggle" => client.invoke("todo.toggle", json!({ "id": args.id()? }))?,
-        "todo_delete" => client.invoke("todo.delete", json!({ "id": args.id()? }))?,
-        "todo_list" => client.invoke("todo.list", json!({}))?,
-        "hello" => client.expect_ok(Op::Hello)?,
+        "invoke" => {
+            let invoke_name = args.string("name")?;
+            let invoke_args = args.get("args").cloned().unwrap_or(json!({}));
+            client.invoke(invoke_name, invoke_args)?
+        }
+        "shutdown" => client.expect_ok(Op::Shutdown)?,
         other => return Err(format!("unknown tool {other}")),
     };
     serde_json::to_value(resp).map_err(|err| err.to_string())
@@ -126,7 +229,6 @@ fn call_tool(client: &mut AgentClient, params: &Value) -> Result<Value, String> 
 trait ArgsExt {
     fn string(&self, key: &str) -> Result<String, String>;
     fn opt_string(&self, key: &str) -> Option<String>;
-    fn id(&self) -> Result<u64, String>;
 }
 
 impl ArgsExt for Value {
@@ -140,10 +242,34 @@ impl ArgsExt for Value {
     fn opt_string(&self, key: &str) -> Option<String> {
         self.get(key).and_then(Value::as_str).map(str::to_string)
     }
+}
 
-    fn id(&self) -> Result<u64, String> {
-        self.get("id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "missing id".into())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_tools_are_generic_protocol_ops() {
+        let listed = tools();
+        let names: Vec<&str> = listed
+            .iter()
+            .filter_map(|t| t.get("name").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "wait",
+                "hello",
+                "snapshot",
+                "click",
+                "type",
+                "set_value",
+                "key",
+                "assert",
+                "invoke",
+                "shutdown",
+            ]
+        );
+        assert!(names.iter().all(|n| !n.starts_with("todo")));
     }
 }

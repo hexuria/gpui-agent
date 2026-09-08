@@ -37,6 +37,10 @@ impl AgentClient {
         self
     }
 
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
+
     pub fn rpc(&mut self, op: Op) -> Result<Response, String> {
         let id = {
             let id = self.next_id;

@@ -2,9 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_agent::client::AgentClient;
-use gpui_agent::ids;
 use gpui_agent::protocol::{AssertSpec, Op, PlatformKind};
 use gpui_agent::server::spawn_host;
+use todo_core::ids;
 use todo_core::TodoStore;
 
 #[test]
