@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::tree::UiTree;
@@ -28,7 +30,7 @@ impl PlatformKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Request {
     pub v: u32,
     pub id: String,
@@ -36,6 +38,17 @@ pub struct Request {
     pub token: Option<String>,
     #[serde(flatten)]
     pub op: Op,
+}
+
+impl fmt::Debug for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Request")
+            .field("v", &self.v)
+            .field("id", &self.id)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("op", &self.op)
+            .finish()
+    }
 }
 
 /// How click / type / key are delivered into the app.
@@ -305,5 +318,16 @@ mod tests {
         let req = Request::new("3", Op::click("todo-add"));
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("delivery").is_none());
+    }
+
+    #[test]
+    fn debug_redacts_token() {
+        let req = Request::new("1", Op::Hello).with_token("super-secret-token");
+        let rendered = format!("{req:?}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "token leaked in Debug: {rendered}"
+        );
     }
 }

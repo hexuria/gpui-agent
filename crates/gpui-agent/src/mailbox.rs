@@ -3,6 +3,9 @@ use std::time::Duration;
 
 use crate::protocol::{Request, Response};
 
+/// Cap queued work so a stalled UI thread cannot grow without bound.
+pub const MAX_MAILBOX_DEPTH: usize = 128;
+
 /// Cross-thread inbox so a background TCP server can post work onto the
 /// GPUI UI thread (or any other single-threaded host).
 #[derive(Clone, Default)]
@@ -28,7 +31,15 @@ impl AgentMailbox {
 
     pub fn push(&self, request: Request) -> mpsc::Receiver<Response> {
         let (tx, rx) = mpsc::channel();
-        self.inner.lock().expect("mailbox").push((request, tx));
+        let mut inner = self.inner.lock().expect("mailbox");
+        if inner.len() >= MAX_MAILBOX_DEPTH {
+            let _ = tx.send(Response::err(
+                request.id,
+                "mailbox full (UI thread not draining)",
+            ));
+            return rx;
+        }
+        inner.push((request, tx));
         rx
     }
 
@@ -45,5 +56,36 @@ impl AgentMailbox {
         let rx = self.push(request);
         rx.recv_timeout(timeout)
             .map_err(|_| "timed out waiting for the UI thread to drain the agent mailbox".into())
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.lock().expect("mailbox").len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::Op;
+
+    #[test]
+    fn push_rejects_when_full() {
+        let mailbox = AgentMailbox::new();
+        for i in 0..MAX_MAILBOX_DEPTH {
+            let _rx = mailbox.push(Request::new(i.to_string(), Op::Hello));
+        }
+        assert_eq!(mailbox.len(), MAX_MAILBOX_DEPTH);
+        let resp = mailbox
+            .wait(
+                Request::new("overflow", Op::Hello),
+                Duration::from_millis(50),
+            )
+            .unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error.unwrap().contains("mailbox full"),
+            "expected mailbox full error"
+        );
+        assert_eq!(mailbox.len(), MAX_MAILBOX_DEPTH);
     }
 }

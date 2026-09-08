@@ -11,7 +11,8 @@ semantic tree and action handlers; the CLI/MCP never learn your domain.
 | Runtime | Start the server only when `GPUI_AGENT=1` (`true`/`yes`/`on`). |
 | Release | Also require `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | Loopback only. `gpui_agent::security::from_env` enforces this. |
-| Token | Optional `GPUI_AGENT_TOKEN` on both app and CLI. |
+| Token | Optional `GPUI_AGENT_TOKEN` on both app and CLI. **Set it** unless you are on a single-user box and accept that any local process can drive the UI. |
+| DoS caps | The server caps line size (1 MiB), concurrent connections (32), mailbox depth (128), and idle sockets (30s). See [SECURITY.md](SECURITY.md). |
 
 ```rust
 if let Ok(Some(config)) = gpui_agent::from_env() {

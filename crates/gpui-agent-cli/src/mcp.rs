@@ -1,10 +1,11 @@
-use std::io::{BufRead, Write};
+use std::io::{BufReader, Write};
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::Result;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
+use gpui_agent::{MAX_LINE_BYTES, read_limited_line};
 use serde_json::{Value, json};
 
 /// Minimal MCP stdio server: `initialize`, `tools/list`, `tools/call`.
@@ -17,10 +18,13 @@ pub fn run(addr: SocketAddr, token: Option<String>) -> Result<()> {
         client = client.with_token(token);
     }
 
-    let stdin = std::io::stdin();
+    let mut stdin = BufReader::new(std::io::stdin());
     let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let line = line?;
+    loop {
+        let line = match read_limited_line(&mut stdin, MAX_LINE_BYTES)? {
+            Some(line) => line,
+            None => break,
+        };
         if line.trim().is_empty() {
             continue;
         }

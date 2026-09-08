@@ -1,5 +1,6 @@
 use crate::host::AgentHost;
 use crate::protocol::{AssertSpec, Op, PROTOCOL_VERSION, Request, Response};
+use crate::security::tokens_match;
 use crate::tree::UiTree;
 
 /// Optional structured payload returned by `invoke` / mutating ops.
@@ -18,6 +19,30 @@ impl DispatchResult {
     }
 }
 
+/// Version + optional shared-secret gate. Call this before dispatching,
+/// including on the mailbox path where virtual ops skip [`handle_request`].
+pub fn authorize_request(req: &Request, expected_token: Option<&str>) -> Result<(), Response> {
+    if req.v != PROTOCOL_VERSION {
+        return Err(Response::err(
+            req.id.clone(),
+            format!(
+                "unsupported protocol version {} (want {PROTOCOL_VERSION})",
+                req.v
+            ),
+        ));
+    }
+
+    if let Some(expected) = expected_token {
+        match req.token.as_deref() {
+            Some(got) if tokens_match(got, expected) => {}
+            Some(_) => return Err(Response::err(req.id.clone(), "invalid automation token")),
+            None => return Err(Response::err(req.id.clone(), "automation token required")),
+        }
+    }
+
+    Ok(())
+}
+
 /// Single place that turns a request into a response. Used by the TCP
 /// server, the mailbox drain, and unit tests — no network required.
 pub fn handle_request(
@@ -25,22 +50,8 @@ pub fn handle_request(
     req: Request,
     expected_token: Option<&str>,
 ) -> Response {
-    if req.v != PROTOCOL_VERSION {
-        return Response::err(
-            req.id,
-            format!(
-                "unsupported protocol version {} (want {PROTOCOL_VERSION})",
-                req.v
-            ),
-        );
-    }
-
-    if let Some(expected) = expected_token {
-        match req.token.as_deref() {
-            Some(got) if got == expected => {}
-            Some(_) => return Response::err(req.id, "invalid automation token"),
-            None => return Response::err(req.id, "automation token required"),
-        }
+    if let Err(resp) = authorize_request(&req, expected_token) {
+        return resp;
     }
 
     match req.op {
@@ -186,5 +197,14 @@ mod tests {
         let resp = handle_request(&mut host, req, Some("secret"));
         assert!(resp.ok);
         assert!(resp.hello.is_some());
+    }
+
+    #[test]
+    fn authorize_rejects_virtual_wrong_version() {
+        let mut req = Request::new("1", Op::click_virtual("todo-add"));
+        req.v = 99;
+        let err = authorize_request(&req, None).unwrap_err();
+        assert!(!err.ok);
+        assert!(err.error.unwrap().contains("unsupported protocol"));
     }
 }

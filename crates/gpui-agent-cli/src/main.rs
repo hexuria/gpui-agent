@@ -117,6 +117,8 @@ fn main() -> ExitCode {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    gpui_agent::ensure_loopback(cli.addr)
+        .with_context(|| format!("refusing non-loopback agent address {}", cli.addr))?;
     if matches!(cli.command, Command::Mcp) {
         return mcp::run(cli.addr, cli.token);
     }
@@ -388,5 +390,20 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn cli_addr_must_be_loopback() {
+        let remote = Cli::try_parse_from([
+            "gpui-agent",
+            "--addr",
+            "8.8.8.8:17421",
+            "hello",
+        ])
+        .unwrap();
+        assert!(gpui_agent::ensure_loopback(remote.addr).is_err());
+
+        let local = Cli::try_parse_from(["gpui-agent", "hello"]).unwrap();
+        assert!(gpui_agent::ensure_loopback(local.addr).is_ok());
     }
 }
