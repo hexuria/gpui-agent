@@ -78,6 +78,10 @@ cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set 
 maps prose through a local schema (fail closed). Design, threat model,
 and what was *not* copied from rwmcp / tmp: [docs/RECIPES.md](docs/RECIPES.md).
 
+**On your Mac / laptop** (fetch this PR branch, build, two terminals):
+[docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md). Headless is enough; desktop
+`todo` is optional and needs a display.
+
 The demo host also registers `todo.add` / `todo.toggle` / `todo.delete` / `todo.list` as **`invoke` names** (not CLI subcommands):
 
 ```bash
@@ -109,6 +113,7 @@ crates/todo-core           Demo store and semantic ids
 docs/PROTOCOL.md           Wire format
 docs/INTEGRATING.md        How to embed AgentHost in another app
 docs/RECIPES.md            Experimental recipes / mapping / perf notes
+docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
 examples/todo.sh           Demo-only invoke wrappers
 examples/recipes/          Sample todo CRUD recipe (JSON + wants)
 scripts/smoke.sh           Full CRUD against the headless host
@@ -123,6 +128,15 @@ Requires Rust 1.85+ (CI here uses 1.98). On Linux, GPUI also needs windowing/Vul
 ```bash
 chmod +x scripts/smoke.sh
 ./scripts/smoke.sh
+```
+
+Experimental recipes (one CLI invocation, one TCP session): see
+[docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md) for copy-paste laptop steps, or:
+
+```bash
+GPUI_AGENT=1 cargo run -p todo-headless
+# other terminal
+cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set title="Buy milk"
 ```
 
 ### Desktop app (needs a real display)

@@ -79,14 +79,21 @@ exists so a human or agent can write a sequence without braces.
 }
 ```
 
-Equivalent wants file:
+Equivalent wants file (`examples/recipes/todo-crud.wants`):
 
 ```
-# examples/recipes/todo-crud.wants
+# bind $title with --set title="Buy milk"
 wait
 invoke todo.add title=$title
 assert todo-item-1 name=$title checked=false
+invoke todo.toggle id=1
+assert todo-item-1 checked=true
 ```
+
+Both samples assume a **fresh empty** todo list (`todo-item-1` / `id=1`).
+Restart the host before a second run.
+
+**Laptop (pull + run only):** [TRY_ON_MAC.md](TRY_ON_MAC.md).
 
 Rules:
 
@@ -212,4 +219,5 @@ crates/gpui-agent          Session reuse, ndjson buffers, tree/mailbox
 crates/gpui-agent-cli      recipe validate|plan|run|resolve + MCP tools
 examples/recipes/          Sample todo CRUD (JSON + wants)
 docs/RECIPES.md            This note
+docs/TRY_ON_MAC.md         Pull this branch and run it on a laptop
 ```
