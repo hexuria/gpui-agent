@@ -1,0 +1,180 @@
+use crate::host::AgentHost;
+use crate::protocol::{AssertSpec, Op, PROTOCOL_VERSION, Request, Response};
+use crate::tree::UiTree;
+
+/// Optional structured payload returned by `invoke` / mutating ops.
+#[derive(Debug, Clone, Default)]
+pub struct DispatchResult {
+    pub value: Option<serde_json::Value>,
+}
+
+impl DispatchResult {
+    pub fn empty() -> Self {
+        Self { value: None }
+    }
+
+    pub fn json(value: serde_json::Value) -> Self {
+        Self { value: Some(value) }
+    }
+}
+
+/// Single place that turns a request into a response. Used by the TCP
+/// server, the mailbox drain, and unit tests — no network required.
+pub fn handle_request(host: &mut dyn AgentHost, req: Request, expected_token: Option<&str>) -> Response {
+    if req.v != PROTOCOL_VERSION {
+        return Response::err(
+            req.id,
+            format!("unsupported protocol version {} (want {PROTOCOL_VERSION})", req.v),
+        );
+    }
+
+    if let Some(expected) = expected_token {
+        match req.token.as_deref() {
+            Some(got) if got == expected => {}
+            Some(_) => return Response::err(req.id, "invalid automation token"),
+            None => return Response::err(req.id, "automation token required"),
+        }
+    }
+
+    match req.op {
+        Op::Hello | Op::Wait { .. } => {
+            let mut resp = Response::ok(&req.id);
+            resp.hello = Some(host.hello());
+            resp
+        }
+        Op::Snapshot => {
+            let mut resp = Response::ok(&req.id);
+            resp.tree = Some(host.snapshot());
+            resp
+        }
+        Op::Assert { spec } => match assert_tree(&host.snapshot(), &spec) {
+            Ok(()) => Response::ok(req.id),
+            Err(error) => Response::err(req.id, error),
+        },
+        Op::Shutdown => {
+            match host.dispatch(&Op::Shutdown) {
+                Ok(result) => {
+                    let mut resp = Response::ok(req.id);
+                    resp.result = result.value;
+                    resp
+                }
+                Err(error) => Response::err(req.id, error),
+            }
+        }
+        other => match host.dispatch(&other) {
+            Ok(result) => {
+                let mut resp = Response::ok(req.id);
+                resp.result = result.value;
+                resp
+            }
+            Err(error) => Response::err(req.id, error),
+        },
+    }
+}
+
+pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
+    let node = tree.find(&spec.target);
+    let exists = spec.exists.unwrap_or(true);
+
+    match (node, exists) {
+        (None, true) => return Err(format!("node `{}` not found", spec.target)),
+        (Some(_), false) => return Err(format!("node `{}` exists but should be absent", spec.target)),
+        (None, false) => return Ok(()),
+        (Some(node), true) => {
+            if let Some(name) = spec.name.as_deref() {
+                if node.name != name {
+                    return Err(format!(
+                        "node `{}` name: expected {name:?}, got {:?}",
+                        spec.target, node.name
+                    ));
+                }
+            }
+            if let Some(value) = spec.value.as_deref() {
+                if node.value.as_deref() != Some(value) {
+                    return Err(format!(
+                        "node `{}` value: expected {value:?}, got {:?}",
+                        spec.target, node.value
+                    ));
+                }
+            }
+            if let Some(role) = spec.role.as_deref() {
+                if node.role != role {
+                    return Err(format!(
+                        "node `{}` role: expected {role:?}, got {:?}",
+                        spec.target, node.role
+                    ));
+                }
+            }
+            if let Some(checked) = spec.checked {
+                if node.checked != Some(checked) {
+                    return Err(format!(
+                        "node `{}` checked: expected {checked}, got {:?}",
+                        spec.target, node.checked
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{HelloInfo, PlatformKind};
+    use crate::tree::{UiNode, UiTree};
+    use crate::ids;
+
+    struct EmptyHost;
+
+    impl AgentHost for EmptyHost {
+        fn hello(&self) -> HelloInfo {
+            HelloInfo {
+                protocol: PROTOCOL_VERSION,
+                app: "test".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+            }
+        }
+
+        fn snapshot(&self) -> UiTree {
+            UiTree {
+                app: "test".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                nodes: vec![UiNode::new(ids::WINDOW, "window", "Test")],
+            }
+        }
+
+        fn dispatch(&mut self, _op: &Op) -> Result<DispatchResult, String> {
+            Err("unsupported".into())
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_version() {
+        let mut host = EmptyHost;
+        let mut req = Request::new("1", Op::Hello);
+        req.v = 99;
+        let resp = handle_request(&mut host, req, None);
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("unsupported protocol"));
+    }
+
+    #[test]
+    fn rejects_missing_token() {
+        let mut host = EmptyHost;
+        let req = Request::new("1", Op::Hello);
+        let resp = handle_request(&mut host, req, Some("secret"));
+        assert!(!resp.ok);
+    }
+
+    #[test]
+    fn accepts_matching_token() {
+        let mut host = EmptyHost;
+        let req = Request::new("1", Op::Hello).with_token("secret");
+        let resp = handle_request(&mut host, req, Some("secret"));
+        assert!(resp.ok);
+        assert!(resp.hello.is_some());
+    }
+}

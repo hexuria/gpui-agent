@@ -1,0 +1,16 @@
+[package]
+name = "todo-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared todo domain and semantic-tree host used by the GPUI app and the headless agent host."
+
+[dependencies]
+
+[dependencies]
+gpui-agent.workspace = true
+serde.workspace = true
+serde_json.workspace = true

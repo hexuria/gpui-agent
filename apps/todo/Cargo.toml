@@ -1,0 +1,24 @@
+[package]
+name = "todo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "GPUI Kit 0.6 todo desktop app with an opt-in agent control plane."
+
+[features]
+
+[features]
+default = ["agent"]
+# Compile the automation bridge. Still requires GPUI_AGENT=1 at runtime.
+agent = []
+
+[dependencies]
+gpui-kit.workspace = true
+todo-core.workspace = true
+gpui-agent.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
