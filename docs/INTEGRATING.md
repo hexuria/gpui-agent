@@ -114,6 +114,8 @@ the project instructions.
 - [ ] Desktop mailbox drain on the UI thread
 - [ ] Page roots assertable after nav clicks
 - [ ] Optional `invoke` map documented for agents
+- [ ] Optional: check in a `recipe` of those ops so agents run one CLI
+      invocation instead of one process per click (see [RECIPES.md](RECIPES.md))
 - [ ] Product builds leave the feature off
 - [ ] `hello.deliveries` lists `semantic` and, on a painted GPUI window, `virtual`
 - [ ] Virtual click/type/key go through the mailbox → UI thread → `Window::dispatch_event` / `dispatch_keystroke` (never OS HID)

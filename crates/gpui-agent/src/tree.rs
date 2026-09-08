@@ -89,11 +89,21 @@ impl UiNode {
         self.children.iter().find_map(|child| child.find(id))
     }
 
-    pub fn flatten(&self) -> Vec<&UiNode> {
-        let mut out = vec![self];
+    /// Visit this node and descendants without allocating intermediate vecs.
+    pub fn visit<'a, F: FnMut(&'a UiNode)>(&'a self, f: &mut F) {
+        f(self);
         for child in &self.children {
-            out.extend(child.flatten());
+            child.visit(f);
         }
+    }
+
+    pub fn node_count(&self) -> usize {
+        1 + self.children.iter().map(UiNode::node_count).sum::<usize>()
+    }
+
+    pub fn flatten(&self) -> Vec<&UiNode> {
+        let mut out = Vec::with_capacity(self.node_count());
+        self.visit(&mut |node| out.push(node));
         out
     }
 
@@ -120,13 +130,52 @@ impl UiTree {
         self.nodes.iter().find_map(|node| node.find(id))
     }
 
+    pub fn visit<'a, F: FnMut(&'a UiNode)>(&'a self, f: &mut F) {
+        for node in &self.nodes {
+            node.visit(f);
+        }
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.iter().map(UiNode::node_count).sum()
+    }
+
     pub fn flatten(&self) -> Vec<&UiNode> {
-        self.nodes.iter().flat_map(UiNode::flatten).collect()
+        let mut out = Vec::with_capacity(self.node_count());
+        self.visit(&mut |node| out.push(node));
+        out
     }
 
     pub fn apply_bounds_map(&mut self, map: &std::collections::HashMap<String, Bounds>) {
         for node in &mut self.nodes {
             node.apply_bounds_map(map);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flatten_matches_visit_and_preallocates() {
+        let tree = UiTree {
+            app: "t".into(),
+            platform: crate::protocol::PlatformKind::Headless,
+            ready: true,
+            nodes: vec![
+                UiNode::new("a", "window", "A")
+                    .with_child(UiNode::new("b", "button", "B"))
+                    .with_child(
+                        UiNode::new("c", "button", "C").with_child(UiNode::new("d", "note", "D")),
+                    ),
+            ],
+        };
+        assert_eq!(tree.node_count(), 4);
+        let flat: Vec<&str> = tree.flatten().iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(flat, ["a", "b", "c", "d"]);
+        let mut visited = Vec::new();
+        tree.visit(&mut |n| visited.push(n.id.as_str()));
+        assert_eq!(visited, flat);
     }
 }

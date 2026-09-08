@@ -44,12 +44,12 @@ impl AgentMailbox {
     }
 
     pub fn take(&self) -> Vec<MailboxRequest> {
-        self.inner
-            .lock()
-            .expect("mailbox")
-            .drain(..)
-            .map(|(request, sender)| MailboxRequest { request, sender })
-            .collect()
+        let mut inner = self.inner.lock().expect("mailbox");
+        let mut out = Vec::with_capacity(inner.len());
+        for (request, sender) in inner.drain(..) {
+            out.push(MailboxRequest { request, sender });
+        }
+        out
     }
 
     pub fn wait(&self, request: Request, timeout: Duration) -> Result<Response, String> {

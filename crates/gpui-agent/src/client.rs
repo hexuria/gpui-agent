@@ -1,16 +1,63 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
+use crate::ndjson::{read_limited_line_into, write_json_line};
 use crate::protocol::{AssertSpec, DeliveryMode, Op, Request, Response};
-use crate::server::default_addr;
+use crate::server::{MAX_LINE_BYTES, default_addr};
 
-/// Blocking NDJSON client used by the CLI, MCP shim, and tests.
+/// Blocking NDJSON client used by the CLI, MCP shim, recipes, and tests.
+///
+/// After the first successful connect, subsequent [`rpc`](Self::rpc) calls
+/// reuse the same TCP session (one process, one connection, many ops).
+/// Use [`rpc_once`](Self::rpc_once) to force the old per-op reconnect path
+/// (benchmarks / comparison).
 pub struct AgentClient {
     addr: SocketAddr,
     token: Option<String>,
     timeout: Duration,
     next_id: u64,
+    session: Option<LiveSession>,
+}
+
+struct LiveSession {
+    writer: TcpStream,
+    reader: BufReader<TcpStream>,
+    encode_buf: Vec<u8>,
+    line_buf: Vec<u8>,
+}
+
+impl LiveSession {
+    fn open(addr: SocketAddr, timeout: Duration) -> Result<Self, String> {
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_millis(400))
+            .map_err(|err| err.to_string())?;
+        let _ = stream.set_nodelay(true);
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|err| err.to_string())?;
+        stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|err| err.to_string())?;
+        let writer = stream.try_clone().map_err(|err| err.to_string())?;
+        Ok(Self {
+            writer,
+            reader: BufReader::new(stream),
+            encode_buf: Vec::with_capacity(256),
+            line_buf: Vec::with_capacity(256),
+        })
+    }
+
+    fn exchange(&mut self, req: &Request) -> Result<Response, String> {
+        write_json_line(&mut self.writer, &mut self.encode_buf, req)
+            .map_err(|err| err.to_string())?;
+        self.writer.flush().map_err(|err| err.to_string())?;
+        if !read_limited_line_into(&mut self.reader, &mut self.line_buf, MAX_LINE_BYTES)
+            .map_err(|err| err.to_string())?
+        {
+            return Err("connection closed".into());
+        }
+        serde_json::from_slice(&self.line_buf).map_err(|err| format!("bad response: {err}"))
+    }
 }
 
 impl AgentClient {
@@ -20,6 +67,7 @@ impl AgentClient {
             token: None,
             timeout: Duration::from_secs(8),
             next_id: 1,
+            session: None,
         }
     }
 
@@ -41,7 +89,34 @@ impl AgentClient {
         self.timeout = timeout;
     }
 
+    /// True when a live TCP session is being reused.
+    pub fn has_session(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// Drop the live session (next [`rpc`](Self::rpc) reconnects).
+    pub fn close_session(&mut self) {
+        self.session = None;
+    }
+
     pub fn rpc(&mut self, op: Op) -> Result<Response, String> {
+        let req = self.build_request(op);
+        self.roundtrip_retry(&req)
+    }
+
+    /// One request on a fresh connection, then drop it.
+    ///
+    /// This is the pre-experiment CLI shape (one TCP handshake per op) and
+    /// exists so benches can compare it with session reuse.
+    pub fn rpc_once(&mut self, op: Op) -> Result<Response, String> {
+        self.session = None;
+        let req = self.build_request(op);
+        let resp = self.roundtrip_retry(&req)?;
+        self.session = None;
+        Ok(resp)
+    }
+
+    fn build_request(&mut self, op: Op) -> Request {
         let id = {
             let id = self.next_id;
             self.next_id += 1;
@@ -51,14 +126,18 @@ impl AgentClient {
         if let Some(token) = &self.token {
             req.token = Some(token.clone());
         }
+        req
+    }
 
+    fn roundtrip_retry(&mut self, req: &Request) -> Result<Response, String> {
         let mut last_err = String::new();
         let deadline = std::time::Instant::now() + self.timeout;
         while std::time::Instant::now() < deadline {
-            match self.roundtrip(&req) {
+            match self.roundtrip(req) {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
                     last_err = err;
+                    self.session = None;
                     std::thread::sleep(Duration::from_millis(50));
                 }
             }
@@ -69,24 +148,17 @@ impl AgentClient {
         ))
     }
 
-    fn roundtrip(&self, req: &Request) -> Result<Response, String> {
-        let mut stream = TcpStream::connect_timeout(&self.addr, Duration::from_millis(400))
-            .map_err(|err| err.to_string())?;
-        stream
-            .set_read_timeout(Some(self.timeout))
-            .map_err(|err| err.to_string())?;
-        stream
-            .set_write_timeout(Some(self.timeout))
-            .map_err(|err| err.to_string())?;
-        let line = serde_json::to_string(req).map_err(|err| err.to_string())?;
-        writeln!(stream, "{line}").map_err(|err| err.to_string())?;
-        stream.flush().map_err(|err| err.to_string())?;
-        let mut reader = BufReader::new(stream);
-        let mut resp_line = String::new();
-        reader
-            .read_line(&mut resp_line)
-            .map_err(|err| err.to_string())?;
-        serde_json::from_str(resp_line.trim()).map_err(|err| format!("bad response: {err}"))
+    fn roundtrip(&mut self, req: &Request) -> Result<Response, String> {
+        if self.session.is_none() {
+            self.session = Some(LiveSession::open(self.addr, self.timeout)?);
+        }
+        match self.session.as_mut().expect("session").exchange(req) {
+            Ok(resp) => Ok(resp),
+            Err(err) => {
+                self.session = None;
+                Err(err)
+            }
+        }
     }
 
     pub fn expect_ok(&mut self, op: Op) -> Result<Response, String> {

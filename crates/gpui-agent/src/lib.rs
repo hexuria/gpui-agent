@@ -13,6 +13,7 @@ pub mod client;
 pub mod dispatch;
 pub mod host;
 pub mod mailbox;
+pub mod ndjson;
 pub mod protocol;
 pub mod security;
 pub mod server;
@@ -23,6 +24,7 @@ pub use client::AgentClient;
 pub use dispatch::{DispatchResult, authorize_request, handle_request};
 pub use host::AgentHost;
 pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
+pub use ndjson::{read_limited_line, read_limited_line_into, write_json_line};
 pub use protocol::{
     AssertSpec, DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response,
 };
@@ -31,7 +33,7 @@ pub use security::{
 };
 pub use server::{
     AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, MAX_CONNECTIONS, MAX_LINE_BYTES, ServerLimits,
-    default_addr, read_limited_line,
+    default_addr,
 };
 pub use tree::{Bounds, UiNode, UiTree};
 pub use virtual_input::{

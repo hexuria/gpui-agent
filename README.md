@@ -64,6 +64,20 @@ cargo run -p gpui-agent-cli -- assert --id todo-item-1 --absent
 cargo run -p gpui-agent-cli -- shutdown
 ```
 
+**Experimental — one invocation, many ops.** Prefer a recipe over
+spawning `gpui-agent` per click (each spawn is a process + TCP
+handshake). Semantic delivery stays the default; the recipe still
+carries the token on every request:
+
+```bash
+GPUI_AGENT=1 cargo run -p todo-headless
+cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set title="Buy milk"
+```
+
+`recipe validate` / `recipe plan` need no host. `recipe resolve "add a todo titled Buy milk"`
+maps prose through a local schema (fail closed). Design, threat model,
+and what was *not* copied from rwmcp / tmp: [docs/RECIPES.md](docs/RECIPES.md).
+
 The demo host also registers `todo.add` / `todo.toggle` / `todo.delete` / `todo.list` as **`invoke` names** (not CLI subcommands):
 
 ```bash
@@ -86,15 +100,18 @@ The desktop app is a real `gpui-kit = "0.6"` window. The same protocol runs agai
 ## Layout
 
 ```
-apps/todo             GPUI Kit 0.6 desktop demo
-apps/todo-headless    Same domain + protocol, no window
-crates/gpui-agent     Protocol, server, client, security, mailbox
-crates/gpui-agent-cli gpui-agent CLI + tiny MCP stdio shim
-crates/todo-core      Demo store and semantic ids
-docs/PROTOCOL.md      Wire format
-docs/INTEGRATING.md   How to embed AgentHost in another app
-examples/todo.sh      Demo-only invoke wrappers
-scripts/smoke.sh      Full CRUD against the headless host
+apps/todo                  GPUI Kit 0.6 desktop demo
+apps/todo-headless         Same domain + protocol, no window
+crates/gpui-agent          Protocol, server, client, security, mailbox
+crates/gpui-agent-cli      gpui-agent CLI + tiny MCP stdio shim
+crates/gpui-agent-recipe   Experimental recipes + TMP-inspired mapping
+crates/todo-core           Demo store and semantic ids
+docs/PROTOCOL.md           Wire format
+docs/INTEGRATING.md        How to embed AgentHost in another app
+docs/RECIPES.md            Experimental recipes / mapping / perf notes
+examples/todo.sh           Demo-only invoke wrappers
+examples/recipes/          Sample todo CRUD recipe (JSON + wants)
+scripts/smoke.sh           Full CRUD against the headless host
 ```
 
 ## How to run
@@ -119,7 +136,7 @@ Then the same generic CLI commands. Without `GPUI_AGENT=1` the window is a norma
 A cloud VM with Xvfb/`DISPLAY` may still fail if Vulkan/GPU is missing. That is a **display/GPU** limit, not a protocol limit. Use `todo-headless` and `cargo test` there.
 
 ```bash
-cargo test -p gpui-agent -p todo-core -p gpui-agent-cli
+cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 ```
 
 ## Agent loop (perceive → act → verify)

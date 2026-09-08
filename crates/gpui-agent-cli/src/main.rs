@@ -1,4 +1,5 @@
 mod mcp;
+mod recipe_cmd;
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -9,6 +10,7 @@ use clap::{Parser, Subcommand};
 use gpui_agent::DEFAULT_ADDR_STR;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
+use recipe_cmd::RecipeCommand;
 
 /// Drive any GPUI Kit app over the opt-in agent protocol (not CDP).
 ///
@@ -31,7 +33,8 @@ struct Cli {
 const AFTER_HELP: &str = "\
 App-specific helpers (for example the sample todo app) live in examples/,
 not in this CLI. Navigate pages with click + assert on stable ids, or invoke
-a command the host registered.";
+a command the host registered. Batch many ops in one process with
+`recipe validate|plan|run` (see docs/RECIPES.md).";
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -103,6 +106,11 @@ enum Command {
     Shutdown,
     /// Tiny MCP stdio server exposing the same generic tools.
     Mcp,
+    /// Experimental: validate / plan / run a recipe of protocol ops.
+    Recipe {
+        #[command(subcommand)]
+        action: RecipeCommand,
+    },
 }
 
 fn main() -> ExitCode {
@@ -121,6 +129,19 @@ fn run() -> Result<()> {
         .with_context(|| format!("refusing non-loopback agent address {}", cli.addr))?;
     if matches!(cli.command, Command::Mcp) {
         return mcp::run(cli.addr, cli.token);
+    }
+    if let Command::Recipe { action } = cli.command {
+        let needs_client = matches!(action, RecipeCommand::Run { .. });
+        let client = if needs_client {
+            let mut client = AgentClient::connect(cli.addr);
+            if let Some(token) = cli.token {
+                client = client.with_token(token);
+            }
+            Some(client)
+        } else {
+            None
+        };
+        return recipe_cmd::run(client, action);
     }
 
     let mut client = AgentClient::connect(cli.addr);
@@ -179,7 +200,7 @@ fn run() -> Result<()> {
         }
         Command::Invoke { name, args } => print_resp(rpc(client.invoke(name, parse_args(&args)?))?),
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
-        Command::Mcp => unreachable!(),
+        Command::Mcp | Command::Recipe { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -232,6 +253,7 @@ mod tests {
                 "invoke",
                 "shutdown",
                 "mcp",
+                "recipe",
             ]
         );
         assert!(!names.iter().any(|n| n == "todo"));
@@ -381,6 +403,36 @@ mod tests {
     }
 
     #[test]
+    fn recipe_subcommands_are_validate_plan_run_resolve() {
+        let validate = Cli::try_parse_from(["gpui-agent", "recipe", "validate", "x.json"]).unwrap();
+        match validate.command {
+            Command::Recipe {
+                action: RecipeCommand::Validate { path },
+            } => assert_eq!(path.as_os_str(), "x.json"),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let run = Cli::try_parse_from([
+            "gpui-agent",
+            "recipe",
+            "run",
+            "x.wants",
+            "--set",
+            "title=Milk",
+            "--yes",
+        ])
+        .unwrap();
+        match run.command {
+            Command::Recipe {
+                action: RecipeCommand::Run { yes, set, .. },
+            } => {
+                assert!(yes);
+                assert_eq!(set, vec!["title=Milk"]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
     fn invoke_without_args_is_empty_object() {
         let cli = Cli::try_parse_from(["gpui-agent", "invoke", "demo.ping"]).unwrap();
         match cli.command {
@@ -394,13 +446,8 @@ mod tests {
 
     #[test]
     fn cli_addr_must_be_loopback() {
-        let remote = Cli::try_parse_from([
-            "gpui-agent",
-            "--addr",
-            "8.8.8.8:17421",
-            "hello",
-        ])
-        .unwrap();
+        let remote =
+            Cli::try_parse_from(["gpui-agent", "--addr", "8.8.8.8:17421", "hello"]).unwrap();
         assert!(gpui_agent::ensure_loopback(remote.addr).is_err());
 
         let local = Cli::try_parse_from(["gpui-agent", "hello"]).unwrap();

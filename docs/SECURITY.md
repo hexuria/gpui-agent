@@ -96,6 +96,16 @@ Same generic ops as the CLI. Stdio lines are now capped at `MAX_LINE_BYTES`.
 Framing is still newline JSON, not MCP `Content-Length` (product gap).
 The parent process is trusted.
 
+### Recipes (experimental)
+
+`gpui-agent recipe run` and MCP `recipe_run` compile a local JSON/wants
+file into ordinary protocol ops and send them on **one reused TCP
+session**. They do **not** bypass token, version, loopback, or
+line/connection/mailbox caps. Each step is still `authorize_request`.
+Unknown `invoke` names fail closed against the local schema registry.
+Plans that include `shutdown` require `--yes`. Recipes never spawn a
+shell. See [RECIPES.md](RECIPES.md#threat-model-recipes-must-not-bypass-caps).
+
 ### Logging of secrets
 
 Startup logs print the bind address, not the token. Responses do not
