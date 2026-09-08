@@ -329,9 +329,6 @@ fn tokenize(line: &str) -> Result<Vec<String>, String> {
     while let Some(c) = chars.next() {
         match c {
             '"' | '\'' => {
-                if !buf.is_empty() {
-                    return Err("unexpected quote".into());
-                }
                 let quote = c;
                 loop {
                     match chars.next() {
@@ -345,7 +342,9 @@ fn tokenize(line: &str) -> Result<Vec<String>, String> {
                         None => return Err("unterminated quote".into()),
                     }
                 }
-                tokens.push(std::mem::take(&mut buf));
+                if chars.peek().is_none_or(|ch| ch.is_whitespace()) {
+                    tokens.push(std::mem::take(&mut buf));
+                }
             }
             ch if ch.is_whitespace() => {
                 if !buf.is_empty() {
@@ -564,6 +563,15 @@ mod tests {
         validate_recipe(&recipe, &todo_registry()).unwrap();
         assert_eq!(recipe.steps.len(), 2);
         assert_eq!(recipe.steps[1].needs, vec!["set"]);
+    }
+
+    #[test]
+    fn wants_attached_quotes_become_one_token() {
+        let recipe = parse_wants(r#"invoke todo.add title="Buy milk""#, "q").unwrap();
+        match &recipe.steps[0].op {
+            Op::Invoke { args, .. } => assert_eq!(args["title"], "Buy milk"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

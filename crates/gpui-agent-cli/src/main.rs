@@ -433,6 +433,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn invoke_without_args_is_empty_object() {
         let cli = Cli::try_parse_from(["gpui-agent", "invoke", "demo.ping"]).unwrap();
         match cli.command {

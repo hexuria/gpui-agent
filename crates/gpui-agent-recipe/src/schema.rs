@@ -70,7 +70,8 @@ impl OpSchema {
             ));
         }
         for req in &self.required {
-            if !self.args.contains_key(req) && *req != "target" && *req != "text" && *req != "value"
+            if !self.args.contains_key(req)
+                && !matches!(req.as_str(), "target" | "text" | "value" | "key" | "name")
             {
                 return Err(format!(
                     "schema `{}` lists required `{req}` with no args entry",

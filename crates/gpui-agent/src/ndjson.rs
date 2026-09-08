@@ -76,7 +76,6 @@ pub fn read_limited_line<R: BufRead>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     #[test]
     fn write_json_line_reuses_buffer() {

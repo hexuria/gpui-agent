@@ -346,7 +346,7 @@ mod tests {
     use crate::protocol::{HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request};
     use crate::tree::UiTree;
     use crate::{DeliveryMode, DispatchResult};
-    use std::io::Cursor;
+    use std::io::{BufRead, Cursor, Write};
 
     struct EmptyHost;
 
