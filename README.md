@@ -190,15 +190,16 @@ What shipped instead (closer to Flutter semantics + Native SDK):
 
 ## Security / trust model
 
-Automation is **opt-in and off by default**.
+Automation is **opt-in and off by default**. Full audit: [docs/SECURITY.md](docs/SECURITY.md).
 
 | Gate | Default |
 | --- | --- |
 | Compile | Feature-gate the bridge (this demo’s `todo` feature `agent` is on; a product build should default it **off**) |
 | Runtime | `GPUI_AGENT=1` (`true`/`yes`/`on` also work) |
 | Release binaries | Also require `GPUI_AGENT_ALLOW_RELEASE=1` |
-| Bind address | Loopback only (`127.0.0.1:17421`). Non-loopback `GPUI_AGENT_ADDR` is refused |
-| Optional token | `GPUI_AGENT_TOKEN` — every request must repeat it |
+| Bind address | Loopback only (`127.0.0.1:17421`). Non-loopback `GPUI_AGENT_ADDR` is refused. The CLI also refuses a non-loopback `--addr`. |
+| Optional token | `GPUI_AGENT_TOKEN` — every request must repeat it. **Set this on shared machines.** Without it, any local process can drive the UI. |
+| DoS caps | 1 MiB NDJSON line, 32 concurrent connections, 128 mailbox depth, 30s idle timeout |
 
 Anyone who can connect to that loopback socket can drive the UI as the user. Treat this as a **developer/agent tool**, not a remote API. Do not enable it in shipping product builds. There is no sandbox, no origin check, and no encryption beyond “it never leaves the machine.”
 

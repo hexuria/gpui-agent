@@ -3,7 +3,9 @@
 Newline-delimited JSON on a loopback TCP socket. One request object, one
 response object. This is **not** Chrome DevTools Protocol.
 
-Default bind: `127.0.0.1:17421` (`GPUI_AGENT_ADDR`).
+Default bind: `127.0.0.1:17421` (`GPUI_AGENT_ADDR`). The server and the
+CLI refuse non-loopback addresses. Lines larger than 1 MiB are rejected
+and the connection is closed. Trust model and audit: [SECURITY.md](SECURITY.md).
 
 The protocol is **app-agnostic**. Any GPUI Kit app that implements
 `AgentHost`, assigns **stable ids**, and starts the server under

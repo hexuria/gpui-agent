@@ -1,20 +1,45 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::dispatch::handle_request;
+use crate::dispatch::{authorize_request, handle_request};
 use crate::host::AgentHost;
 use crate::mailbox::AgentMailbox;
-use crate::protocol::{Op, Request};
+use crate::protocol::{Op, Request, Response};
 
 pub const DEFAULT_ADDR_STR: &str = "127.0.0.1:17421";
 pub const DEFAULT_PORT: u16 = 17421;
 
+/// Reject a single NDJSON line larger than this (1 MiB).
+pub const MAX_LINE_BYTES: usize = 1024 * 1024;
+/// Drop new TCP clients when this many handler threads are already running.
+pub const MAX_CONNECTIONS: usize = 32;
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub fn default_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT))
+}
+
+/// Tunables for the localhost server. Defaults are conservative for a
+/// developer control plane; tests may tighten them.
+#[derive(Debug, Clone)]
+pub struct ServerLimits {
+    pub max_line_bytes: usize,
+    pub max_connections: usize,
+    pub idle_timeout: Duration,
+}
+
+impl Default for ServerLimits {
+    fn default() -> Self {
+        Self {
+            max_line_bytes: MAX_LINE_BYTES,
+            max_connections: MAX_CONNECTIONS,
+            idle_timeout: IDLE_TIMEOUT,
+        }
+    }
 }
 
 /// Localhost NDJSON server. One JSON object per line, request → response.
@@ -22,16 +47,26 @@ pub struct AgentServer {
     listener: TcpListener,
     token: Option<String>,
     shutdown: Arc<AtomicBool>,
+    limits: ServerLimits,
 }
 
 impl AgentServer {
     pub fn bind(addr: SocketAddr, token: Option<String>) -> std::io::Result<Self> {
+        Self::bind_with_limits(addr, token, ServerLimits::default())
+    }
+
+    pub fn bind_with_limits(
+        addr: SocketAddr,
+        token: Option<String>,
+        limits: ServerLimits,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(false)?;
         Ok(Self {
             listener,
             token,
             shutdown: Arc::new(AtomicBool::new(false)),
+            limits,
         })
     }
 
@@ -48,16 +83,25 @@ impl AgentServer {
     pub fn serve_host<H: AgentHost + 'static>(self, host: Arc<Mutex<H>>) {
         let token = self.token.clone();
         let shutdown = self.shutdown.clone();
+        let limits = self.limits.clone();
         self.listener.set_nonblocking(true).ok();
+        let inflight = Arc::new(AtomicUsize::new(0));
 
         while !shutdown.load(Ordering::SeqCst) {
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    if !claim_connection(&inflight, limits.max_connections) {
+                        drop(stream);
+                        continue;
+                    }
                     let host = host.clone();
                     let token = token.clone();
                     let shutdown = shutdown.clone();
+                    let inflight = inflight.clone();
+                    let limits = limits.clone();
                     thread::spawn(move || {
-                        handle_stream_host(stream, host, token.as_deref(), &shutdown);
+                        let _guard = InflightGuard(inflight);
+                        handle_stream_host(stream, host, token.as_deref(), &shutdown, &limits);
                     });
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -72,21 +116,31 @@ impl AgentServer {
     pub fn serve_mailbox(self, mailbox: AgentMailbox, timeout: Duration) {
         let token = self.token.clone();
         let shutdown = self.shutdown.clone();
+        let limits = self.limits.clone();
         self.listener.set_nonblocking(true).ok();
+        let inflight = Arc::new(AtomicUsize::new(0));
 
         while !shutdown.load(Ordering::SeqCst) {
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    if !claim_connection(&inflight, limits.max_connections) {
+                        drop(stream);
+                        continue;
+                    }
                     let mailbox = mailbox.clone();
                     let token = token.clone();
                     let shutdown = shutdown.clone();
+                    let inflight = inflight.clone();
+                    let limits = limits.clone();
                     thread::spawn(move || {
+                        let _guard = InflightGuard(inflight);
                         handle_stream_mailbox(
                             stream,
                             mailbox,
                             token.as_deref(),
                             timeout,
                             &shutdown,
+                            &limits,
                         );
                     });
                 }
@@ -99,41 +153,120 @@ impl AgentServer {
     }
 }
 
+struct InflightGuard(Arc<AtomicUsize>);
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn claim_connection(inflight: &AtomicUsize, max: usize) -> bool {
+    let prev = inflight.fetch_add(1, Ordering::SeqCst);
+    if prev >= max {
+        inflight.fetch_sub(1, Ordering::SeqCst);
+        false
+    } else {
+        true
+    }
+}
+
+fn prepare_stream(stream: &TcpStream, idle: Duration) -> bool {
+    let _ = stream.set_nodelay(true);
+    stream.set_read_timeout(Some(idle)).is_ok() && stream.set_write_timeout(Some(idle)).is_ok()
+}
+
+fn write_resp(writer: &mut TcpStream, resp: &Response) {
+    if let Ok(line) = serde_json::to_string(resp) {
+        let _ = writeln!(writer, "{line}");
+    }
+}
+
+/// Read one NDJSON line, capped at `max_bytes` (excluding the newline).
+///
+/// Returns `Ok(None)` on EOF. Oversized lines are `ErrorKind::InvalidData`
+/// and consume at most `max_bytes + 1` from the reader so the caller can
+/// close rather than resync.
+pub fn read_limited_line<R: BufRead>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::new();
+    let n = reader
+        .by_ref()
+        .take(max_bytes as u64 + 1)
+        .read_until(b'\n', &mut buf)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if buf.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "line too long",
+        ));
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+    }
+    String::from_utf8(buf).map(Some).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "line is not valid UTF-8")
+    })
+}
+
 fn handle_stream_host<H: AgentHost>(
     stream: TcpStream,
     host: Arc<Mutex<H>>,
     token: Option<&str>,
     shutdown: &AtomicBool,
+    limits: &ServerLimits,
 ) {
-    let _ = stream.set_nodelay(true);
+    if !prepare_stream(&stream, limits.idle_timeout) {
+        return;
+    }
     let mut writer = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
     };
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
+    let mut reader = BufReader::new(stream);
+    loop {
+        let line = match read_limited_line(&mut reader, limits.max_line_bytes) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
+                write_resp(
+                    &mut writer,
+                    &Response::err("?", format!("bad request: {err}")),
+                );
+                break;
+            }
+            Err(_) => break,
+        };
         if line.trim().is_empty() {
             continue;
         }
         let req: Request = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(err) => {
-                let _ = writeln!(
-                    writer,
-                    "{}",
-                    serde_json::to_string(&crate::Response::err("?", format!("bad json: {err}")))
-                        .unwrap()
+                write_resp(
+                    &mut writer,
+                    &Response::err("?", format!("bad json: {err}")),
                 );
                 continue;
             }
         };
+        if let Err(resp) = authorize_request(&req, token) {
+            write_resp(&mut writer, &resp);
+            break;
+        }
         let shutdown_op = matches!(req.op, Op::Shutdown);
         let resp = {
             let mut host = host.lock().expect("host");
             handle_request(&mut *host, req, token)
         };
-        let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
+        write_resp(&mut writer, &resp);
         if shutdown_op {
             shutdown.store(true, Ordering::SeqCst);
             break;
@@ -147,45 +280,53 @@ fn handle_stream_mailbox(
     token: Option<&str>,
     timeout: Duration,
     shutdown: &AtomicBool,
+    limits: &ServerLimits,
 ) {
-    let _ = stream.set_nodelay(true);
+    if !prepare_stream(&stream, limits.idle_timeout) {
+        return;
+    }
     let mut writer = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
     };
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
+    let mut reader = BufReader::new(stream);
+    loop {
+        let line = match read_limited_line(&mut reader, limits.max_line_bytes) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
+                write_resp(
+                    &mut writer,
+                    &Response::err("?", format!("bad request: {err}")),
+                );
+                break;
+            }
+            Err(_) => break,
+        };
         if line.trim().is_empty() {
             continue;
         }
         let req: Request = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(err) => {
-                let _ = writeln!(
-                    writer,
-                    "{}",
-                    serde_json::to_string(&crate::Response::err("?", format!("bad json: {err}")))
-                        .unwrap()
+                write_resp(
+                    &mut writer,
+                    &Response::err("?", format!("bad json: {err}")),
                 );
                 continue;
             }
         };
-        if let Some(expected) = token {
-            match req.token.as_deref() {
-                Some(got) if got == expected => {}
-                _ => {
-                    let resp = crate::Response::err(req.id, "automation token required or invalid");
-                    let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
-                    continue;
-                }
-            }
+        // Authorize here so virtual ops (which skip handle_request on the
+        // UI thread) still get version + token checks.
+        if let Err(resp) = authorize_request(&req, token) {
+            write_resp(&mut writer, &resp);
+            break;
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
         let resp = mailbox
             .wait(req, timeout)
-            .unwrap_or_else(|err| crate::Response::err("?", err));
-        let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
+            .unwrap_or_else(|err| Response::err("?", err));
+        write_resp(&mut writer, &resp);
         if shutdown_op {
             shutdown.store(true, Ordering::SeqCst);
             break;
@@ -218,4 +359,171 @@ pub fn spawn_mailbox(
     let flag = server.shutdown_handle();
     thread::spawn(move || server.serve_mailbox(mailbox, timeout));
     Ok((bound, flag))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::AgentClient;
+    use crate::protocol::{HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request};
+    use crate::tree::UiTree;
+    use crate::{DispatchResult, DeliveryMode};
+    use std::io::Cursor;
+
+    struct EmptyHost;
+
+    impl AgentHost for EmptyHost {
+        fn hello(&self) -> HelloInfo {
+            HelloInfo {
+                protocol: PROTOCOL_VERSION,
+                app: "test".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                deliveries: vec![DeliveryMode::Semantic],
+            }
+        }
+
+        fn snapshot(&self) -> UiTree {
+            UiTree {
+                app: "test".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                nodes: vec![],
+            }
+        }
+
+        fn dispatch(&mut self, _op: &Op) -> Result<DispatchResult, String> {
+            Ok(DispatchResult::empty())
+        }
+    }
+
+    fn spawn_test_host(
+        token: Option<String>,
+        limits: ServerLimits,
+    ) -> (SocketAddr, Arc<AtomicBool>) {
+        let host = Arc::new(Mutex::new(EmptyHost));
+        let server =
+            AgentServer::bind_with_limits("127.0.0.1:0".parse().unwrap(), token, limits).unwrap();
+        let bound = server.local_addr().unwrap();
+        let flag = server.shutdown_handle();
+        thread::spawn(move || server.serve_host(host));
+        (bound, flag)
+    }
+
+    #[test]
+    fn limited_line_accepts_short_utf8() {
+        let mut cursor = Cursor::new("hello\nmore");
+        let line = read_limited_line(&mut cursor, 16).unwrap().unwrap();
+        assert_eq!(line, "hello");
+    }
+
+    #[test]
+    fn limited_line_rejects_oversize() {
+        let mut cursor = Cursor::new("x".repeat(8) + "\n");
+        let err = read_limited_line(&mut cursor, 4).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn oversized_line_is_rejected_over_tcp() {
+        let (addr, shutdown) = spawn_test_host(
+            None,
+            ServerLimits {
+                max_line_bytes: 64,
+                max_connections: 4,
+                idle_timeout: Duration::from_secs(2),
+            },
+        );
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let attack = "x".repeat(200) + "\n";
+        stream.write_all(attack.as_bytes()).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut resp = String::new();
+        reader.read_line(&mut resp).unwrap();
+        assert!(resp.contains("line too long"), "{resp}");
+
+        // Connection must not stay open for a follow-up hello.
+        let mut hello = Request::new("1", Op::Hello);
+        hello.v = PROTOCOL_VERSION;
+        let line = serde_json::to_string(&hello).unwrap();
+        let write_ok = writeln!(reader.get_mut(), "{line}");
+        assert!(write_ok.is_err() || {
+            let mut second = String::new();
+            reader.read_line(&mut second).is_err() || second.is_empty()
+        });
+
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn token_mismatch_disconnects() {
+        let (addr, shutdown) = spawn_test_host(
+            Some("correct-token".into()),
+            ServerLimits {
+                max_line_bytes: 4096,
+                max_connections: 4,
+                idle_timeout: Duration::from_secs(2),
+            },
+        );
+
+        let mut client = AgentClient::connect(addr)
+            .with_token("wrong-token")
+            .with_timeout(Duration::from_secs(2));
+        let resp = client.rpc(Op::Hello).expect("got a response");
+        assert!(!resp.ok);
+        assert!(
+            resp.error.as_deref() == Some("invalid automation token"),
+            "{resp:?}"
+        );
+
+        // Next RPC must open a new connection (old one is closed). Hello
+        // with the right token still works.
+        let mut ok = AgentClient::connect(addr)
+            .with_token("correct-token")
+            .with_timeout(Duration::from_secs(2));
+        assert!(ok.expect_ok(Op::Hello).is_ok());
+
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn connection_cap_drops_extra_clients() {
+        let (addr, shutdown) = spawn_test_host(
+            None,
+            ServerLimits {
+                max_line_bytes: 4096,
+                max_connections: 1,
+                idle_timeout: Duration::from_secs(3),
+            },
+        );
+
+        let holder = TcpStream::connect(addr).unwrap();
+        // Give the accept loop time to claim the slot.
+        thread::sleep(Duration::from_millis(80));
+
+        let mut extra = TcpStream::connect(addr).unwrap();
+        extra
+            .set_read_timeout(Some(Duration::from_millis(400)))
+            .unwrap();
+        let hello = serde_json::to_string(&Request::new("1", Op::Hello)).unwrap();
+        let _ = writeln!(extra, "{hello}");
+        let mut buf = String::new();
+        let mut reader = BufReader::new(extra);
+        let read = reader.read_line(&mut buf);
+        assert!(
+            read.is_err() || buf.is_empty(),
+            "over-cap client should not be served, got {read:?} {buf:?}"
+        );
+
+        drop(holder);
+        thread::sleep(Duration::from_millis(80));
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        assert!(client.expect_ok(Op::Hello).is_ok());
+
+        shutdown.store(true, Ordering::SeqCst);
+    }
 }

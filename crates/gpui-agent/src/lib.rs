@@ -20,14 +20,19 @@ pub mod tree;
 pub mod virtual_input;
 
 pub use client::AgentClient;
-pub use dispatch::{DispatchResult, handle_request};
+pub use dispatch::{DispatchResult, authorize_request, handle_request};
 pub use host::AgentHost;
-pub use mailbox::{AgentMailbox, MailboxRequest};
+pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use protocol::{
     AssertSpec, DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response,
 };
-pub use security::{AgentConfig, SecurityError, from_env};
-pub use server::{AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, default_addr};
+pub use security::{
+    AgentConfig, SecurityError, ensure_loopback, from_env, is_loopback_addr, tokens_match,
+};
+pub use server::{
+    AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, MAX_CONNECTIONS, MAX_LINE_BYTES, ServerLimits,
+    default_addr, read_limited_line,
+};
 pub use tree::{Bounds, UiNode, UiTree};
 pub use virtual_input::{
     AgentCursor, VIRTUAL_UNAVAILABLE, VirtualPointerClick, hit_point, keystroke_token, plan_click,
