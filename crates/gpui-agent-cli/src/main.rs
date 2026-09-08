@@ -175,10 +175,6 @@ fn rpc<T>(result: std::result::Result<T, String>) -> Result<T> {
 fn parse_args(pairs: &[String]) -> Result<serde_json::Value> {
     let mut map = serde_json::Map::new();
     for pair in pairs {
-
-fn parse_args(pairs: &[String]) -> Result<serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    for pair in pairs {
         let (key, raw) = pair
             .split_once('=')
             .with_context(|| format!("expected KEY=VALUE, got {pair}"))?;

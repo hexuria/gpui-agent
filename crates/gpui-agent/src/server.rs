@@ -20,11 +20,6 @@ pub fn default_addr() -> SocketAddr {
 /// Localhost NDJSON server. One JSON object per line, request → response.
 pub struct AgentServer {
     listener: TcpListener,
-}
-
-/// Localhost NDJSON server. One JSON object per line, request → response.
-pub struct AgentServer {
-    listener: TcpListener,
     token: Option<String>,
     shutdown: Arc<AtomicBool>,
 }

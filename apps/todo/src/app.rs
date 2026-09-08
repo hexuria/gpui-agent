@@ -6,12 +6,12 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use todo_core::TodoStore;
 
-
 #[cfg(feature = "agent")]
 use gpui_agent::mailbox::AgentMailbox;
 use gpui_agent::protocol::PlatformKind;
 
 pub struct TodoApp {
+    store: TodoStore,
     input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
     #[cfg(feature = "agent")]
@@ -21,7 +21,7 @@ pub struct TodoApp {
 }
 
 impl TodoApp {
-
+    #[cfg(feature = "agent")]
     pub fn new(window: &mut Window, cx: &mut Context<Self>, mailbox: Option<AgentMailbox>) -> Self {
         let mut app = Self::build(window, cx);
         app.mailbox = mailbox;
@@ -40,24 +40,9 @@ impl TodoApp {
         app
     }
 
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(16))
-                        .await;
-                    if this.update(cx, |_, cx| cx.notify()).is_err() {
-                        break;
-                    }
-                }
-            }));
-        }
-        app
-    }
-
-    }
-
     #[cfg(not(feature = "agent"))]
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::build(window, cx)
-    }
     }
     }
 
@@ -73,6 +58,9 @@ impl TodoApp {
                 this.add_from_input(window, cx);
             }
         }));
+
+        Self {
+            store: TodoStore::new(PlatformKind::Desktop),
             _subscriptions: subscriptions,
             #[cfg(feature = "agent")]
             mailbox: None,
@@ -81,8 +69,11 @@ impl TodoApp {
         }
     }
 
-    }
-
+    fn add_from_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self.input.read(cx).value().to_string();
+        if self.store.add(title).is_ok() {
+            self.input.update(cx, |state, cx| {
+                state.set_value("", window, cx);
             });
             cx.notify();
         }
@@ -93,13 +84,6 @@ impl TodoApp {
     }
 
     #[cfg(feature = "agent")]
-        }
-    }
-
-    #[cfg(feature = "agent")]
-    fn apply_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mailbox) = self.mailbox.clone() else {
-            return;
         for posted in mailbox.take() {
             self.store
                 .set_draft(self.input.read(cx).value().to_string());
@@ -108,8 +92,6 @@ impl TodoApp {
             let draft = self.store.draft().to_string();
             if draft != self.input.read(cx).value().to_string() {
                 self.input.update(cx, |state, cx| {
-                self.input.update(cx, |state, cx| {
-            return;
         };
         for posted in mailbox.take() {
             self.store
@@ -128,6 +110,55 @@ impl TodoApp {
 
         let bg = cx.theme().background;
         let fg = cx.theme().foreground;
+        let status = match items.len() {
+            0 => "No todos".to_string(),
+            n => {
+                let done = items.iter().filter(|item| item.done).count();
+                format!("{n} todos · {done} done")
+            }
+        };
+
+        v_flex()
+            .id("todo-window")
+            .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .px_6()
+            .py_5()
+            .gap_4()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Agent Todo"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child("A GPUI Kit 0.6 app with an in-process agent control plane."),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .w_full()
+                    .child(div().id("todo-input").flex_1().child(Input::new(&self.input)))
+                    .child(
+                        Button::new("todo-add")
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label("Add")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_from_input(window, cx);
+                            })),
+                    ),
+        #[cfg(feature = "agent")]
+        self.apply_agent(window, cx);
+
         let bg = cx.theme().background;
         let fg = cx.theme().foreground;
         let muted = cx.theme().muted;
@@ -176,57 +207,6 @@ impl TodoApp {
                                                 }
                             })),
                     ),
-        #[cfg(feature = "agent")]
-        self.apply_agent(window, cx);
-
-        let bg = cx.theme().background;
-        let fg = cx.theme().foreground;
-        let muted = cx.theme().muted;
-        let border = cx.theme().border;
-        let items = self.store.items().to_vec();
-        let status = match items.len() {
-            0 => "No todos".to_string(),
-                    .child(status),
-            )
-    }
-        v_flex()
-            .id("todo-window")
-            .size_full()
-            .bg(bg)
-            .text_color(fg)
-            .px_6()
-            .py_5()
-            .gap_4()
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let children: Vec<AnyElement> = if items.is_empty() {
-            vec![
-                div()
-                    .id("todo-empty")
-                    .p_4()
-                    .rounded_md()
-                    .border_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(muted)
-                            .child("A GPUI Kit 0.6 app with an in-process agent control plane."),
-                    ),
-            )
-                .into_iter()
-                .map(|item| self.render_item(item, muted, border, cx))
-                .collect()
-        };
-
-        v_flex()
-            .id("todo-list")
-            .flex_1()
-            .gap_2()
-            .w_full()
-            .children(children)
-    }
-                            })),
-                    ),
             )
             .child(self.render_list(items, muted, border, cx))
             .child(
@@ -243,6 +223,10 @@ impl TodoApp {
     fn render_list(
         &self,
         items: Vec<todo_core::Todo>,
+        muted: Hsla,
+        border: Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
             .border_1()
             .border_color(border)
             .items_center()
@@ -265,22 +249,16 @@ impl TodoApp {
             .child(
                 div()
                     .flex_1()
-            .child(
-                div()
-                    .flex_1()
-                .map(|item| self.render_item(item, muted, border, cx))
+        v_flex()
+            .id("todo-list")
+            .flex_1()
+            .gap_2()
                 Button::new(delete_id)
                     .ghost()
                     .danger()
                     .label("Delete")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let _ = this.store.delete(item_id);
-            .children(children)
-    }
-
-    fn render_item(
-        &self,
-        item: todo_core::Todo,
         muted: Hsla,
         border: Hsla,
         cx: &mut Context<Self>,
