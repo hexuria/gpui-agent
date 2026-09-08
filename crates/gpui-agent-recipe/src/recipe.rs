@@ -623,4 +623,277 @@ assert todo-item-1 name=$title checked=false
         let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
         assert!(err.contains("not declared"), "{err}");
     }
+
+    #[test]
+    fn empty_source_is_rejected() {
+        let err = parse_recipe_source("", "empty", false).unwrap_err();
+        assert!(err.contains("no steps"), "{err}");
+        let err = parse_recipe_source("   \n# only comments\n\n", "c", false).unwrap_err();
+        assert!(err.contains("no steps"), "{err}");
+    }
+
+    #[test]
+    fn empty_json_steps_are_rejected() {
+        let recipe = Recipe::from_json(r#"{"name":"x","steps":[]}"#).unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(err.contains("no steps"), "{err}");
+    }
+
+    #[test]
+    fn bad_json_is_rejected() {
+        let err = parse_recipe_source("{", "bad", true).unwrap_err();
+        assert!(err.contains("recipe json"), "{err}");
+        let err = parse_recipe_source("not-json", "bad", true).unwrap_err();
+        assert!(err.contains("recipe json"), "{err}");
+    }
+
+    #[test]
+    fn empty_file_via_parse_recipe() {
+        let path = std::env::temp_dir().join("gpui-agent-empty.wants");
+        std::fs::write(&path, "").unwrap();
+        let err = parse_recipe(&path).unwrap_err();
+        assert!(err.contains("no steps"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn unknown_wants_op_is_rejected() {
+        let err = parse_wants("frobnicate todo-add", "x").unwrap_err();
+        assert!(err.contains("unknown op"), "{err}");
+    }
+
+    #[test]
+    fn missing_required_params_at_apply() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "p",
+            "params": ["title"],
+            "steps": [{"id": "x", "op": "set_value", "target": "todo-input", "value": "$title"}]
+        }"#,
+        )
+        .unwrap();
+        validate_recipe(&recipe, &todo_registry()).unwrap();
+        let err = apply_params(&recipe, &BTreeMap::new()).unwrap_err();
+        assert!(err.contains("missing --set title"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_step_ids_are_rejected() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "dup",
+            "steps": [
+                {"id": "a", "op": "hello"},
+                {"id": "a", "op": "snapshot"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(err.contains("duplicate"), "{err}");
+    }
+
+    #[test]
+    fn empty_step_id_and_empty_name_are_rejected() {
+        let recipe = Recipe::from_json(r#"{"name":"","steps":[{"id":"a","op":"hello"}]}"#).unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(err.contains("name"), "{err}");
+
+        let recipe = Recipe::from_json(r#"{"name":"x","steps":[{"id":"","op":"hello"}]}"#).unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(err.contains("step id"), "{err}");
+    }
+
+    #[test]
+    fn unknown_and_self_needs_are_rejected() {
+        let missing = Recipe::from_json(
+            r#"{"name":"x","steps":[{"id":"a","op":"hello","needs":["ghost"]}]}"#,
+        )
+        .unwrap();
+        let err = validate_recipe(&missing, &todo_registry()).unwrap_err();
+        assert!(err.contains("unknown"), "{err}");
+
+        let sel =
+            Recipe::from_json(r#"{"name":"x","steps":[{"id":"a","op":"hello","needs":["a"]}]}"#)
+                .unwrap();
+        let err = validate_recipe(&sel, &todo_registry()).unwrap_err();
+        assert!(err.contains("itself"), "{err}");
+    }
+
+    #[test]
+    fn unsupported_recipe_version() {
+        let recipe =
+            Recipe::from_json(r#"{"v":99,"name":"x","steps":[{"id":"a","op":"hello"}]}"#).unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(err.contains("unsupported recipe version"), "{err}");
+    }
+
+    #[test]
+    fn too_many_steps_are_rejected() {
+        let steps: Vec<serde_json::Value> = (0..=MAX_RECIPE_STEPS)
+            .map(|i| serde_json::json!({"id": format!("s{i}"), "op": "hello"}))
+            .collect();
+        let recipe =
+            Recipe::from_json(&serde_json::json!({"name":"big","steps": steps}).to_string())
+                .unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(err.contains("max"), "{err}");
+    }
+
+    #[test]
+    fn invoke_protocol_name_is_not_an_invoke_schema() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"x","steps":[{"id":"a","op":"invoke","name":"click","args":{}}]}"#,
+        )
+        .unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(err.contains("not an invoke schema"), "{err}");
+    }
+
+    #[test]
+    fn wants_skips_comments_and_blanks() {
+        let recipe = parse_wants("\n# heading\n\nhello\n  # mid\n\nsnapshot\n", "c").unwrap();
+        assert_eq!(recipe.steps.len(), 2);
+        assert!(matches!(recipe.steps[0].op, Op::Hello));
+        assert!(matches!(recipe.steps[1].op, Op::Snapshot));
+    }
+
+    #[test]
+    fn wants_unterminated_quote_is_invalid() {
+        let err = parse_wants(r#"set-value todo-input "no-end"#, "q").unwrap_err();
+        assert!(err.contains("unterminated quote"), "{err}");
+    }
+
+    #[test]
+    fn wants_invalid_lines() {
+        assert!(parse_wants("click", "x").unwrap_err().contains("target"));
+        assert!(parse_wants("assert", "x").unwrap_err().contains("target"));
+        assert!(parse_wants("invoke", "x").unwrap_err().contains("name"));
+        assert!(
+            parse_wants("set-value todo-input", "x")
+                .unwrap_err()
+                .contains("set-value")
+        );
+        assert!(
+            parse_wants("type todo-input", "x")
+                .unwrap_err()
+                .contains("type")
+        );
+        assert!(parse_wants("assert todo-item-1 noflag", "x").is_err());
+    }
+
+    #[test]
+    fn wants_delivery_and_assert_flags() {
+        let recipe = parse_wants(
+            "click --delivery virtual todo-add\nassert --id todo-item-1 --absent\nassert todo-x checked=true exists=false",
+            "d",
+        )
+        .unwrap();
+        match &recipe.steps[0].op {
+            Op::Click { target, delivery } => {
+                assert_eq!(target, "todo-add");
+                assert_eq!(*delivery, DeliveryMode::Virtual);
+            }
+            other => panic!("{other:?}"),
+        }
+        match &recipe.steps[1].op {
+            Op::Assert { spec } => {
+                assert_eq!(spec.target, "todo-item-1");
+                assert_eq!(spec.exists, Some(false));
+            }
+            other => panic!("{other:?}"),
+        }
+        match &recipe.steps[2].op {
+            Op::Assert { spec } => {
+                assert_eq!(spec.checked, Some(true));
+                assert_eq!(spec.exists, Some(false));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_extension_forces_json_even_without_brace() {
+        let path = std::env::temp_dir().join("gpui-agent-not-object.json");
+        std::fs::write(&path, "[]").unwrap();
+        let err = parse_recipe(&path).unwrap_err();
+        assert!(err.contains("recipe json"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn unknown_json_op_is_rejected() {
+        let err = parse_recipe_source(
+            r#"{"name":"x","steps":[{"id":"a","op":"explode"}]}"#,
+            "x.json",
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("recipe json"), "{err}");
+    }
+
+    #[test]
+    fn brace_and_bare_params_substitute() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "p",
+            "params": ["title"],
+            "steps": [
+                {"id": "a", "op": "set_value", "target": "todo-input", "value": "${title}"},
+                {"id": "b", "op": "set_value", "target": "todo-input", "value": "Hi $title"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        validate_recipe(&recipe, &todo_registry()).unwrap();
+        let mut set = BTreeMap::new();
+        set.insert("title".into(), "Buy milk".into());
+        let bound = apply_params(&recipe, &set).unwrap();
+        match &bound.steps[0].op {
+            Op::SetValue { value, .. } => assert_eq!(value, "Buy milk"),
+            other => panic!("{other:?}"),
+        }
+        match &bound.steps[1].op {
+            Op::SetValue { value, .. } => assert_eq!(value, "Hi Buy milk"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn wants_standalone_quoted_value() {
+        let recipe = parse_wants(r#"set-value todo-input "Buy milk""#, "q").unwrap();
+        match &recipe.steps[0].op {
+            Op::SetValue { target, value } => {
+                assert_eq!(target, "todo-input");
+                assert_eq!(value, "Buy milk");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn wants_escaped_quotes_inside_quotes() {
+        let recipe = parse_wants(r#"set-value todo-input "Say \"hi\"""#, "q").unwrap();
+        match &recipe.steps[0].op {
+            Op::SetValue { value, .. } => assert_eq!(value, r#"Say "hi""#),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn wants_key_and_wait_and_bad_delivery() {
+        let recipe = parse_wants("wait\nkey todo-input Enter", "k").unwrap();
+        assert!(matches!(recipe.steps[0].op, Op::Wait { .. }));
+        match &recipe.steps[1].op {
+            Op::Key { target, key, .. } => {
+                assert_eq!(target, "todo-input");
+                assert_eq!(key, "Enter");
+            }
+            other => panic!("{other:?}"),
+        }
+        let err = parse_wants("click --delivery", "x").unwrap_err();
+        assert!(err.contains("--delivery"), "{err}");
+        let err = parse_wants("assert todo-item-1 foo=bar", "x").unwrap_err();
+        assert!(err.contains("unknown assert field"), "{err}");
+    }
 }

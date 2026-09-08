@@ -8,15 +8,13 @@ use crate::receipt::{Receipt, StepReceipt};
 
 #[derive(Debug, Error)]
 pub enum RunError {
-    #[error("{0}")]
-    Plan(String),
     #[error("recipe has shutdown/exit effects; pass --yes to run it")]
     NeedsYes,
     #[error("step `{id}` failed: {error}")]
     Step {
         id: String,
         error: String,
-        receipt: Receipt,
+        receipt: Box<Receipt>,
     },
 }
 
@@ -59,7 +57,7 @@ pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Rece
                     return Err(RunError::Step {
                         id: step.id.clone(),
                         error: error.unwrap_or_else(|| "request failed".into()),
-                        receipt,
+                        receipt: Box::new(receipt),
                     });
                 }
             }
@@ -77,7 +75,7 @@ pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Rece
                 return Err(RunError::Step {
                     id: step.id.clone(),
                     error,
-                    receipt,
+                    receipt: Box::new(receipt),
                 });
             }
         }

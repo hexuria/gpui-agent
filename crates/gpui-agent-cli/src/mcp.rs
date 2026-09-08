@@ -432,4 +432,52 @@ mod tests {
             json!(["semantic", "virtual"])
         );
     }
+
+    #[test]
+    fn recipe_validate_unknown_invoke_fails_closed() {
+        let err = recipe_validate(&json!({
+            "recipe": {
+                "name": "bad",
+                "steps": [{"id": "x", "op": "invoke", "name": "shell.run"}]
+            }
+        }))
+        .unwrap_err();
+        assert!(err.contains("unknown invoke"), "{err}");
+    }
+
+    #[test]
+    fn recipe_validate_empty_and_bad_json_fail_closed() {
+        let err = recipe_validate(&json!({ "recipe": "" })).unwrap_err();
+        assert!(err.contains("no steps"), "{err}");
+        let err = recipe_validate(&json!({ "recipe": "{" })).unwrap_err();
+        assert!(err.contains("recipe json"), "{err}");
+    }
+
+    #[test]
+    fn recipe_resolve_shell_like_fails_closed() {
+        let err = recipe_resolve_tool(&json!({ "intent": "rm -rf /" })).unwrap_err();
+        assert!(err.contains("fail closed"), "{err}");
+    }
+
+    #[test]
+    fn recipe_run_shutdown_requires_yes() {
+        let mut client = AgentClient::connect("127.0.0.1:1".parse().unwrap());
+        let err = recipe_run_tool(
+            &mut client,
+            &json!({
+                "recipe": "hello\nshutdown",
+                "yes": false
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("yes"), "{err}");
+    }
+
+    #[test]
+    fn unknown_mcp_tool_fails_closed() {
+        let mut client = AgentClient::connect("127.0.0.1:1".parse().unwrap());
+        let err =
+            call_tool(&mut client, &json!({ "name": "todo.add", "arguments": {} })).unwrap_err();
+        assert!(err.contains("unknown tool"), "{err}");
+    }
 }

@@ -279,4 +279,31 @@ mod tests {
         assert!(plan.requires_yes);
         assert!(plan.effects.contains(&Effect::Exit));
     }
+
+    #[test]
+    fn compile_plan_missing_params_fail_closed() {
+        let recipe = crate::recipe::Recipe::from_json(
+            r#"{
+            "name": "p",
+            "params": ["need_me"],
+            "steps": [{"id": "a", "op": "set_value", "target": "todo-input", "value": "$need_me"}]
+        }"#,
+        )
+        .unwrap();
+        let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap_err();
+        assert!(
+            err.contains("need_me") || err.contains("missing --set"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn compile_plan_unknown_invoke_fail_closed() {
+        let recipe = crate::recipe::Recipe::from_json(
+            r#"{"name":"p","steps":[{"id":"a","op":"invoke","name":"not.a.schema"}]}"#,
+        )
+        .unwrap();
+        let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap_err();
+        assert!(err.contains("unknown invoke"), "{err}");
+    }
 }

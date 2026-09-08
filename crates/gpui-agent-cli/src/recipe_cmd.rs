@@ -126,3 +126,16 @@ fn print_receipt(receipt: &gpui_agent_recipe::Receipt, path: Option<&PathBuf>) -
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_set_requires_equals() {
+        let err = parse_set(&["title".into()]).unwrap_err();
+        assert!(err.to_string().contains("KEY=VALUE"), "{err}");
+        let map = parse_set(&["title=Buy milk".into()]).unwrap();
+        assert_eq!(map.get("title").map(String::as_str), Some("Buy milk"));
+    }
+}

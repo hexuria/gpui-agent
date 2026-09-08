@@ -103,4 +103,39 @@ mod tests {
         };
         assert!(schema.validate().is_err());
     }
+
+    #[test]
+    fn rejects_invalid_schema_name_chars() {
+        let schema = OpSchema {
+            name: "todo add".into(),
+            kind: SchemaKind::Invoke,
+            description: "x".into(),
+            effects: vec![],
+            idempotent: false,
+            verified: false,
+            required: vec![],
+            args: BTreeMap::new(),
+            result: None,
+            keywords: vec![],
+        };
+        assert!(schema.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_required_without_args_entry() {
+        let schema = OpSchema {
+            name: "custom.op".into(),
+            kind: SchemaKind::Invoke,
+            description: "x".into(),
+            effects: vec![],
+            idempotent: false,
+            verified: false,
+            required: vec!["payload".into()],
+            args: BTreeMap::new(),
+            result: None,
+            keywords: vec![],
+        };
+        let err = schema.validate().unwrap_err();
+        assert!(err.contains("payload"), "{err}");
+    }
 }

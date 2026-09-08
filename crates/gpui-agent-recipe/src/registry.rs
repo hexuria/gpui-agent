@@ -28,20 +28,6 @@ impl Registry {
     pub fn iter(&self) -> impl Iterator<Item = &OpSchema> {
         self.schemas.values()
     }
-
-    pub fn contains(&self, name: &str) -> bool {
-        self.schemas.contains_key(name)
-    }
-
-    pub fn invoke_names(&self) -> impl Iterator<Item = &str> {
-        self.schemas.values().filter_map(|s| {
-            if matches!(s.kind, SchemaKind::Invoke) {
-                Some(s.name.as_str())
-            } else {
-                None
-            }
-        })
-    }
 }
 
 fn arg(ty: &str, required: bool) -> ArgSchema {
@@ -284,5 +270,29 @@ mod tests {
         assert!(reg.get("shutdown").unwrap().effects.contains(&Effect::Exit));
         assert!(reg.get("click").is_some());
         assert!(reg.get("todo-input").is_some());
+    }
+
+    #[test]
+    fn insert_rejects_non_allowlisted_schema_name() {
+        let mut reg = Registry::new();
+        let err = reg
+            .insert(OpSchema {
+                name: "rm -rf".into(),
+                kind: SchemaKind::Invoke,
+                description: "no".into(),
+                effects: vec![Effect::Write],
+                idempotent: false,
+                verified: false,
+                required: vec![],
+                args: BTreeMap::new(),
+                result: None,
+                keywords: vec![],
+            })
+            .unwrap_err();
+        assert!(
+            err.contains("alphanumeric") || err.contains("name"),
+            "{err}"
+        );
+        assert!(reg.get("rm -rf").is_none());
     }
 }

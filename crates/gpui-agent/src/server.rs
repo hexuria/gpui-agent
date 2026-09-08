@@ -520,4 +520,61 @@ mod tests {
         }
         shutdown.store(true, Ordering::SeqCst);
     }
+
+    #[test]
+    fn rpc_once_drops_session_then_rpc_reconnects() {
+        let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        client.rpc_once(Op::Hello).expect("rpc_once");
+        assert!(
+            !client.has_session(),
+            "rpc_once is the reconnect/bench path and must drop the socket"
+        );
+        client.expect_ok(Op::Hello).unwrap();
+        assert!(client.has_session(), "rpc should open a reusable session");
+        client.close_session();
+        assert!(!client.has_session());
+        client.expect_ok(Op::Hello).unwrap();
+        assert!(client.has_session());
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    fn spawn_echo_peer(reply: Vec<u8>) -> std::net::SocketAddr {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = std::io::Read::read(&mut stream, &mut buf);
+                let _ = stream.write_all(&reply);
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn client_rejects_invalid_json_response() {
+        let addr = spawn_echo_peer(b"not-json\n".to_vec());
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(400));
+        let err = client.rpc(Op::Hello).unwrap_err();
+        assert!(
+            err.contains("bad response") || err.contains("connect"),
+            "{err}"
+        );
+        assert!(!client.has_session());
+    }
+
+    #[test]
+    fn client_rejects_oversized_response_line() {
+        let mut reply = vec![b'x'; crate::MAX_LINE_BYTES + 8];
+        reply.push(b'\n');
+        let addr = spawn_echo_peer(reply);
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(800));
+        let err = client.rpc(Op::Hello).unwrap_err();
+        assert!(
+            err.contains("line too long") || err.contains("connect"),
+            "{err}"
+        );
+        assert!(!client.has_session());
+    }
 }
