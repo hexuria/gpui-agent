@@ -295,8 +295,9 @@ impl TodoApp {
     ) -> impl IntoElement {
         let entity = cx.entity();
         let record_id = semantic_id.to_string();
+        // No element id on the tracker — a stateful wrapper would steal hit-tests
+        // from the real widget that virtual clicks must reach.
         div()
-            .id(SharedString::from(format!("{semantic_id}-hit")))
             .child(child)
             .on_prepaint(move |bounds, _window, app| {
                 entity.update(app, |this, _| {
