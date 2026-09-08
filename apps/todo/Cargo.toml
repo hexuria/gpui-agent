@@ -9,8 +9,6 @@ homepage.workspace = true
 description = "GPUI Kit 0.6 todo desktop app with an opt-in agent control plane."
 
 [features]
-
-[features]
 default = ["agent"]
 # Compile the automation bridge. Still requires GPUI_AGENT=1 at runtime.
 agent = []

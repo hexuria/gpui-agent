@@ -9,7 +9,5 @@ homepage.workspace = true
 description = "Headless todo host that speaks the GPUI agent protocol without a GPU window."
 
 [dependencies]
-
-[dependencies]
 gpui-agent.workspace = true
 todo-core.workspace = true

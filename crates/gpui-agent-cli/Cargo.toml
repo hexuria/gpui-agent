@@ -9,8 +9,6 @@ homepage.workspace = true
 description = "CLI and tiny MCP stdio shim for the GPUI agent protocol."
 
 [[bin]]
-
-[[bin]]
 name = "gpui-agent"
 path = "src/main.rs"
 

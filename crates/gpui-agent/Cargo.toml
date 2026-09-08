@@ -9,8 +9,6 @@ homepage.workspace = true
 description = "Opt-in in-process agent control plane for GPUI Kit apps (not CDP)."
 
 [dependencies]
-
-[dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
