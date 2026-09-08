@@ -343,7 +343,7 @@ mod tests {
     use super::*;
     use crate::client::AgentClient;
     use crate::ndjson::read_limited_line;
-    use crate::protocol::{HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request};
+    use crate::protocol::{HelloInfo, Op, PlatformKind, Request, PROTOCOL_VERSION};
     use crate::tree::UiTree;
     use crate::{DeliveryMode, DispatchResult};
     use std::io::{BufRead, Cursor, Write};
@@ -575,11 +575,25 @@ mod tests {
         let mut bad = AgentClient::connect(addr)
             .with_token("wrong")
             .with_timeout(Duration::from_secs(2));
+        let started = std::time::Instant::now();
         let err = bad.rpc_pipeline(&ops);
+        let elapsed = started.elapsed();
         assert!(
-            err.is_err() || err.as_ref().ok().is_some_and(|rs| rs.iter().any(|r| !r.ok)),
-            "wrong token must not run the wave: {err:?}"
+            elapsed < Duration::from_millis(800),
+            "auth close must not retry the wave until timeout: {elapsed:?} {err:?}"
         );
+        match err {
+            Ok(resps) => assert!(
+                resps
+                    .iter()
+                    .any(|r| !r.ok && r.error.as_deref().is_some_and(|e| e.contains("token"))),
+                "wrong token must not run the wave: {resps:?}"
+            ),
+            Err(msg) => assert!(
+                msg.contains("token") || msg.contains("connection closed"),
+                "wrong token must not run the wave: {msg}"
+            ),
+        }
         shutdown.store(true, Ordering::SeqCst);
     }
 

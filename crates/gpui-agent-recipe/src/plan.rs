@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use gpui_agent::protocol::Op;
 use serde::Serialize;
 
-use crate::recipe::{Recipe, RecipeStep, apply_params, validate_recipe};
+use crate::recipe::{apply_params, validate_recipe, Recipe, RecipeStep};
 use crate::registry::Registry;
 use crate::schema::{Effect, SchemaKind};
 
@@ -27,8 +27,11 @@ pub struct Plan {
     pub name: String,
     pub app: Option<String>,
     pub steps: Vec<PlannedStep>,
-    /// Parallel-ready waves (ids). Execution is still sequential on one
-    /// TCP session; waves document what *could* run together.
+    /// Waves of independent step ids. A wave with more than one step may
+    /// pipeline NDJSON lines on one TCP session (unless screenshots/record
+    /// force a turn after each op). The host still handles one request at a
+    /// time; pipelining hides client RTT and means later siblings can run
+    /// even if an earlier sibling returns `ok: false`.
     pub waves: Vec<Vec<String>>,
     pub effects: Vec<Effect>,
     pub requires_yes: bool,

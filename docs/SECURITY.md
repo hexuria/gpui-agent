@@ -118,8 +118,10 @@ They do **not** add privilege and do **not** bypass PR #3 caps:
 Session reuse is a client convenience (`AgentClient::rpc` keeps the
 socket; `rpc_pipeline` writes several ops then reads; `rpc_once`
 reconnects for benches). None of these skip auth. A mid-recipe failure
-returns a partial receipt and stops. `--screenshot-dir` / `--record`
-stay sequential so a PNG/frame can land after each step.
+returns a partial receipt and stops. Independent DAG waves that pipeline
+may already have run later siblings; the receipt includes those
+responses, then the next wave does not start. `--screenshot-dir` /
+`--record` stay sequential so a PNG/frame can land after each step.
 
 Treat `recipe run` / `recipe_run` as equivalent to holding the token
 (same class as M4). Tests for the fail-closed cases live in

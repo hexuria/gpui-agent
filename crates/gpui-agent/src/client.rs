@@ -3,8 +3,8 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use crate::ndjson::{read_limited_line_into, write_json_line};
-use crate::protocol::{AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response};
-use crate::server::{MAX_LINE_BYTES, default_addr};
+use crate::protocol::{AssertSpec, DeliveryMode, Op, Response, PROTOCOL_VERSION};
+use crate::server::{default_addr, MAX_LINE_BYTES};
 
 /// Blocking NDJSON client used by the CLI, MCP shim, recipes, and tests.
 ///
@@ -76,8 +76,9 @@ impl LiveSession {
         start_id: u64,
         token: Option<&str>,
         ops: &[&Op],
-    ) -> Result<Vec<Response>, String> {
+    ) -> Result<Vec<Response>, PipelineError> {
         let mut id_buf = [0u8; 20];
+        let mut wrote = false;
         for (i, op) in ops.iter().enumerate() {
             let id = fmt_u64(start_id + i as u64, &mut id_buf);
             let req = WireRequest {
@@ -86,23 +87,50 @@ impl LiveSession {
                 token,
                 op,
             };
-            write_json_line(&mut self.writer, &mut self.encode_buf, &req)
-                .map_err(|err| err.to_string())?;
+            if let Err(err) = write_json_line(&mut self.writer, &mut self.encode_buf, &req) {
+                return Err(if wrote {
+                    PipelineError::Fatal(err.to_string())
+                } else {
+                    PipelineError::Retryable(err.to_string())
+                });
+            }
+            wrote = true;
         }
-        self.writer.flush().map_err(|err| err.to_string())?;
+        self.writer
+            .flush()
+            .map_err(|err| PipelineError::Fatal(err.to_string()))?;
         let mut out = Vec::with_capacity(ops.len());
         for _ in ops {
-            if !read_limited_line_into(&mut self.reader, &mut self.line_buf, MAX_LINE_BYTES)
-                .map_err(|err| err.to_string())?
-            {
-                return Err("connection closed".into());
+            match read_limited_line_into(&mut self.reader, &mut self.line_buf, MAX_LINE_BYTES) {
+                Ok(true) => {}
+                Ok(false) => return Err(pipeline_eof(&out)),
+                Err(err) => return Err(PipelineError::Fatal(err.to_string())),
             }
             out.push(
                 serde_json::from_slice(&self.line_buf)
-                    .map_err(|err| format!("bad response: {err}"))?,
+                    .map_err(|err| PipelineError::Fatal(format!("bad response: {err}")))?,
             );
         }
         Ok(out)
+    }
+}
+
+/// Connect/write failures before any request line is sent may retry.
+/// Once a line is on the wire, ops may already have run — do not replay.
+enum PipelineError {
+    Retryable(String),
+    Fatal(String),
+}
+
+fn pipeline_eof(partial: &[Response]) -> PipelineError {
+    if let Some(resp) = partial.iter().find(|resp| !resp.ok) {
+        PipelineError::Fatal(
+            resp.error
+                .clone()
+                .unwrap_or_else(|| "connection closed".into()),
+        )
+    } else {
+        PipelineError::Fatal("connection closed".into())
     }
 }
 
@@ -185,7 +213,13 @@ impl AgentClient {
     /// Each op is still its own NDJSON request (token, version, 1 MiB line).
     /// Independent recipe waves use this to hide localhost RTT. Chunks larger
     /// than [`crate::MAX_MAILBOX_DEPTH`] are split so a pipeline cannot exceed
-    /// the mailbox cap. Empty input returns an empty vec.
+    /// the mailbox cap. The server still reads/authorizes/handles **one line
+    /// at a time** on this connection; the chunk is a client-side ceiling.
+    /// Empty input returns an empty vec.
+    ///
+    /// After any request line is written, a transport error is **not** retried
+    /// (the host may already have run prefix ops). Connect failures before
+    /// the first write still retry until [`Self::with_timeout`].
     pub fn rpc_pipeline(&mut self, ops: &[&Op]) -> Result<Vec<Response>, String> {
         if ops.is_empty() {
             return Ok(Vec::new());
@@ -264,10 +298,14 @@ impl AgentClient {
         while std::time::Instant::now() < deadline {
             match self.pipeline_once(start_id, ops) {
                 Ok(resps) => return Ok(resps),
-                Err(err) => {
+                Err(PipelineError::Retryable(err)) => {
                     last_err = err;
                     self.session = None;
                     std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(PipelineError::Fatal(err)) => {
+                    self.session = None;
+                    return Err(err);
                 }
             }
         }
@@ -277,9 +315,16 @@ impl AgentClient {
         ))
     }
 
-    fn pipeline_once(&mut self, start_id: u64, ops: &[&Op]) -> Result<Vec<Response>, String> {
+    fn pipeline_once(
+        &mut self,
+        start_id: u64,
+        ops: &[&Op],
+    ) -> Result<Vec<Response>, PipelineError> {
         if self.session.is_none() {
-            self.session = Some(LiveSession::open(self.addr, self.timeout)?);
+            match LiveSession::open(self.addr, self.timeout) {
+                Ok(session) => self.session = Some(session),
+                Err(err) => return Err(PipelineError::Retryable(err)),
+            }
         }
         let token = self.token.as_deref();
         match self

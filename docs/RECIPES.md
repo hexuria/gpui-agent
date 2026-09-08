@@ -304,7 +304,9 @@ PR #4:
 This stack additionally:
 
 6. **Pipeline** independent DAG waves (`rpc_pipeline`) on one session
-   (~3.6× vs sequential hellos). Linear recipes stay fail-fast sequential.
+   (~3.6× vs sequential hellos). Linear recipes stay one-step (so they
+   still fail-fast). A wide wave is fail-fast **across waves**, not
+   inside one: siblings already on the wire still run.
 7. **Direct `$param` subst** and index-only `compile_plan` (no serde
    round-trip, no `Vec<char>`).
 8. **Flatten without a `node_count` pre-walk** (that pass lost).

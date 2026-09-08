@@ -10,8 +10,8 @@ use gpui_agent::protocol::{HelloInfo, Op};
 use gpui_agent::server::spawn_host;
 use gpui_agent::tree::UiTree;
 use gpui_agent_recipe::{
-    RecordTarget, RunError, ScreenshotCapture, SemanticRecorder, compile_plan, parse_wants,
-    run_plan, run_plan_with_extras, run_plan_with_recorder, todo_registry, validate_recipe,
+    compile_plan, parse_wants, run_plan, run_plan_with_extras, run_plan_with_recorder,
+    todo_registry, validate_recipe, RecordTarget, RunError, ScreenshotCapture, SemanticRecorder,
 };
 use todo_core::TodoStore;
 
@@ -97,6 +97,89 @@ fn independent_wave_is_pipelined_on_one_session() {
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(receipt.steps.len(), 4);
     assert!(receipt.session_reused);
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn independent_wave_records_siblings_when_one_fails() {
+    let recipe = gpui_agent_recipe::Recipe::from_json(
+        r#"{
+        "name": "wide-fail",
+        "steps": [
+            {"id": "root", "op": "wait"},
+            {"id": "a", "op": "hello", "needs": ["root"]},
+            {"id": "b", "op": "assert", "target": "no-such-node", "needs": ["root"]},
+            {"id": "c", "op": "hello", "needs": ["root"]}
+        ]
+    }"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    assert_eq!(plan.waves.len(), 2);
+    assert_eq!(plan.waves[1].len(), 3);
+
+    let (mut client, shutdown) = spawn_todo();
+    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    match err {
+        RunError::Step { id, receipt, .. } => {
+            assert_eq!(id, "b");
+            assert!(!receipt.ok);
+            assert_eq!(
+                receipt.steps.len(),
+                4,
+                "pipelined siblings already ran: {receipt:?}"
+            );
+            assert!(receipt.steps[0].ok, "{receipt:?}");
+            let wave: Vec<_> = receipt.steps.iter().skip(1).collect();
+            assert_eq!(wave.len(), 3);
+            let by_id: std::collections::BTreeMap<_, _> =
+                wave.iter().map(|s| (s.id.as_str(), s.ok)).collect();
+            assert_eq!(by_id.get("a"), Some(&true), "{receipt:?}");
+            assert_eq!(by_id.get("b"), Some(&false), "{receipt:?}");
+            assert_eq!(
+                by_id.get("c"),
+                Some(&true),
+                "hello sibling still ran after assert fail: {receipt:?}"
+            );
+        }
+        other => panic!("unexpected {other}"),
+    }
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn screenshot_dir_keeps_wide_wave_sequential() {
+    let recipe = gpui_agent_recipe::Recipe::from_json(
+        r#"{
+        "name": "wide-shots",
+        "steps": [
+            {"id": "root", "op": "wait"},
+            {"id": "a", "op": "hello", "needs": ["root"]},
+            {"id": "b", "op": "hello", "needs": ["root"]},
+            {"id": "c", "op": "hello", "needs": ["root"]}
+        ]
+    }"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let dir = std::env::temp_dir().join(format!("gpui-agent-wide-shots-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let capture = ScreenshotCapture {
+        dir: dir.clone(),
+        flagged_only: false,
+    };
+
+    let (mut client, shutdown) = spawn_todo();
+    let receipt = run_plan_with_extras(&mut client, &plan, false, None, Some(&capture))
+        .expect("hello wave succeeds");
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(
+        receipt.screenshots.len(),
+        4,
+        "screenshot path must turn after each step, not pipeline the wave: {receipt:?}"
+    );
+    assert_eq!(receipt.steps.len(), 4);
+    let _ = std::fs::remove_dir_all(&dir);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 

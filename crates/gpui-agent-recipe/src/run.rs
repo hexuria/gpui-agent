@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::plan::{Plan, PlannedStep};
 use crate::receipt::{Receipt, ScreenshotReceipt, StepReceipt};
-use crate::record::{RecipeRecorder, sanitize_step_id};
+use crate::record::{sanitize_step_id, RecipeRecorder};
 
 #[derive(Debug, Error)]
 pub enum RunError {
@@ -46,8 +46,10 @@ impl ScreenshotCapture {
 ///
 /// Each step is still a normal protocol request (token, version, caps).
 /// Independent DAG waves pipeline several lines before reading when this
-/// path has no screenshot/recorder extras. The recipe layer never talks
-/// to a shell and never skips `authorize_request`.
+/// path has no screenshot/recorder extras. Because those lines are already
+/// on the wire, a failed sibling does not un-run the rest of the wave; the
+/// receipt includes every response, then the run stops (no next wave).
+/// The recipe layer never talks to a shell and never skips `authorize_request`.
 pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Receipt, RunError> {
     run_plan_with_extras(client, plan, yes, None, None)
 }
@@ -124,34 +126,42 @@ pub fn run_plan_with_extras(
                 Ok(resps) => {
                     receipt.session_reused = client.has_session();
                     let elapsed = step_started.elapsed().as_millis() as u64;
+                    // All lines were already written; record every sibling even
+                    // if one failed so the receipt matches what the host ran.
+                    let mut failed: Option<(String, String)> = None;
                     for (step, resp) in wave_steps.iter().zip(resps) {
                         shot_index += 1;
                         let ok = resp.ok;
                         let error = resp.error.clone();
+                        if !ok && failed.is_none() {
+                            failed = Some((
+                                step.id.clone(),
+                                error.clone().unwrap_or_else(|| "request failed".into()),
+                            ));
+                        }
                         receipt.steps.push(StepReceipt {
                             id: step.id.clone(),
                             ok,
-                            error: error.clone(),
+                            error,
                             elapsed_ms: elapsed,
                             result: resp.result,
                             screenshot: None,
                         });
-                        if !ok {
-                            receipt.ok = false;
-                            receipt.elapsed_ms = started.elapsed().as_millis() as u64;
-                            return Err(RunError::Step {
-                                id: step.id.clone(),
-                                error: error.unwrap_or_else(|| "request failed".into()),
-                                receipt: Box::new(receipt),
-                            });
-                        }
+                    }
+                    if let Some((id, error)) = failed {
+                        receipt.ok = false;
+                        receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                        return Err(RunError::Step {
+                            id,
+                            error,
+                            receipt: Box::new(receipt),
+                        });
                     }
                 }
                 Err(error) => {
                     receipt.ok = false;
                     receipt.session_reused = client.has_session();
                     let first = wave_steps[0];
-                    shot_index += 1;
                     receipt.steps.push(StepReceipt {
                         id: first.id.clone(),
                         ok: false,
