@@ -98,13 +98,32 @@ The parent process is trusted.
 
 ### Recipes (experimental)
 
-`gpui-agent recipe run` and MCP `recipe_run` compile a local JSON/wants
-file into ordinary protocol ops and send them on **one reused TCP
-session**. They do **not** bypass token, version, loopback, or
-line/connection/mailbox caps. Each step is still `authorize_request`.
-Unknown `invoke` names fail closed against the local schema registry.
-Plans that include `shutdown` require `--yes`. Recipes never spawn a
-shell. See [RECIPES.md](RECIPES.md#threat-model-recipes-must-not-bypass-caps).
+`gpui-agent recipe run` and MCP `recipe_run` compile a local JSON or
+`.wants` file into ordinary protocol ops and send them on **one reused
+TCP session**. Design: [RECIPES.md](RECIPES.md). Laptop verify:
+[TRY_ON_MAC.md](TRY_ON_MAC.md).
+
+They do **not** add privilege and do **not** bypass PR #3 caps:
+
+| Gate | Recipe path |
+| --- | --- |
+| Opt-in / loopback | Host still needs `GPUI_AGENT=1`. CLI still `ensure_loopback`. |
+| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. |
+| Line / conn / mailbox | Unchanged. Extra recipe cap: 256 steps. Client also rejects oversized / invalid NDJSON replies. |
+| `invoke` | Names must be `SchemaKind::Invoke` on the local registry. Unknown names and protocol names used as invoke (`click`) fail closed. Schema names are `[A-Za-z0-9_.-]`. |
+| Resolve | Keyword score, fail closed. Shell-like / unknown / ambiguous intents do nothing. Never `Command`. |
+| Shutdown | `Effect::Exit` requires CLI `--yes` or MCP `yes: true`. The run does not start without it. |
+| Delivery | Default `semantic`. `virtual` is still in-process GPUI (never OS HID). |
+
+Session reuse is a client convenience (`AgentClient::rpc` keeps the
+socket; `rpc_once` reconnects for benches). It does not skip auth.
+A mid-recipe failure returns a partial receipt and stops.
+
+Treat `recipe run` / `recipe_run` as equivalent to holding the token
+(same class as M4). Tests for the fail-closed cases live in
+`gpui-agent-recipe` and the CLI/MCP suite — see
+[RECIPES.md](RECIPES.md#edge-case-coverage) and
+[RECIPES.md](RECIPES.md#threat-model-recipes-must-not-bypass-caps).
 
 ### Logging of secrets
 
@@ -194,7 +213,9 @@ intentionally **not** half-implemented in this patch.
 14. **Per-connection QPS cap** if anyone runs this as a long-lived
     host. Line/connection/mailbox caps are enough for v1.
 15. **Invoke allow-lists in docs per app.** Sample todo is CRUD-only;
-    integrators must not map `invoke` onto a shell.
+    integrators must not map `invoke` onto a shell. Experimental recipes
+    fail closed on unknown invoke names; that is not a substitute for
+    a tight host allow-list.
 
 ## Recommended (not implemented here)
 

@@ -5,8 +5,13 @@ Coding stays on the cloud agent. Local is **pull + run only**.
 Typical checkout: `/Volumes/goldcoders/OSS/gpui-agent`.
 
 This verifies the experimental recipes on PR #4 (`gol/recipes-tmp-perf-e79b`).
-**Headless is enough.** The desktop `todo` window needs a display; skip it
-unless you want to watch the same protocol drive a GPUI window.
+Do **not** merge the PR from the laptop. **Headless is enough.** The desktop
+`todo` window needs a display; skip it unless you want to watch the same
+protocol drive a GPUI window.
+
+Format, threat model, and `--yes` / session-reuse notes:
+[RECIPES.md](RECIPES.md). Caps that recipes must not bypass:
+[SECURITY.md](SECURITY.md#recipes-experimental).
 
 ## 1. Fetch the PR branch (do not merge)
 
@@ -88,17 +93,21 @@ export GPUI_AGENT_ADDR=127.0.0.1:17421
 CLI=./target/debug/gpui-agent
 ```
 
-`validate` / `plan` / `resolve` do **not** need a host:
+`validate` / `plan` / `resolve` do **not** need a host (and do not open
+a socket):
 
 ```bash
 $CLI recipe validate examples/recipes/todo-crud.json
 $CLI recipe validate examples/recipes/todo-crud.wants
 $CLI recipe plan examples/recipes/todo-crud.json --set title="Buy milk"
+$CLI recipe plan examples/recipes/todo-crud.wants --set title="Buy milk" --order-check
 $CLI recipe resolve 'add a todo titled Buy milk'
 ```
 
 `run` needs the host. Both sample recipes assume an **empty** todo list
-(they create `todo-item-1`). Use a freshly started host.
+(they hard-code `todo-item-1` / `id=1`). Use a freshly started host. If
+terminal 1 set `GPUI_AGENT_TOKEN`, export the **same** value here (or
+pass `--token`).
 
 ```bash
 $CLI recipe run examples/recipes/todo-crud.json --set title="Buy milk"
@@ -126,7 +135,9 @@ Cloud verification on this branch (headless, 2026-09-08):
 ```
 
 Check: `"ok": true`, `"session_reused": true`, five steps, last assert
-passes, `add` / `toggle` results show id `1`.
+passes, `add` / `toggle` results show id `1`. `fingerprint` is a
+process-local hash (`DefaultHasher`); your Mac may print a different
+hex and that is fine.
 
 To run the `.wants` file too, **restart the host** first (same ids):
 
@@ -168,22 +179,28 @@ Leave terminal 1 with Ctrl-C only if `shutdown` already exited the host.
 
 ## 7. Security smoke (optional)
 
-These should **fail** (nonzero exit):
+These should **fail** (nonzero exit). They are safe to run: none of them
+maps onto a shell.
 
 ```bash
 # unknown invoke — fail closed, no host needed
 printf '%s\n' '{"name":"bad","steps":[{"id":"x","op":"invoke","name":"shell.run","args":{}}]}' \
   | $CLI recipe validate -
 
-# shutdown in a recipe without --yes
+# resolve never shells out
+$CLI recipe resolve 'rm -rf /'
+# expect: unknown intent (fail closed)
+
+# shutdown in a recipe without --yes (does not contact the host)
 printf '%s\n' $'hello\nshutdown' | $CLI recipe run -
+# expect: pass --yes
 
 # token required when the host has GPUI_AGENT_TOKEN set
 # (run from a shell that does NOT export the token)
-$CLI recipe run examples/recipes/todo-crud.json --set title="Milk"
+env -u GPUI_AGENT_TOKEN $CLI recipe run examples/recipes/todo-crud.json --set title="Milk"
 # expect: "automation token required"
 
-# non-loopback refused
+# non-loopback refused (token would not leave the machine)
 $CLI --addr 8.8.8.8:17421 hello
 # expect: refusing non-loopback agent address
 ```
@@ -205,3 +222,6 @@ $CLI --addr 8.8.8.8:17421 hello
 ```bash
 cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 ```
+
+That suite includes the recipe parse / resolve / run / session-reuse
+edge cases. It does not need a display.

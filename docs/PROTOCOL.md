@@ -41,8 +41,9 @@ See [INTEGRATING.md](INTEGRATING.md).
 These are also the **only** first-class `gpui-agent` CLI commands (plus
 `mcp` and experimental `recipe`). App-specific verbs are `invoke` names
 or click targets — not new subcommands. `recipe` is a **client-side**
-batch of the ops above (one process / one TCP session). It is not a new
-wire `op`.
+batch of the ops above (`AgentClient` reuses one TCP session; `rpc_once`
+is the old reconnect path for benches). It is not a new wire `op`.
+See [RECIPES.md](RECIPES.md) and the laptop runbook [TRY_ON_MAC.md](TRY_ON_MAC.md).
 
 ## Response
 
@@ -192,6 +193,7 @@ are implemented. New hosts implement `AgentHost` and keep this document.
 - Changing the meaning of an existing field or removing one is a major bump (`v: 2`).
 - Do **not** extend the CLI with app-specific subcommands. New product
   verbs go on the host (`invoke`) or in agent prompts.
-- Experimental recipes (`docs/RECIPES.md`) batch existing ops on the
-  client. Additive only; servers that never heard of recipes still
-  speak v1 NDJSON one request at a time.
+- Experimental recipes ([RECIPES.md](RECIPES.md)) batch existing ops on
+  the client. Additive only; servers that never heard of recipes still
+  speak v1 NDJSON one request at a time. Caps and fail-closed invoke:
+  [SECURITY.md](SECURITY.md#recipes-experimental).

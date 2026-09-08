@@ -66,21 +66,25 @@ cargo run -p gpui-agent-cli -- shutdown
 
 **Experimental — one invocation, many ops.** Prefer a recipe over
 spawning `gpui-agent` per click (each spawn is a process + TCP
-handshake). Semantic delivery stays the default; the recipe still
-carries the token on every request:
+handshake). `AgentClient` reuses one loopback session; each step is
+still a normal token-bearing request. Semantic delivery stays the
+default.
 
 ```bash
 GPUI_AGENT=1 cargo run -p todo-headless
 cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set title="Buy milk"
 ```
 
-`recipe validate` / `recipe plan` need no host. `recipe resolve "add a todo titled Buy milk"`
-maps prose through a local schema (fail closed). Design, threat model,
-and what was *not* copied from rwmcp / tmp: [docs/RECIPES.md](docs/RECIPES.md).
+`recipe validate` / `recipe plan` / `recipe resolve` need no host.
+`recipe resolve "add a todo titled Buy milk"` maps prose through a
+local schema (fail closed). Shutdown inside a recipe needs `--yes`.
+Design, threat model, schema allow-list: [docs/RECIPES.md](docs/RECIPES.md).
+Caps recipes must not bypass: [docs/SECURITY.md](docs/SECURITY.md#recipes-experimental).
 
 **On your Mac / laptop** (fetch this PR branch, build, two terminals):
 [docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md). Headless is enough; desktop
-`todo` is optional and needs a display.
+`todo` is optional and needs a display. Do not merge the PR from the
+laptop.
 
 The demo host also registers `todo.add` / `todo.toggle` / `todo.delete` / `todo.list` as **`invoke` names** (not CLI subcommands):
 
@@ -112,8 +116,9 @@ crates/gpui-agent-recipe   Experimental recipes + TMP-inspired mapping
 crates/todo-core           Demo store and semantic ids
 docs/PROTOCOL.md           Wire format
 docs/INTEGRATING.md        How to embed AgentHost in another app
-docs/RECIPES.md            Experimental recipes / mapping / perf notes
+docs/RECIPES.md            Experimental recipes / mapping / session reuse
 docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
+docs/SECURITY.md           Trust model, caps, recipe threat model
 examples/todo.sh           Demo-only invoke wrappers
 examples/recipes/          Sample todo CRUD recipe (JSON + wants)
 scripts/smoke.sh           Full CRUD against the headless host
@@ -169,6 +174,9 @@ To change screens: click a nav control, then assert the destination root id is p
 The CLI includes a tiny MCP stdio server with the **same generic tools** (no app-specific `todo_*` tools):
 
 `wait`, `hello`, `snapshot`, `click`, `type`, `set_value`, `key`, `assert`, `invoke`, `shutdown`
+
+plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
+`recipe_resolve` (client-side batching; see [docs/RECIPES.md](docs/RECIPES.md)).
 
 ```bash
 GPUI_AGENT=1 cargo run -p todo-headless
