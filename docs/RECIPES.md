@@ -11,7 +11,7 @@ TCP session, many ops — instead of a tool round-trip per action.
 **Laptop (pull + run only):** [TRY_ON_MAC.md](TRY_ON_MAC.md).
 Threat model vs PR #3 caps: [SECURITY.md](SECURITY.md#recipes-experimental).
 Wire ops stay one NDJSON request each: [PROTOCOL.md](PROTOCOL.md).
-Window / CI recording (semantic frames + Mac script): [RECORDING.md](RECORDING.md).
+Step PNGs for AI mid-run (plus optional video): [RECORDING.md](RECORDING.md).
 
 ## What was borrowed
 
@@ -118,7 +118,7 @@ Restart the host before a second run.
 | --- | --- | --- |
 | `recipe validate <path>` | No | Parse + lint (version, ids, `needs`, declared `$params`, invoke allow-list) |
 | `recipe plan <path> [--set k=v] [--order-check]` | No | Bind params, schedule waves, print effects / fingerprint / `requires_yes` |
-| `recipe run <path> [--set k=v] [--yes] [--receipt-out FILE] [--record PATH]` | Yes | Compile, then execute each `Op` on **one** reused TCP session. Optional observe-only frames: [RECORDING.md](RECORDING.md) |
+| `recipe run <path> [--set k=v] [--yes] [--receipt-out FILE] [--screenshot-dir DIR] [--record PATH]` | Yes | Compile, then execute each `Op` on **one** reused TCP session. Step PNGs + optional video: [RECORDING.md](RECORDING.md) |
 | `recipe resolve '…'` | No | Map prose through the local schema registry (fail closed) |
 
 MCP tools with the same jobs: `recipe_validate`, `recipe_plan`,
@@ -134,7 +134,22 @@ gpui-agent recipe resolve 'add a todo titled Buy milk'
 
 # host required
 gpui-agent recipe run examples/recipes/todo-crud.json --set title="Buy milk"
+
+# AI mid-run: intended PNGs after every step (headless lists screenshot_unavailable)
+gpui-agent recipe run examples/recipes/todo-crud.json --set title="Buy milk" \
+  --screenshot-dir artifacts/steps/
 ```
+
+Between **manual** steps, the same observe-only op:
+
+```bash
+gpui-agent screenshot --out artifacts/steps/mid.png
+```
+
+JSON steps may set `"screenshot": true`; wants lines may take
+`--screenshot`. With `--screenshot-flagged`, only those steps are
+captured. Names are `001-wait.png`, `002-add.png`, … and appear on the
+receipt. See [RECORDING.md](RECORDING.md).
 
 Do **not** spawn `gpui-agent` once per op (the old `scripts/smoke.sh`
 pattern). That pays process + TCP handshake every time.
@@ -169,7 +184,8 @@ pattern). That pays process + TCP handshake every time.
 | `recipe` | Recipe name |
 | `fingerprint` | Hash of the compiled plan (`DefaultHasher` — fine in one process, not a cross-version lock) |
 | `session_reused` | `AgentClient` still held a live TCP session after the last step |
-| `steps[]` | Per-step `id` / `ok` / `error` / `elapsed_ms` / `result` |
+| `steps[]` | Per-step `id` / `ok` / `error` / `elapsed_ms` / `result` / optional `screenshot` |
+| `screenshots[]` | Intended PNG paths (`path` / `ok` / `error`). Unavailable hosts do not fake a file. |
 | `elapsed_ms` | Wall time for the run |
 
 A mid-recipe failure (assert miss, host down, bad token) stops the run
@@ -227,7 +243,7 @@ do the same things the CLI already can. They do not add privilege.
 | Bind | CLI still `ensure_loopback` before connect |
 | Token | Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. |
 | Line / conn / idle / mailbox | Unchanged. Recipe cap 256 is extra, not a replacement. |
-| No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--record` is observe-only (snapshots / optional Mac `screencapture -l`). |
+| No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--screenshot-dir` / `--record` are observe-only. |
 | No shell | Resolve/plan/run never call `Command`. `invoke` is still an in-process host callback. Unknown invoke names are rejected. |
 | Shutdown | Plans with `Effect::Exit` require `--yes` (rwmcp-style). |
 
@@ -257,7 +273,9 @@ least:
 - Resolve: shell-like intents, unknown verbs, ambiguous titles,
   missing required args
 - Run: assert fail mid-recipe (partial receipt), host down, wrong
-  token, shutdown without `--yes`
+  token, shutdown without `--yes`; screenshot paths on the receipt;
+  headless `screenshot_unavailable` without a fake PNG; mocked host
+  writes `TEST_PNG` when `--screenshot-dir` / flagged steps are set
 - Session: second recipe on one `AgentClient` stays connected;
   `rpc_once` reconnects
 - Security: unknown invoke, non-allowlisted schema name, MCP
@@ -319,6 +337,6 @@ crates/gpui-agent-cli      recipe validate|plan|run|resolve + MCP tools
 examples/recipes/          Sample todo CRUD (JSON + wants)
 docs/RECIPES.md            This note
 docs/TRY_ON_MAC.md         Pull this branch and run it on a laptop
-docs/RECORDING.md          Recipe recording + CI vs Mac window capture
+docs/RECORDING.md          Step PNGs (AI mid-run) + optional video
 docs/SECURITY.md           Caps + recipe threat model
 ```

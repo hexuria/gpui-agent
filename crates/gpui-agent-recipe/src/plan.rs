@@ -13,6 +13,9 @@ pub struct PlannedStep {
     pub id: String,
     pub op: Op,
     pub needs: Vec<String>,
+    /// Capture a PNG after this step when `--screenshot-dir` / `--screenshot-flagged`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub screenshot: bool,
     pub effects: Vec<Effect>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
@@ -58,6 +61,7 @@ pub fn compile_plan(
             id: step.id,
             op: step.op,
             needs: step.needs,
+            screenshot: step.screenshot,
             effects: step_effects,
             schema: schema_name,
             idempotent,
@@ -112,6 +116,7 @@ fn annotate(op: &Op, registry: &Registry) -> (Option<String>, Vec<Effect>, bool)
         Op::SetValue { .. } => lookup("set_value", registry),
         Op::Key { .. } => lookup("key", registry),
         Op::Assert { .. } => lookup("assert", registry),
+        Op::Screenshot { .. } => lookup("screenshot", registry),
         Op::Shutdown => lookup("shutdown", registry),
         Op::Invoke { name, args } => {
             if let Some(schema) = registry.get(name) {
@@ -295,6 +300,25 @@ mod tests {
             err.contains("need_me") || err.contains("missing --set"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn compile_plan_copies_screenshot_flag() {
+        let recipe = crate::recipe::Recipe::from_json(
+            r#"{
+            "name": "shots",
+            "steps": [
+                {"id": "wait", "op": "wait"},
+                {"id": "snap", "op": "screenshot", "path": "out.png", "screenshot": true}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+        assert!(!plan.steps[0].screenshot);
+        assert!(plan.steps[1].screenshot);
+        assert_eq!(plan.steps[1].schema.as_deref(), Some("screenshot"));
+        assert!(plan.steps[1].idempotent);
     }
 
     #[test]

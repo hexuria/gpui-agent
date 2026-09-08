@@ -3,11 +3,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_agent::client::AgentClient;
+use gpui_agent::dispatch::DispatchResult;
+use gpui_agent::host::AgentHost;
 use gpui_agent::protocol::PlatformKind;
+use gpui_agent::protocol::{HelloInfo, Op};
 use gpui_agent::server::spawn_host;
+use gpui_agent::tree::UiTree;
 use gpui_agent_recipe::{
-    RecordTarget, RunError, SemanticRecorder, compile_plan, parse_wants, run_plan,
-    run_plan_with_recorder, todo_registry, validate_recipe,
+    RecordTarget, RunError, ScreenshotCapture, SemanticRecorder, compile_plan, parse_wants,
+    run_plan, run_plan_with_extras, run_plan_with_recorder, todo_registry, validate_recipe,
 };
 use todo_core::TodoStore;
 
@@ -264,6 +268,129 @@ invoke todo.toggle id=1
     assert!(!frames.iter().any(|f| f["step_id"] == "s4"));
     assert!(dir.join("0000-_start.svg").exists());
     assert!(!dir.join("recording.flag").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn headless_screenshots_are_honestly_unavailable() {
+    let recipe = parse_wants("wait\nhello", "shots").unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let dir =
+        std::env::temp_dir().join(format!("gpui-agent-shots-headless-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let capture = ScreenshotCapture {
+        dir: dir.clone(),
+        flagged_only: false,
+    };
+
+    let (mut client, shutdown) = spawn_todo();
+    let receipt = run_plan_with_extras(&mut client, &plan, false, None, Some(&capture))
+        .expect("recipe steps themselves succeed");
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(receipt.screenshots.len(), 2);
+    assert_eq!(receipt.steps.len(), 2);
+    for (i, shot) in receipt.screenshots.iter().enumerate() {
+        assert!(!shot.ok, "{shot:?}");
+        assert!(
+            gpui_agent::is_screenshot_unavailable(shot.error.as_deref().unwrap_or("")),
+            "{shot:?}"
+        );
+        assert!(
+            !std::path::Path::new(&shot.path).exists(),
+            "must not invent {}",
+            shot.path
+        );
+        assert!(receipt.steps[i].screenshot.is_some());
+    }
+    assert!(
+        receipt.screenshots[0].path.ends_with("001-s1.png"),
+        "{receipt:?}"
+    );
+    assert!(
+        receipt.screenshots[1].path.ends_with("002-s2.png"),
+        "{receipt:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+struct PngHost {
+    inner: TodoStore,
+}
+
+impl AgentHost for PngHost {
+    fn hello(&self) -> HelloInfo {
+        self.inner.hello()
+    }
+
+    fn snapshot(&self) -> UiTree {
+        self.inner.snapshot()
+    }
+
+    fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+        self.inner.dispatch(op)
+    }
+
+    fn screenshot(&self, path: Option<&str>) -> Result<DispatchResult, String> {
+        let path = path.ok_or_else(|| "screenshot requires path".to_string())?;
+        gpui_agent::write_png(path, gpui_agent::TEST_PNG).map(DispatchResult::json)
+    }
+}
+
+#[test]
+fn mocked_host_writes_step_pngs_onto_receipt() {
+    let store = Arc::new(Mutex::new(PngHost {
+        inner: TodoStore::new(PlatformKind::Headless),
+    }));
+    let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).expect("bind");
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
+
+    let json = r#"{
+        "name": "flagged-shots",
+        "steps": [
+            {"id": "wait", "op": "wait"},
+            {"id": "add", "op": "invoke", "name": "todo.add", "args": {"title": "Milk"}, "screenshot": true}
+        ]
+    }"#;
+    let recipe = gpui_agent_recipe::Recipe::from_json(json).unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let dir = std::env::temp_dir().join(format!("gpui-agent-shots-mock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let every = ScreenshotCapture {
+        dir: dir.clone(),
+        flagged_only: false,
+    };
+    let receipt = run_plan_with_extras(&mut client, &plan, false, None, Some(&every)).unwrap();
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(receipt.screenshots.len(), 2);
+    assert!(receipt.screenshots.iter().all(|s| s.ok), "{receipt:?}");
+    let wait_png = dir.join("001-wait.png");
+    let add_png = dir.join("002-add.png");
+    assert_eq!(std::fs::read(&wait_png).unwrap(), gpui_agent::TEST_PNG);
+    assert_eq!(std::fs::read(&add_png).unwrap(), gpui_agent::TEST_PNG);
+
+    let flagged_dir = dir.join("flagged");
+    let flagged = ScreenshotCapture {
+        dir: flagged_dir.clone(),
+        flagged_only: true,
+    };
+    let flagged_receipt =
+        run_plan_with_extras(&mut client, &plan, false, None, Some(&flagged)).unwrap();
+    assert_eq!(flagged_receipt.screenshots.len(), 1);
+    assert!(flagged_receipt.screenshots[0].ok);
+    assert!(
+        flagged_receipt.screenshots[0].path.ends_with("002-add.png"),
+        "{flagged_receipt:?}"
+    );
+    assert!(!flagged_dir.join("001-wait.png").exists());
+    assert_eq!(
+        std::fs::read(flagged_dir.join("002-add.png")).unwrap(),
+        gpui_agent::TEST_PNG
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);

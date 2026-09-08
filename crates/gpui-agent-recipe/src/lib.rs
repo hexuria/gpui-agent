@@ -15,7 +15,7 @@ pub mod run;
 pub mod schema;
 
 pub use plan::{OrderCheck, Plan, PlannedStep, compile_plan, order_check};
-pub use receipt::{Receipt, StepReceipt};
+pub use receipt::{Receipt, ScreenshotReceipt, StepReceipt};
 pub use recipe::{
     MAX_RECIPE_STEPS, RECIPE_FORMAT_VERSION, Recipe, RecipeStep, apply_params, parse_recipe,
     parse_recipe_source, parse_wants, validate_recipe,
@@ -26,5 +26,7 @@ pub use record::{
 };
 pub use registry::{Registry, todo_registry};
 pub use resolve::{ResolveResult, TokenFill, resolve_intent};
-pub use run::{RunError, run_plan, run_plan_with_recorder};
+pub use run::{
+    RunError, ScreenshotCapture, run_plan, run_plan_with_extras, run_plan_with_recorder,
+};
 pub use schema::{ArgSchema, Effect, OpSchema, SchemaKind};

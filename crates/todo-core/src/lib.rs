@@ -271,6 +271,16 @@ impl AgentHost for TodoStore {
         self.tree()
     }
 
+    fn screenshot(&self, path: Option<&str>) -> Result<DispatchResult, String> {
+        let _ = path;
+        let detail = match self.platform {
+            PlatformKind::Headless => "headless host has no pixel surface",
+            PlatformKind::Desktop => "desktop host has no GPUI surface export yet",
+            _ => "this host has no pixel surface",
+        };
+        Err(gpui_agent::screenshot_unavailable(detail))
+    }
+
     fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
         if op.is_virtual_input() {
             return Err(virtual_unavailable(
@@ -286,6 +296,7 @@ impl AgentHost for TodoStore {
             Op::SetValue { target, value } => self.set_value(target, value),
             Op::Key { target, key, .. } => self.key(target, key),
             Op::Invoke { name, args } => self.invoke(name, args),
+            Op::Screenshot { path } => AgentHost::screenshot(self, path.as_deref()),
             Op::Shutdown => {
                 self.shutdown = true;
                 Ok(DispatchResult::empty())
@@ -349,6 +360,26 @@ mod tests {
         assert!(tree.find(&ids::toggle(id)).is_some());
         assert!(tree.find(&ids::delete(id)).is_some());
         assert_eq!(tree.find(&ids::item(id)).unwrap().name, "Write docs");
+    }
+
+    #[test]
+    fn screenshot_is_honestly_unavailable() {
+        let mut store = TodoStore::default();
+        let dest =
+            std::env::temp_dir().join(format!("gpui-agent-todo-no-shot-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dest);
+        let req = Request::new(
+            "s",
+            Op::Screenshot {
+                path: Some(dest.to_string_lossy().into_owned()),
+            },
+        );
+        let resp = handle_request(&mut store, req, None);
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(gpui_agent::is_screenshot_unavailable(&err), "{err}");
+        assert!(err.contains("headless"), "{err}");
+        assert!(!dest.exists(), "must not invent {}", dest.display());
     }
 
     #[test]

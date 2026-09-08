@@ -141,6 +141,15 @@ pub enum Op {
         timeout_ms: Option<u64>,
     },
     Shutdown,
+    /// Observe-only PNG of the app surface (not the full desktop).
+    ///
+    /// The host writes `path` on the same machine so the image does not
+    /// ride the 1 MiB NDJSON line. Headless hosts return
+    /// `screenshot_unavailable` instead of a fake image.
+    Screenshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -294,6 +303,26 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screenshot_op_roundtrip() {
+        let req = Request::new(
+            "4",
+            Op::Screenshot {
+                path: Some("artifacts/steps/001-wait.png".into()),
+            },
+        );
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["op"], "screenshot");
+        assert_eq!(json["path"], "artifacts/steps/001-wait.png");
+        let back: Request = serde_json::from_value(json).unwrap();
+        match back.op {
+            Op::Screenshot { path } => {
+                assert_eq!(path.as_deref(), Some("artifacts/steps/001-wait.png"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[test]
     fn click_without_delivery_is_semantic() {

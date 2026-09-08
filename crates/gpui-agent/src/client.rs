@@ -174,6 +174,13 @@ impl AgentClient {
         self.expect_ok(Op::Snapshot)
     }
 
+    /// Observe-only PNG of the app surface. `path` is on the host machine.
+    pub fn screenshot(&mut self, path: impl Into<String>) -> Result<Response, String> {
+        self.expect_ok(Op::Screenshot {
+            path: Some(path.into()),
+        })
+    }
+
     pub fn click(&mut self, target: impl Into<String>) -> Result<Response, String> {
         self.click_with_delivery(target, DeliveryMode::Semantic)
     }

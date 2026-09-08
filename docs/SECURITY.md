@@ -125,10 +125,13 @@ Treat `recipe run` / `recipe_run` as equivalent to holding the token
 [RECIPES.md](RECIPES.md#edge-case-coverage) and
 [RECIPES.md](RECIPES.md#threat-model-recipes-must-not-bypass-caps).
 
-Optional `--record` writes local SVG/PPM frames (or a Mac window PNG
-sequence). It does not skip auth. Default semantic frames redact
-`value`; `role=password` is always redacted. Do not put CI secrets on
-the painted window. Design: [RECORDING.md](RECORDING.md).
+Optional `--screenshot-dir` asks the host for an app-surface PNG after
+steps (receipt lists paths). Headless returns `screenshot_unavailable`
+and does not invent a file. Optional `--record` writes local SVG/PPM
+frames (or a Mac window PNG sequence). Neither skips auth. Default
+semantic frames redact `value`; `role=password` is always redacted.
+Do not put tokens or CI secrets on the painted window. Design:
+[RECORDING.md](RECORDING.md).
 
 ### Logging of secrets
 
@@ -212,8 +215,8 @@ intentionally **not** half-implemented in this patch.
 11. **Mailbox + token + virtual integration test.** Needs a GPU/display
     or a fake `Window`. Until then, keep the unit gates
     (`authorize_request` on virtual ops, mailbox overflow).
-12. **`screenshot` on desktop** when a GPU is present (already on the
-    README next-steps list).
+12. **In-app GPUI offscreen PNG** so `screenshot` can write real pixels
+    on desktop (the op exists; hosts without a surface stay honest).
 13. **AccessKit auto-export** so apps register fewer ids by hand.
 14. **Per-connection QPS cap** if anyone runs this as a long-lived
     host. Line/connection/mailbox caps are enough for v1.

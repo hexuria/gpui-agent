@@ -11,8 +11,8 @@ protocol drive a GPUI window.
 
 Format, threat model, and `--yes` / session-reuse notes:
 [RECIPES.md](RECIPES.md). Caps that recipes must not bypass:
-[SECURITY.md](SECURITY.md#recipes-experimental). Recording (CI frames vs
-Mac window): [RECORDING.md](RECORDING.md).
+[SECURITY.md](SECURITY.md#recipes-experimental). Step PNGs for AI
+(plus optional video): [RECORDING.md](RECORDING.md).
 
 ## 1. Fetch the PR branch (do not merge)
 
@@ -225,9 +225,43 @@ cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 ```
 
 That suite includes the recipe parse / resolve / run / session-reuse
-edge cases and semantic `--record` start/stop. It does not need a display.
+edge cases, step-screenshot receipt plumbing, and semantic `--record`
+start/stop. It does not need a display.
 
-## 8. Optional: record a recipe
+## 8. Step screenshots (for AI)
+
+**This is the useful visual for an agent between steps** — not a
+full-desktop movie. Headless cannot invent pixels; the receipt still
+lists the intended paths.
+
+```bash
+mkdir -p artifacts/steps
+$CLI recipe run examples/recipes/todo-crud.json --set title="Buy milk" \
+  --screenshot-dir artifacts/steps
+```
+
+On `todo-headless` expect `"ok": true` and `screenshots[]` with
+`001-wait.png` … `error` starting with `screenshot_unavailable` and
+**no** PNG files. That honesty is the CI gate.
+
+One-shot between **manual** clicks (same protocol):
+
+```bash
+$CLI screenshot --out artifacts/steps/mid.png
+# headless: error screenshot_unavailable (no fake file)
+```
+
+On a **desktop** Mac window, if the host still has no GPUI export,
+use the observe-only helper (that window only, no HID):
+
+```bash
+./scripts/screenshot-window.sh --out artifacts/steps/manual.png --title "Agent Todo"
+```
+
+Do not put tokens or secrets in the painted window. See
+[RECORDING.md](RECORDING.md).
+
+## 9. Optional: record a recipe
 
 **CI / this laptop without watching the window** — semantic frames (no
 GPU). Values are redacted unless you pass `--record-values`.

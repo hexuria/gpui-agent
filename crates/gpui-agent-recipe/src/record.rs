@@ -507,6 +507,7 @@ mod tests {
             fingerprint: "abc".into(),
             session_reused: true,
             steps: vec![],
+            screenshots: vec![],
             elapsed_ms: 1,
         };
         rec.on_finish(&receipt).unwrap();

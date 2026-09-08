@@ -36,6 +36,7 @@ See [INTEGRATING.md](INTEGRATING.md).
 | `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists` | Check snapshot fields |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
 | `wait` | optional `timeout_ms` | Block until hello/ready |
+| `screenshot` | optional `path` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Headless / no-export hosts return `screenshot_unavailable` instead of a fake image. |
 | `shutdown` | | Ask the host to exit |
 
 These are also the **only** first-class `gpui-agent` CLI commands (plus
@@ -43,6 +44,8 @@ These are also the **only** first-class `gpui-agent` CLI commands (plus
 or click targets — not new subcommands. `recipe` is a **client-side**
 batch of the ops above (`AgentClient` reuses one TCP session; `rpc_once`
 is the old reconnect path for benches). It is not a new wire `op`.
+`recipe run --screenshot-dir` issues extra `screenshot` ops after steps
+so an agent can visually check UI state mid-run.
 See [RECIPES.md](RECIPES.md), [RECORDING.md](RECORDING.md), and the
 laptop runbook [TRY_ON_MAC.md](TRY_ON_MAC.md).
 

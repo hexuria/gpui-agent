@@ -4,7 +4,7 @@ An experimental control plane that lets an AI agent **observe and drive any GPUI
 
 GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and CDP have nothing to attach to. This repo is a smaller, in-process alternative: the app publishes a **semantic UI tree** and accepts **scripted actions** over localhost JSON — the same idea as [Vercel Native SDK automation](https://native-sdk.dev/automation), purpose-built for GPUI Kit.
 
-The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `click`, `type`, `set-value`, `key`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
+The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set-value`, `key`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
 
 ```mermaid
 flowchart LR
@@ -26,6 +26,7 @@ flowchart LR
 gpui-agent wait
 gpui-agent hello
 gpui-agent snapshot --pretty
+gpui-agent screenshot --out artifacts/steps/mid.png
 gpui-agent click nav-settings
 gpui-agent click --delivery virtual nav-settings
 gpui-agent assert --id page-settings
@@ -99,9 +100,9 @@ Thin wrappers for that demo live in [`examples/todo.sh`](examples/todo.sh). Do n
 
 A scripted agent (or `gpui-agent` CLI) can, without a human mouse or keyboard:
 
-1. Read a **structured snapshot** (ids, roles, names, checked state) — not just a screenshot
+1. Read a **structured snapshot** (ids, roles, names, checked state) — pixels are optional
 2. **Act** with `click` / `type` / `set-value` / `key` / `invoke`
-3. **Assert** the resulting tree
+3. **Assert** the resulting tree (and optionally inspect a step PNG)
 
 The desktop app is a real `gpui-kit = "0.6"` window. The same protocol runs against a headless host so CI and display-less VMs can still prove the loop.
 
@@ -118,7 +119,7 @@ docs/PROTOCOL.md           Wire format
 docs/INTEGRATING.md        How to embed AgentHost in another app
 docs/RECIPES.md            Experimental recipes / mapping / session reuse
 docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
-docs/RECORDING.md          Recipe recording (CI frames + Mac window script)
+docs/RECORDING.md          Step PNGs for AI mid-run + optional video
 docs/SECURITY.md           Trust model, caps, recipe threat model
 examples/todo.sh           Demo-only invoke wrappers
 examples/recipes/          Sample todo CRUD recipe (JSON + wants)
@@ -166,7 +167,7 @@ This is the Flutter `ai_flutter_agent` / semantics-tree loop, adapted to GPUI Ki
 1. **Perceive.** `gpui-agent snapshot` (or MCP tool `snapshot`). You get widgets with **stable ids the app assigned**, plus roles, names, and state. Do **not** scrape pixels to decide what to click.
 2. **Plan.** Choose an action against those ids. Prefer `invoke` when the host exposes a named command; use `set-value` + `click` (`delivery=semantic`, the default) for CI. Use `--delivery virtual` only when you need the real GPUI pointer/key path (hover, hit-test, focus, IME).
 3. **Act.** `click`, `type`, `set-value`, `key`, or `invoke`. Virtual delivery never shares the host HID — it synthesizes events inside the app window and paints an agent cursor overlay.
-4. **Verify.** `assert --id page-root` (or re-snapshot and inspect JSON). If the node is missing or the field is wrong, the CLI exits non-zero.
+4. **Verify.** `assert --id page-root` (or re-snapshot and inspect JSON). Optionally `screenshot --out FILE.png` between steps so an agent can see the app surface. Headless returns `screenshot_unavailable` instead of a fake image. If the node is missing or the field is wrong, the CLI exits non-zero.
 
 To change screens: click a nav control, then assert the destination root id is present.
 
@@ -174,7 +175,7 @@ To change screens: click a nav control, then assert the destination root id is p
 
 The CLI includes a tiny MCP stdio server with the **same generic tools** (no app-specific `todo_*` tools):
 
-`wait`, `hello`, `snapshot`, `click`, `type`, `set_value`, `key`, `assert`, `invoke`, `shutdown`
+`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`, `key`, `assert`, `invoke`, `shutdown`
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (client-side batching; see [docs/RECIPES.md](docs/RECIPES.md)).
@@ -288,7 +289,7 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 - **Semantic remains the default.** Virtual is opt-in per op (`delivery: virtual`) and still requires `GPUI_AGENT=1`.
 - **Virtual is a first slice:** pointer move/down/up at node bounds + keystrokes into a focused field. No OS cursor warping APIs.
 - **Bounds are zero** on the headless host. Desktop fills them from the last painted frame when the agent bridge is on.
-- **No protocol `screenshot` op yet.** Experimental `--record` dumps semantic SVG/PPM frames (headless) or uses a Mac window script. See [docs/RECORDING.md](docs/RECORDING.md).
+- **`screenshot` is observe-only.** The host writes a local PNG of the app surface (not the desktop). Headless / no-export GPUI returns `screenshot_unavailable` instead of inventing pixels. Recipe `--screenshot-dir` lists those paths on the receipt for AI/CI. Video (`--record`) is optional. See [docs/RECORDING.md](docs/RECORDING.md).
 - **The desktop window needs a GPU/display.** Cloud agents should use a headless `AgentHost` + `cargo test`.
 - **Not a GPUI patch.** No fork of `gpui-kit`. When GPUI exposes a first-class test-id / a11y export, this crate should consume it instead of a parallel registry.
 - **Single-app, local only.** No multi-window routing, no remote attach.
@@ -296,7 +297,7 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 ## Next steps
 
 1. Richer virtual input (scroll, drag, IME composition, multi-click)
-2. Protocol `screenshot` / GPUI offscreen frames when a GPU is present ([docs/RECORDING.md](docs/RECORDING.md))
+2. In-app GPUI offscreen frames so `screenshot` can write real pixels when a GPU is present ([docs/RECORDING.md](docs/RECORDING.md))
 3. WASM host implementing `AgentHost` for `platform: web`
 4. Auto-export nodes from AccessKit so apps register fewer ids by hand
 5. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store

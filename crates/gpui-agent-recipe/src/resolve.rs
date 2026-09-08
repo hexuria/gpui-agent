@@ -105,6 +105,7 @@ fn materialize(
             "hello" => Ok((Op::Hello, fills)),
             "wait" => Ok((Op::Wait { timeout_ms: None }, fills)),
             "snapshot" => Ok((Op::Snapshot, fills)),
+            "screenshot" => Ok((Op::Screenshot { path: None }, fills)),
             "shutdown" => Ok((Op::Shutdown, fills)),
             "click" => {
                 let target = required_target(intent, &mut fills)?;
@@ -305,6 +306,13 @@ mod tests {
         let result = resolve_intent("take a snapshot of the tree", &todo_registry()).unwrap();
         assert_eq!(result.schema, "snapshot");
         assert!(result.effects.contains(&Effect::Read));
+    }
+
+    #[test]
+    fn screenshot_intent() {
+        let result = resolve_intent("screenshot png frame", &todo_registry()).unwrap();
+        assert_eq!(result.schema, "screenshot");
+        assert!(matches!(result.op, Op::Screenshot { .. }));
     }
 
     #[test]

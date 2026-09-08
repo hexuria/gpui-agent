@@ -51,6 +51,12 @@ enum Command {
         #[arg(long)]
         pretty: bool,
     },
+    /// Observe-only PNG of the app surface (not the desktop). Host writes `--out`.
+    Screenshot {
+        /// Destination PNG on this machine so the image does not ride NDJSON.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
     /// Activate a widget by stable id (`nav-settings`, `submit`, …).
     Click {
         target: String,
@@ -165,6 +171,9 @@ fn run() -> Result<()> {
                 print_resp(resp);
             }
         }
+        Command::Screenshot { out } => {
+            print_resp(rpc(client.screenshot(out.to_string_lossy().into_owned()))?)
+        }
         Command::Click { target, delivery } => {
             print_resp(rpc(client.click_with_delivery(target, delivery))?)
         }
@@ -245,6 +254,7 @@ mod tests {
                 "wait",
                 "hello",
                 "snapshot",
+                "screenshot",
                 "click",
                 "type",
                 "set-value",
@@ -450,6 +460,8 @@ mod tests {
                         record,
                         record_backend,
                         record_values,
+                        screenshot_dir,
+                        screenshot_flagged,
                         ..
                     },
             } => {
@@ -459,6 +471,53 @@ mod tests {
                 );
                 assert_eq!(record_backend, "semantic");
                 assert!(!record_values);
+                assert!(screenshot_dir.is_none());
+                assert!(!screenshot_flagged);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn screenshot_and_recipe_screenshot_dir_parse() {
+        let shot = Cli::try_parse_from([
+            "gpui-agent",
+            "screenshot",
+            "--out",
+            "artifacts/steps/001-wait.png",
+        ])
+        .unwrap();
+        match shot.command {
+            Command::Screenshot { out } => {
+                assert_eq!(out.as_os_str(), "artifacts/steps/001-wait.png");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let run = Cli::try_parse_from([
+            "gpui-agent",
+            "recipe",
+            "run",
+            "x.json",
+            "--screenshot-dir",
+            "artifacts/steps",
+            "--screenshot-flagged",
+        ])
+        .unwrap();
+        match run.command {
+            Command::Recipe {
+                action:
+                    RecipeCommand::Run {
+                        screenshot_dir,
+                        screenshot_flagged,
+                        ..
+                    },
+            } => {
+                assert_eq!(
+                    screenshot_dir.as_deref(),
+                    Some(std::path::Path::new("artifacts/steps"))
+                );
+                assert!(screenshot_flagged);
             }
             other => panic!("unexpected {other:?}"),
         }

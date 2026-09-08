@@ -1,12 +1,13 @@
+use std::path::PathBuf;
 use std::time::Instant;
 
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::Op;
 use thiserror::Error;
 
-use crate::plan::Plan;
-use crate::receipt::{Receipt, StepReceipt};
-use crate::record::RecipeRecorder;
+use crate::plan::{Plan, PlannedStep};
+use crate::receipt::{Receipt, ScreenshotReceipt, StepReceipt};
+use crate::record::{RecipeRecorder, sanitize_step_id};
 
 #[derive(Debug, Error)]
 pub enum RunError {
@@ -20,12 +21,33 @@ pub enum RunError {
     },
 }
 
+/// After selected recipe steps, ask the host to write an app-surface PNG.
+///
+/// Default (dir set): every step. `flagged_only`: only steps with
+/// `screenshot: true` in JSON / `--screenshot` in wants.
+#[derive(Debug, Clone)]
+pub struct ScreenshotCapture {
+    pub dir: PathBuf,
+    pub flagged_only: bool,
+}
+
+impl ScreenshotCapture {
+    pub fn step_path(&self, index: u32, step_id: &str) -> PathBuf {
+        self.dir
+            .join(format!("{index:03}-{}.png", sanitize_step_id(step_id)))
+    }
+
+    fn wants(&self, step: &PlannedStep) -> bool {
+        !self.flagged_only || step.screenshot
+    }
+}
+
 /// Execute a compiled plan on one reused TCP session.
 ///
 /// Each step is still a normal protocol request (token, version, caps).
 /// The recipe layer never talks to a shell and never skips `authorize_request`.
 pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Receipt, RunError> {
-    run_plan_with_recorder(client, plan, yes, None)
+    run_plan_with_extras(client, plan, yes, None, None)
 }
 
 /// Like [`run_plan`], and optionally paints observe-only frames after each step.
@@ -37,7 +59,21 @@ pub fn run_plan_with_recorder(
     client: &mut AgentClient,
     plan: &Plan,
     yes: bool,
+    recorder: Option<&mut dyn RecipeRecorder>,
+) -> Result<Receipt, RunError> {
+    run_plan_with_extras(client, plan, yes, recorder, None)
+}
+
+/// [`run_plan_with_recorder`] plus optional per-step app-surface PNGs.
+///
+/// Screenshot unavailability is recorded on the receipt and does **not**
+/// fail the recipe. No fake PNG is written.
+pub fn run_plan_with_extras(
+    client: &mut AgentClient,
+    plan: &Plan,
+    yes: bool,
     mut recorder: Option<&mut dyn RecipeRecorder>,
+    screenshots: Option<&ScreenshotCapture>,
 ) -> Result<Receipt, RunError> {
     if plan.requires_yes && !yes {
         return Err(RunError::NeedsYes);
@@ -45,6 +81,9 @@ pub fn run_plan_with_recorder(
 
     if let Some(rec) = recorder.as_mut() {
         let _ = rec.on_start(plan);
+    }
+    if let Some(capture) = screenshots {
+        let _ = std::fs::create_dir_all(&capture.dir);
     }
 
     let started = Instant::now();
@@ -54,6 +93,7 @@ pub fn run_plan_with_recorder(
         fingerprint: plan.fingerprint.clone(),
         session_reused: false,
         steps: Vec::with_capacity(plan.steps.len()),
+        screenshots: Vec::new(),
         elapsed_ms: 0,
     };
 
@@ -61,19 +101,25 @@ pub fn run_plan_with_recorder(
     capture_frame(client, &mut recorder, frame_index, "_start", true);
     frame_index += 1;
 
-    for step in &plan.steps {
+    for (i, step) in plan.steps.iter().enumerate() {
         let step_started = Instant::now();
+        let shot_index = (i as u32) + 1;
         match client.rpc(step.op.clone()) {
             Ok(resp) => {
                 receipt.session_reused = client.has_session();
                 let ok = resp.ok;
                 let error = resp.error.clone();
+                let screenshot = capture_screenshot(client, screenshots, shot_index, step);
+                if let Some(shot) = screenshot.clone() {
+                    receipt.screenshots.push(shot);
+                }
                 receipt.steps.push(StepReceipt {
                     id: step.id.clone(),
                     ok,
                     error: error.clone(),
                     elapsed_ms: step_started.elapsed().as_millis() as u64,
                     result: resp.result,
+                    screenshot,
                 });
                 capture_frame(client, &mut recorder, frame_index, &step.id, ok);
                 frame_index += 1;
@@ -90,12 +136,17 @@ pub fn run_plan_with_recorder(
             Err(error) => {
                 receipt.ok = false;
                 receipt.session_reused = client.has_session();
+                let screenshot = capture_screenshot(client, screenshots, shot_index, step);
+                if let Some(shot) = screenshot.clone() {
+                    receipt.screenshots.push(shot);
+                }
                 receipt.steps.push(StepReceipt {
                     id: step.id.clone(),
                     ok: false,
                     error: Some(error.clone()),
                     elapsed_ms: step_started.elapsed().as_millis() as u64,
                     result: None,
+                    screenshot,
                 });
                 capture_frame(client, &mut recorder, frame_index, &step.id, false);
                 receipt.elapsed_ms = started.elapsed().as_millis() as u64;
@@ -111,6 +162,39 @@ pub fn run_plan_with_recorder(
     receipt.elapsed_ms = started.elapsed().as_millis() as u64;
     receipt.session_reused = client.has_session();
     Ok(receipt)
+}
+
+fn capture_screenshot(
+    client: &mut AgentClient,
+    capture: Option<&ScreenshotCapture>,
+    index: u32,
+    step: &PlannedStep,
+) -> Option<ScreenshotReceipt> {
+    let capture = capture?;
+    if !capture.wants(step) {
+        return None;
+    }
+    let path = capture.step_path(index, &step.id);
+    let path_str = path.to_string_lossy().into_owned();
+    match client.rpc(Op::Screenshot {
+        path: Some(path_str.clone()),
+    }) {
+        Ok(resp) if resp.ok => Some(ScreenshotReceipt {
+            path: path_str,
+            ok: true,
+            error: None,
+        }),
+        Ok(resp) => Some(ScreenshotReceipt {
+            path: path_str,
+            ok: false,
+            error: resp.error.or_else(|| Some("screenshot failed".into())),
+        }),
+        Err(error) => Some(ScreenshotReceipt {
+            path: path_str,
+            ok: false,
+            error: Some(error),
+        }),
+    }
 }
 
 fn capture_frame(

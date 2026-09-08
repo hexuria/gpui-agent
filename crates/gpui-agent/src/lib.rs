@@ -15,6 +15,7 @@ pub mod host;
 pub mod mailbox;
 pub mod ndjson;
 pub mod protocol;
+pub mod screenshot;
 pub mod security;
 pub mod server;
 pub mod tree;
@@ -27,6 +28,9 @@ pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{read_limited_line, read_limited_line_into, write_json_line};
 pub use protocol::{
     AssertSpec, DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response,
+};
+pub use screenshot::{
+    SCREENSHOT_UNAVAILABLE, TEST_PNG, is_screenshot_unavailable, screenshot_unavailable, write_png,
 };
 pub use security::{
     AgentConfig, SecurityError, ensure_loopback, from_env, is_loopback_addr, tokens_match,

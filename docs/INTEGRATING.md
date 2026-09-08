@@ -120,7 +120,7 @@ names in the project instructions. Recipe format and `--yes`:
       invocation instead of one process per click ([RECIPES.md](RECIPES.md);
       laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md)). `invoke` names in
       the recipe must match the host allow-list; shutdown recipes need
-      `--yes`. Optional `--record` is observe-only
+      `--yes`. Optional `--screenshot-dir` / `--record` are observe-only
       ([RECORDING.md](RECORDING.md)). Recipes still cannot bypass
       [SECURITY.md](SECURITY.md#recipes-experimental).
 - [ ] Product builds leave the feature off

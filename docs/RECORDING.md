@@ -1,133 +1,158 @@
-# Experimental window / recipe recording
+# Step screenshots + optional recipe recording
 
-**Partial yes.** You can record a recipe from start → finish. True
-**window-scoped pixels** are a Mac helper script (observe-only). CI
-should stay **headless**: receipts first, optional semantic SVG/PPM
-frames, never a human desktop for green.
+**Step PNGs are the reliable path for AI validation between recipe
+steps.** Video is nice-to-have. This is observe-only: no OS HID.
 
-This sits on the experimental recipes + session-reuse work. It does
-**not** steal the OS pointer or keyboard. Recording is opt-in observe
-only (`--record`). Semantic delivery stays the default.
-
-Laptop try: [TRY_ON_MAC.md](TRY_ON_MAC.md#8-optional-record-a-recipe).
+Laptop try: [TRY_ON_MAC.md](TRY_ON_MAC.md#8-step-screenshots-for-ai).
 Threat model: [SECURITY.md](SECURITY.md#recipes-experimental).
+
+## How an AI uses this
+
+1. Run a recipe (or a few manual protocol ops).
+2. After a step — or between manual ops — look at the **app-only PNG**
+   named on the receipt (`001-wait.png`, `002-add.png`, …).
+3. Decide the next click / assert from **that frame plus the semantic
+   snapshot**, not a full-desktop grab.
+4. Treat `screenshot_unavailable` as honest: headless has no pixels.
+   Do not invent a PNG. CI still greens on the receipt.
+
+```bash
+# PRIMARY — every step (or flagged steps) writes an intended path
+gpui-agent recipe run examples/recipes/todo-crud.json \
+  --set title="Buy milk" \
+  --screenshot-dir artifacts/steps/
+
+# one-shot between manual steps (same protocol op)
+gpui-agent screenshot --out artifacts/steps/mid.png
+```
+
+The host writes the file on the **same machine** so the image does not
+ride the 1 MiB NDJSON line. Receipts list `{ path, ok, error }` for
+AI/CI. Headless lists `screenshot_unavailable` and creates **no** file.
 
 ## Answer (feasibility)
 
-| Approach | Window-only? | CI? | Status here |
+| Approach | App-only? | CI? | Status here |
 | --- | --- | --- | --- |
-| **Semantic frames** (tree → SVG + PPM after each step) | N/A (not pixels) | **Yes** — no display, deterministic, text-diff SVG | **Shipped** (`--record`) |
-| **macOS window capture** (`screencapture -l` CGWindowID) | **Yes** | No (needs a real display + Screen Recording permission) | **Script** `scripts/record-window.sh` |
-| ScreenCaptureKit / AVFoundation | Yes (more code, entitlements) | No | Not vendored |
-| Linux Xvfb + ffmpeg crop | Crop, not a real window id | Fragile GPU/Xvfb | Documented only |
-| GPUI swapchain / offscreen PNG | Best for CI pixels | Needs GPU + a GPUI export API we do not have in 0.6 | **Ask later** |
+| **Protocol `screenshot`** + `--screenshot-dir` | Yes (host surface) | **Receipt + optional PNG.** Headless is honest `screenshot_unavailable` | **Shipped** (PRIMARY) |
+| **One-shot CLI / MCP `screenshot`** | Yes | Same honesty | **Shipped** |
+| **Semantic frames** (tree → SVG + PPM) | N/A (not pixels) | Yes — text-diff SVG | **Shipped** (`--record`, SECONDARY) |
+| **macOS window PNG** (`screencapture -l`) | **Yes** | No (display + Screen Recording) | Scripts `screenshot-window.sh` / `record-window.sh` |
+| ScreenCaptureKit / AVFoundation | Yes | No | Not vendored |
+| GPUI swapchain / offscreen PNG | Best for CI pixels | Needs a GPUI export API we do not have in 0.6 | Host returns unavailable until then |
 | Full-desktop capture | No — leaks other apps | No | **Out of scope** |
 
 **CI/CD recommendation**
 
-1. **Primary gate:** `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe` and `gpui-agent recipe run` against `todo-headless`. Assert `receipt.ok` (and optionally fingerprint in-process).
-2. **Optional artifact:** `recipe run --record artifacts/run` on the same headless host. Upload `manifest.json` + `*.svg` (CI-diffable). Mux `*.ppm` with `ffmpeg` only if you want a movie.
-3. **Never** require a laptop display, Screen Recording permission, or Xvfb for green.
-4. **Human demo / flaky-pixel debug:** Mac desktop `todo` + `scripts/record-window.sh` → `recipe-run.mp4`. Treat that as a review artifact, not a gate.
+1. **Primary gate:** `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe` and `gpui-agent recipe run` against `todo-headless`. Assert `receipt.ok`.
+2. **Visual gate:** receipts. Optional PNGs when a host can write them. On headless, `screenshots[].ok == false` and `error` starts with `screenshot_unavailable` — that is success for the honesty check, not a fake frame.
+3. **Optional movie:** `--record artifacts/run` (semantic SVG/PPM) or a Mac `record-window.sh` mp4. Never a green-build requirement.
+4. **Never** require a laptop display, Screen Recording permission, or Xvfb for green.
 
-Why not in-app GPUI frames today? The protocol has no `screenshot` op
-yet; headless bounds are zero; published `gpui-kit 0.6` does not give
-this lab a small offscreen swapchain dump without pulling GPU + extra
-crates. Semantic frames reuse the snapshot we already trust.
+## Step screenshots (PRIMARY)
 
-## CLI
+Wire-up:
+
+| Mechanism | Behavior |
+| --- | --- |
+| `recipe run --screenshot-dir DIR` | After **every** step, `screenshot` with `DIR/NNN-id.png` (1-based, not `_start`) |
+| `--screenshot-flagged` | Only steps with JSON `"screenshot": true` or wants `--screenshot` |
+| Recipe step `"op": "screenshot", "path": "…"` | A real step; fails if the host cannot write |
+| `gpui-agent screenshot --out FILE.png` | One-shot mid-flight check |
+| MCP tool `screenshot` `{ "path": "…" }` | Same op |
+
+Names are deterministic: `001-wait.png`, `002-add.png`. The receipt
+repeats those paths on `steps[].screenshot` and top-level `screenshots`.
+
+JSON:
+
+```json
+{ "id": "add", "op": "click", "target": "todo-add", "screenshot": true }
+```
+
+Wants:
+
+```
+wait --screenshot
+click --screenshot todo-add
+screenshot --out artifacts/steps/manual.png
+```
+
+Headless / current desktop GPUI: the host returns
+`screenshot_unavailable: …` and **does not write a file**. A mock host
+in tests may write `TEST_PNG` (1×1) — that is not a stand-in in
+production.
+
+When a host *can* export the app surface (later GPUI offscreen, or
+Mac `screencapture -l` via `scripts/screenshot-window.sh`), the same
+paths become real PNGs. Prefer in-app/offscreen over a desktop grab.
+
+## Screenrecord (SECONDARY)
+
+Optional `--record out.mp4` (or a frames directory) from start → finish
+when you want a movie. Default backend is **semantic** (headless-safe
+SVG + PPM). `--record-backend os` is a stub that points at
+`scripts/record-window.sh`. Mux is optional ffmpeg; CI should not gate
+on the mp4.
 
 ```bash
-# works on this cloud VM / Linux CI (no window)
 gpui-agent recipe run examples/recipes/todo-crud.json \
   --set title="Buy milk" \
   --record artifacts/recipe-run
 
 # video filename → frames in artifacts/recipe-run.mp4.frames
-gpui-agent recipe run examples/recipes/todo-crud.json \
-  --set title="Buy milk" \
-  --record artifacts/recipe-run.mp4
+gpui-agent recipe run … --record artifacts/recipe-run.mp4
 
-# include snapshot field values (off by default; still redacts role=password)
 gpui-agent recipe run … --record artifacts/run --record-values
-
-# stub: in-process OS capture is not implemented
-gpui-agent recipe run … --record artifacts/run --record-backend os
-# → error pointing at scripts/record-window.sh
 ```
 
-`--record` starts on plan start (writes `recording.flag`), snapshots the
-tree after `_start` and after **each** step on the reused TCP session
-(still token + caps), and writes `manifest.json` on success **or**
-failure (partial frames). Later recipe steps that did not run produce
-no frames.
-
-`--record-backend os` always errors in this CLI on purpose: we will not
-bundle ScreenCaptureKit or spawn ffmpeg from the generic protocol
-binary. Use the script.
-
-## Semantic frames (headless)
-
-Each frame:
-
-| File | What |
-| --- | --- |
-| `NNNN-step.svg` | Labeled tree (id / role / name). CI can diff as text. |
-| `NNNN-step.ppm` | Color strip (mux with ffmpeg; no extra crate). |
-| `manifest.json` | Recipe name, fingerprint, frame list, mux hint |
-
-Values are **`«redacted»`** unless `--record-values`. `role=password` is
-always redacted. Artifacts stay on the local disk you passed.
+`--record` writes `recording.flag`, snapshots the tree after `_start`
+and after each step, then `manifest.json`. Values are `«redacted»`
+unless `--record-values`. `role=password` is always redacted.
 
 ```bash
 ./scripts/mux-record-frames.sh artifacts/recipe-run
-# needs ffmpeg; otherwise keep the SVGs
 ```
 
 ## macOS window-only pixels
 
-Requires a display, desktop `todo` (title **Agent Todo**), and Screen
-Recording permission for the terminal.
+Needs a display, desktop `todo` (title **Agent Todo**), and Screen
+Recording permission. Observe-only.
 
 ```bash
-# terminal 1
-GPUI_AGENT=1 ./target/debug/todo
+# one PNG between manual steps (when protocol screenshot is unavailable)
+./scripts/screenshot-window.sh --out artifacts/steps/manual.png --title "Agent Todo"
 
-# terminal 2 — window PNGs, optional mp4
+# continuous window PNGs / optional mp4 while a recipe runs
 ./scripts/record-window.sh --out artifacts/recipe-run --title "Agent Todo"
-
-# terminal 3 — same dir so the script sees recording.flag
-./target/debug/gpui-agent recipe run examples/recipes/todo-crud.json \
-  --set title="Buy milk" --record artifacts/recipe-run
 ```
 
-`screencapture -l <windowid>` captures **that window only**. The script
-does not click or type. It stops when `recording.flag` is removed
-(recipe finish) or `--seconds` elapses.
-
-Linux: the script exits with a pointer at `--record-backend semantic`.
-Windows: later (not this slice).
+`screencapture -l` is **that window only**. The scripts do not click or
+type. Linux: they exit with a pointer at `--screenshot-dir` /
+`--record-backend semantic`.
 
 ## Security
 
-- Recording does **not** bypass loopback, token, line/conn/mailbox, or
-  `--yes`. Extra snapshots are normal `Request`s.
-- Do not enable `--record-values` in CI if drafts / passwords land on
-  the tree (M3). Default redaction is the safe path.
-- Do not commit `artifacts/`. Tokens must not be drawn on the window
-  chrome.
-- OS capture can still show whatever is **painted in that window**
-  (including typed secrets). Prefer semantic frames in CI.
+- Screenshots and recording do **not** bypass loopback, token,
+  line/conn/mailbox, or `--yes`. Extra `screenshot` / `snapshot` RPCs
+  are normal `Request`s.
+- **Do not put secrets in frames.** Tokens must not be painted on the
+  window. Default semantic `--record` redacts `value`; password roles
+  stay redacted. App-surface PNGs can still show whatever is on screen
+  (typed secrets included).
+- Do not commit `artifacts/`.
+- Full-desktop capture is out of scope (other apps, notifications).
 
 ## Tests
 
-Recorder start/stop, redaction, `--record` clap plumbing, and a
-headless recipe that stops mid-assert (partial frames) run in
-`gpui-agent-recipe` / `gpui-agent-cli`. They do not need a GPU.
+Receipt lists screenshot paths; the unavailable path is honest (error
+prefix, no file); `--screenshot-dir` / `--screenshot-flagged` clap and
+JSON `screenshot: true` are covered even when frames are mocked (`TEST_PNG`)
+on CI. Semantic `--record` start/stop stays in `gpui-agent-recipe`.
 
 ## Ask later
 
-1. Protocol `screenshot` once desktop GPUI can export a frame.
+1. In-app GPUI offscreen PNG once 0.6 (or a later kit) exports a frame.
 2. In-process ScreenCaptureKit (entitlements, not a crate default).
 3. MCP `recipe_run` `record` path (stdio + local files is awkward).
 4. Linux `ffmpeg` + `_NET_WM` window crop behind a documented opt-in.

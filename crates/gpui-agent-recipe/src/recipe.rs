@@ -39,6 +39,9 @@ pub struct RecipeStep {
     pub id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub needs: Vec<String>,
+    /// After this step, write a PNG when `recipe run --screenshot-dir` is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub screenshot: bool,
     #[serde(flatten)]
     pub op: Op,
 }
@@ -361,6 +364,23 @@ fn tokenize(line: &str) -> Result<Vec<String>, String> {
 }
 
 fn parse_wants_step(tokens: &[String], id: String) -> Result<RecipeStep, String> {
+    let mut screenshot = false;
+    let filtered: Vec<String> = tokens
+        .iter()
+        .filter(|tok| {
+            if tok.as_str() == "--screenshot" {
+                screenshot = true;
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+    let tokens = &filtered;
+    if tokens.is_empty() {
+        return Err("missing op".into());
+    }
     let op_name = tokens[0].replace('-', "_");
     let op = match op_name.as_str() {
         "wait" => Op::Wait { timeout_ms: None },
@@ -409,6 +429,9 @@ fn parse_wants_step(tokens: &[String], id: String) -> Result<RecipeStep, String>
         "assert" => Op::Assert {
             spec: parse_assert_spec(&tokens[1..])?,
         },
+        "screenshot" => Op::Screenshot {
+            path: parse_screenshot_path(&tokens[1..])?,
+        },
         "invoke" => {
             let name = tokens
                 .get(1)
@@ -433,8 +456,25 @@ fn parse_wants_step(tokens: &[String], id: String) -> Result<RecipeStep, String>
     Ok(RecipeStep {
         id,
         needs: Vec::new(),
+        screenshot,
         op,
     })
+}
+
+fn parse_screenshot_path(tokens: &[String]) -> Result<Option<String>, String> {
+    if tokens.is_empty() {
+        return Ok(None);
+    }
+    if tokens[0] == "--out" {
+        let path = tokens
+            .get(1)
+            .ok_or_else(|| "--out needs a path".to_string())?;
+        return Ok(Some(path.clone()));
+    }
+    if tokens[0].starts_with('-') {
+        return Err(format!("bad screenshot token `{}`", tokens[0]));
+    }
+    Ok(Some(tokens[0].clone()))
 }
 
 fn take_delivery(tokens: &[String]) -> Result<(DeliveryMode, &[String]), String> {
@@ -556,13 +596,15 @@ mod tests {
             "params": ["title"],
             "steps": [
                 {"id": "set", "op": "set_value", "target": "todo-input", "value": "$title"},
-                {"id": "add", "op": "click", "target": "todo-add", "needs": ["set"]}
+                {"id": "add", "op": "click", "target": "todo-add", "needs": ["set"], "screenshot": true}
             ]
         }"#;
         let recipe = Recipe::from_json(json).unwrap();
         validate_recipe(&recipe, &todo_registry()).unwrap();
         assert_eq!(recipe.steps.len(), 2);
         assert_eq!(recipe.steps[1].needs, vec!["set"]);
+        assert!(!recipe.steps[0].screenshot);
+        assert!(recipe.steps[1].screenshot);
     }
 
     #[test]
@@ -895,5 +937,28 @@ assert todo-item-1 name=$title checked=false
         assert!(err.contains("--delivery"), "{err}");
         let err = parse_wants("assert todo-item-1 foo=bar", "x").unwrap_err();
         assert!(err.contains("unknown assert field"), "{err}");
+    }
+
+    #[test]
+    fn wants_screenshot_flag_and_op() {
+        let recipe = parse_wants(
+            "wait --screenshot\nscreenshot --out artifacts/steps/one.png\nclick --screenshot todo-add",
+            "shots",
+        )
+        .unwrap();
+        assert!(recipe.steps[0].screenshot);
+        assert!(matches!(recipe.steps[0].op, Op::Wait { .. }));
+        match &recipe.steps[1].op {
+            Op::Screenshot { path } => {
+                assert_eq!(path.as_deref(), Some("artifacts/steps/one.png"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!recipe.steps[1].screenshot);
+        match &recipe.steps[2].op {
+            Op::Click { target, .. } => assert_eq!(target, "todo-add"),
+            other => panic!("{other:?}"),
+        }
+        assert!(recipe.steps[2].screenshot);
     }
 }

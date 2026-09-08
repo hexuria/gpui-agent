@@ -5,9 +5,9 @@ use anyhow::{Context, Result, anyhow};
 use clap::Subcommand;
 use gpui_agent::client::AgentClient;
 use gpui_agent_recipe::{
-    RecipeRecorder, RecordBackend, RunError, SemanticRecorder, compile_plan, order_check,
-    os_record_help, parse_recipe, resolve_intent, resolve_record_target, run_plan,
-    run_plan_with_recorder, todo_registry, validate_recipe,
+    RecipeRecorder, RecordBackend, RunError, ScreenshotCapture, SemanticRecorder, compile_plan,
+    order_check, os_record_help, parse_recipe, resolve_intent, resolve_record_target,
+    run_plan_with_extras, todo_registry, validate_recipe,
 };
 
 #[derive(Debug, Subcommand)]
@@ -48,6 +48,13 @@ pub enum RecipeCommand {
         /// Include snapshot `value` fields in semantic frames (still redacts `role=password`).
         #[arg(long)]
         record_values: bool,
+        /// After steps, ask the host for an app-surface PNG (not the desktop).
+        /// Headless lists `screenshot_unavailable` on the receipt and does not fake a file.
+        #[arg(long, value_name = "DIR")]
+        screenshot_dir: Option<PathBuf>,
+        /// With `--screenshot-dir`, only steps marked `screenshot: true` / `--screenshot`.
+        #[arg(long)]
+        screenshot_flagged: bool,
     },
     /// Map a natural-language intent through the local schema registry.
     Resolve { intent: String },
@@ -97,11 +104,18 @@ pub fn run(client: Option<AgentClient>, command: RecipeCommand) -> Result<()> {
             record,
             record_backend,
             record_values,
+            screenshot_dir,
+            screenshot_flagged,
         } => {
             let mut client = client.context("recipe run needs a client")?;
             let backend = RecordBackend::parse(&record_backend).map_err(|err| anyhow!("{err}"))?;
             if record.is_some() && backend == RecordBackend::Os {
                 return Err(anyhow!("{}", os_record_help()));
+            }
+            if screenshot_flagged && screenshot_dir.is_none() {
+                return Err(anyhow!(
+                    "--screenshot-flagged requires --screenshot-dir DIR"
+                ));
             }
             let recipe = parse_recipe(&path).map_err(|err| anyhow!("{err}"))?;
             let set = parse_set(&set)?;
@@ -115,11 +129,17 @@ pub fn run(client: Option<AgentClient>, command: RecipeCommand) -> Result<()> {
             } else {
                 None
             };
-            let run_result = if let Some(rec) = recorder.as_mut() {
-                run_plan_with_recorder(&mut client, &plan, yes, Some(rec))
-            } else {
-                run_plan(&mut client, &plan, yes)
-            };
+            let capture = screenshot_dir.as_ref().map(|dir| ScreenshotCapture {
+                dir: dir.clone(),
+                flagged_only: screenshot_flagged,
+            });
+            let run_result = run_plan_with_extras(
+                &mut client,
+                &plan,
+                yes,
+                recorder.as_mut().map(|rec| rec as &mut dyn RecipeRecorder),
+                capture.as_ref(),
+            );
             let finish_err = if let Some(rec) = recorder.as_mut() {
                 match &run_result {
                     Ok(receipt) => rec.on_finish(receipt).err(),
@@ -131,6 +151,7 @@ pub fn run(client: Option<AgentClient>, command: RecipeCommand) -> Result<()> {
                             fingerprint: plan.fingerprint.clone(),
                             session_reused: false,
                             steps: vec![],
+                            screenshots: vec![],
                             elapsed_ms: 0,
                         })
                         .err(),
@@ -218,9 +239,32 @@ mod tests {
                 record: Some(PathBuf::from("artifacts/x")),
                 record_backend: "os".into(),
                 record_values: false,
+                screenshot_dir: None,
+                screenshot_flagged: false,
             },
         )
         .unwrap_err();
         assert!(err.to_string().contains("record-window.sh"), "{err}");
+    }
+
+    #[test]
+    fn screenshot_flagged_requires_dir() {
+        let client = AgentClient::connect("127.0.0.1:1".parse().unwrap());
+        let err = run(
+            Some(client),
+            RecipeCommand::Run {
+                path: PathBuf::from("examples/recipes/todo-crud.json"),
+                set: vec!["title=x".into()],
+                yes: false,
+                receipt_out: None,
+                record: None,
+                record_backend: "semantic".into(),
+                record_values: false,
+                screenshot_dir: None,
+                screenshot_flagged: true,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--screenshot-dir"), "{err}");
     }
 }

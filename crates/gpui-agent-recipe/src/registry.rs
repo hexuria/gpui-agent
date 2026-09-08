@@ -91,6 +91,14 @@ pub fn todo_registry() -> Registry {
             &[],
         ),
         protocol(
+            "screenshot",
+            "Write an observe-only PNG of the app surface (not the desktop).",
+            vec![Effect::Read],
+            true,
+            &["screenshot", "png", "frame"],
+            &[],
+        ),
+        protocol(
             "click",
             "Activate a widget by stable id.",
             vec![Effect::Write],
@@ -269,6 +277,7 @@ mod tests {
         assert_eq!(reg.get("todo.add").unwrap().effects, vec![Effect::Write]);
         assert!(reg.get("shutdown").unwrap().effects.contains(&Effect::Exit));
         assert!(reg.get("click").is_some());
+        assert!(reg.get("screenshot").unwrap().idempotent);
         assert!(reg.get("todo-input").is_some());
     }
 

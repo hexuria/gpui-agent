@@ -7,8 +7,8 @@ use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
 use gpui_agent::{MAX_LINE_BYTES, read_limited_line};
 use gpui_agent_recipe::{
-    RunError, compile_plan, parse_recipe_source, resolve_intent, run_plan, todo_registry,
-    validate_recipe,
+    RunError, ScreenshotCapture, compile_plan, parse_recipe_source, resolve_intent,
+    run_plan_with_extras, todo_registry, validate_recipe,
 };
 use serde_json::{Value, json};
 
@@ -110,6 +110,17 @@ pub(crate) fn tools() -> Vec<Value> {
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
+            "screenshot",
+            "Observe-only PNG of the app surface (not the full desktop). The host writes `path` on the same machine so the image does not ride NDJSON. Headless returns screenshot_unavailable instead of a fake image.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Destination PNG path on the host machine." }
+                },
+                "required": ["path"]
+            }),
+        ),
+        tool(
             "click",
             "Activate a widget by stable id. delivery=semantic (default) calls the handler; delivery=virtual synthesizes in-window GPUI pointer events (never OS HID).",
             input_schema_with_delivery(&["target"]),
@@ -194,7 +205,9 @@ pub(crate) fn tools() -> Vec<Value> {
                 "properties": {
                     "recipe": { "description": "Recipe JSON object or wants text." },
                     "set": { "type": "object", "description": "Parameter bindings." },
-                    "yes": { "type": "boolean" }
+                    "yes": { "type": "boolean" },
+                    "screenshot_dir": { "type": "string", "description": "After each step (or flagged steps), write an app-surface PNG. Receipt lists paths; headless is screenshot_unavailable." },
+                    "screenshot_flagged": { "type": "boolean", "description": "Only steps with screenshot: true." }
                 },
                 "required": ["recipe"]
             }),
@@ -266,6 +279,7 @@ fn call_tool(client: &mut AgentClient, params: &Value) -> Result<Value, String> 
         }
         "hello" => client.expect_ok(Op::Hello)?,
         "snapshot" => client.snapshot()?,
+        "screenshot" => client.screenshot(args.string("path")?)?,
         "click" => client.click_with_delivery(args.string("target")?, parse_delivery(&args)?)?,
         "type" => client.type_with_delivery(
             args.string("target")?,
@@ -353,7 +367,19 @@ fn recipe_run_tool(client: &mut AgentClient, args: &Value) -> Result<Value, Stri
     let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
     let plan = compile_plan(&recipe, &recipe_set(args), &todo_registry())?;
     let yes = args.get("yes").and_then(Value::as_bool).unwrap_or(false);
-    match run_plan(client, &plan, yes) {
+    let flagged = args
+        .get("screenshot_flagged")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let dir = args.get("screenshot_dir").and_then(Value::as_str);
+    if flagged && dir.is_none() {
+        return Err("screenshot_flagged requires screenshot_dir".into());
+    }
+    let capture = dir.map(|dir| ScreenshotCapture {
+        dir: std::path::PathBuf::from(dir),
+        flagged_only: flagged,
+    });
+    match run_plan_with_extras(client, &plan, yes, None, capture.as_ref()) {
         Ok(receipt) => serde_json::to_value(receipt).map_err(|err| err.to_string()),
         Err(RunError::Step { receipt, error, .. }) => {
             let mut value = serde_json::to_value(receipt).map_err(|err| err.to_string())?;
@@ -408,6 +434,7 @@ mod tests {
                 "wait",
                 "hello",
                 "snapshot",
+                "screenshot",
                 "click",
                 "type",
                 "set_value",
@@ -457,6 +484,20 @@ mod tests {
     fn recipe_resolve_shell_like_fails_closed() {
         let err = recipe_resolve_tool(&json!({ "intent": "rm -rf /" })).unwrap_err();
         assert!(err.contains("fail closed"), "{err}");
+    }
+
+    #[test]
+    fn recipe_run_screenshot_flagged_requires_dir() {
+        let mut client = AgentClient::connect("127.0.0.1:1".parse().unwrap());
+        let err = recipe_run_tool(
+            &mut client,
+            &json!({
+                "recipe": "hello",
+                "screenshot_flagged": true
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("screenshot_dir"), "{err}");
     }
 
     #[test]
