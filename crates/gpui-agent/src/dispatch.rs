@@ -20,11 +20,18 @@ impl DispatchResult {
 
 /// Single place that turns a request into a response. Used by the TCP
 /// server, the mailbox drain, and unit tests — no network required.
-pub fn handle_request(host: &mut dyn AgentHost, req: Request, expected_token: Option<&str>) -> Response {
+pub fn handle_request(
+    host: &mut dyn AgentHost,
+    req: Request,
+    expected_token: Option<&str>,
+) -> Response {
     if req.v != PROTOCOL_VERSION {
         return Response::err(
             req.id,
-            format!("unsupported protocol version {} (want {PROTOCOL_VERSION})", req.v),
+            format!(
+                "unsupported protocol version {} (want {PROTOCOL_VERSION})",
+                req.v
+            ),
         );
     }
 
@@ -51,16 +58,14 @@ pub fn handle_request(host: &mut dyn AgentHost, req: Request, expected_token: Op
             Ok(()) => Response::ok(req.id),
             Err(error) => Response::err(req.id, error),
         },
-        Op::Shutdown => {
-            match host.dispatch(&Op::Shutdown) {
-                Ok(result) => {
-                    let mut resp = Response::ok(req.id);
-                    resp.result = result.value;
-                    resp
-                }
-                Err(error) => Response::err(req.id, error),
+        Op::Shutdown => match host.dispatch(&Op::Shutdown) {
+            Ok(result) => {
+                let mut resp = Response::ok(req.id);
+                resp.result = result.value;
+                resp
             }
-        }
+            Err(error) => Response::err(req.id, error),
+        },
         other => match host.dispatch(&other) {
             Ok(result) => {
                 let mut resp = Response::ok(req.id);
@@ -78,7 +83,12 @@ pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
 
     match (node, exists) {
         (None, true) => return Err(format!("node `{}` not found", spec.target)),
-        (Some(_), false) => return Err(format!("node `{}` exists but should be absent", spec.target)),
+        (Some(_), false) => {
+            return Err(format!(
+                "node `{}` exists but should be absent",
+                spec.target
+            ));
+        }
         (None, false) => return Ok(()),
         (Some(node), true) => {
             if let Some(name) = spec.name.as_deref() {
@@ -133,6 +143,7 @@ mod tests {
                 app: "test".into(),
                 platform: PlatformKind::Headless,
                 ready: true,
+                deliveries: vec![],
             }
         }
 

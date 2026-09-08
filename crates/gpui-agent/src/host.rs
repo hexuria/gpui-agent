@@ -1,6 +1,6 @@
+use crate::DispatchResult;
 use crate::protocol::{HelloInfo, Op};
 use crate::tree::UiTree;
-use crate::DispatchResult;
 
 /// A host is the platform-specific half of the control plane.
 ///

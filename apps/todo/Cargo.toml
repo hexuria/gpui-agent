@@ -17,6 +17,7 @@ agent = []
 gpui-kit.workspace = true
 todo-core.workspace = true
 gpui-agent.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

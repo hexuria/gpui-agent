@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
-use crate::protocol::{AssertSpec, Op, Request, Response};
+use crate::protocol::{AssertSpec, DeliveryMode, Op, Request, Response};
 use crate::server::default_addr;
 
 /// Blocking NDJSON client used by the CLI, MCP shim, and tests.
@@ -63,7 +63,10 @@ impl AgentClient {
                 }
             }
         }
-        Err(format!("connect {addr} failed: {last_err}", addr = self.addr))
+        Err(format!(
+            "connect {addr} failed: {last_err}",
+            addr = self.addr
+        ))
     }
 
     fn roundtrip(&self, req: &Request) -> Result<Response, String> {
@@ -100,12 +103,67 @@ impl AgentClient {
     }
 
     pub fn click(&mut self, target: impl Into<String>) -> Result<Response, String> {
+        self.click_with_delivery(target, DeliveryMode::Semantic)
+    }
+
+    pub fn click_with_delivery(
+        &mut self,
+        target: impl Into<String>,
+        delivery: DeliveryMode,
+    ) -> Result<Response, String> {
         self.expect_ok(Op::Click {
             target: target.into(),
+            delivery,
         })
     }
 
-    pub fn set_value(&mut self, target: impl Into<String>, value: impl Into<String>) -> Result<Response, String> {
+    pub fn type_text(
+        &mut self,
+        target: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Result<Response, String> {
+        self.type_with_delivery(target, text, DeliveryMode::Semantic)
+    }
+
+    pub fn type_with_delivery(
+        &mut self,
+        target: impl Into<String>,
+        text: impl Into<String>,
+        delivery: DeliveryMode,
+    ) -> Result<Response, String> {
+        self.expect_ok(Op::Type {
+            target: target.into(),
+            text: text.into(),
+            delivery,
+        })
+    }
+
+    pub fn key(
+        &mut self,
+        target: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Result<Response, String> {
+        self.key_with_delivery(target, key, DeliveryMode::Semantic)
+    }
+
+    pub fn key_with_delivery(
+        &mut self,
+        target: impl Into<String>,
+        key: impl Into<String>,
+        delivery: DeliveryMode,
+    ) -> Result<Response, String> {
+        self.expect_ok(Op::Key {
+            target: target.into(),
+            key: key.into(),
+            delivery,
+        })
+    }
+
+    pub fn set_value(
+        &mut self,
+        target: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<Response, String> {
         self.expect_ok(Op::SetValue {
             target: target.into(),
             value: value.into(),
@@ -116,7 +174,11 @@ impl AgentClient {
         self.expect_ok(Op::Assert { spec })
     }
 
-    pub fn invoke(&mut self, name: impl Into<String>, args: serde_json::Value) -> Result<Response, String> {
+    pub fn invoke(
+        &mut self,
+        name: impl Into<String>,
+        args: serde_json::Value,
+    ) -> Result<Response, String> {
         self.expect_ok(Op::Invoke {
             name: name.into(),
             args,

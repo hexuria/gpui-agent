@@ -81,7 +81,13 @@ impl AgentServer {
                     let token = token.clone();
                     let shutdown = shutdown.clone();
                     thread::spawn(move || {
-                        handle_stream_mailbox(stream, mailbox, token.as_deref(), timeout, &shutdown);
+                        handle_stream_mailbox(
+                            stream,
+                            mailbox,
+                            token.as_deref(),
+                            timeout,
+                            &shutdown,
+                        );
                     });
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -116,7 +122,8 @@ fn handle_stream_host<H: AgentHost>(
                 let _ = writeln!(
                     writer,
                     "{}",
-                    serde_json::to_string(&crate::Response::err("?", format!("bad json: {err}"))).unwrap()
+                    serde_json::to_string(&crate::Response::err("?", format!("bad json: {err}")))
+                        .unwrap()
                 );
                 continue;
             }
@@ -158,7 +165,8 @@ fn handle_stream_mailbox(
                 let _ = writeln!(
                     writer,
                     "{}",
-                    serde_json::to_string(&crate::Response::err("?", format!("bad json: {err}"))).unwrap()
+                    serde_json::to_string(&crate::Response::err("?", format!("bad json: {err}")))
+                        .unwrap()
                 );
                 continue;
             }
