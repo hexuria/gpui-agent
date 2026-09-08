@@ -3,7 +3,8 @@
 //! This crate is **client-side**. It does not add a wire `batch` op and it
 //! cannot bypass token / loopback / line-connection-mailbox caps. A recipe
 //! is a compiled list of ordinary protocol [`Op`](gpui_agent::Op)s run on
-//! one reused TCP session.
+//! one reused TCP session. Independent DAG waves may pipeline several
+//! NDJSON lines; that is not a wire `batch` op and does not skip auth.
 
 pub mod plan;
 pub mod receipt;

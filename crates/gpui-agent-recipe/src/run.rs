@@ -45,7 +45,9 @@ impl ScreenshotCapture {
 /// Execute a compiled plan on one reused TCP session.
 ///
 /// Each step is still a normal protocol request (token, version, caps).
-/// The recipe layer never talks to a shell and never skips `authorize_request`.
+/// Independent DAG waves pipeline several lines before reading when this
+/// path has no screenshot/recorder extras. The recipe layer never talks
+/// to a shell and never skips `authorize_request`.
 pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Receipt, RunError> {
     run_plan_with_extras(client, plan, yes, None, None)
 }
@@ -67,7 +69,9 @@ pub fn run_plan_with_recorder(
 /// [`run_plan_with_recorder`] plus optional per-step app-surface PNGs.
 ///
 /// Screenshot unavailability is recorded on the receipt and does **not**
-/// fail the recipe. No fake PNG is written.
+/// fail the recipe. No fake PNG is written. When `screenshots` or
+/// `recorder` is set, steps stay sequential so a PNG/frame can land
+/// after each op.
 pub fn run_plan_with_extras(
     client: &mut AgentClient,
     plan: &Plan,
@@ -101,60 +105,127 @@ pub fn run_plan_with_extras(
     capture_frame(client, &mut recorder, frame_index, "_start", true);
     frame_index += 1;
 
-    for (i, step) in plan.steps.iter().enumerate() {
-        let step_started = Instant::now();
-        let shot_index = (i as u32) + 1;
-        match client.rpc(step.op.clone()) {
-            Ok(resp) => {
-                receipt.session_reused = client.has_session();
-                let ok = resp.ok;
-                let error = resp.error.clone();
-                let screenshot = capture_screenshot(client, screenshots, shot_index, step);
-                if let Some(shot) = screenshot.clone() {
-                    receipt.screenshots.push(shot);
+    let pipeline_waves = recorder.is_none() && screenshots.is_none();
+    let mut shot_index = 0u32;
+    for wave in &plan.waves {
+        let wave_steps: Vec<&PlannedStep> = wave
+            .iter()
+            .map(|id| {
+                plan.steps
+                    .iter()
+                    .find(|step| step.id == *id)
+                    .expect("wave id is a planned step")
+            })
+            .collect();
+        if pipeline_waves && wave_steps.len() > 1 {
+            let ops: Vec<&Op> = wave_steps.iter().map(|step| &step.op).collect();
+            let step_started = Instant::now();
+            match client.rpc_pipeline(&ops) {
+                Ok(resps) => {
+                    receipt.session_reused = client.has_session();
+                    let elapsed = step_started.elapsed().as_millis() as u64;
+                    for (step, resp) in wave_steps.iter().zip(resps) {
+                        shot_index += 1;
+                        let ok = resp.ok;
+                        let error = resp.error.clone();
+                        receipt.steps.push(StepReceipt {
+                            id: step.id.clone(),
+                            ok,
+                            error: error.clone(),
+                            elapsed_ms: elapsed,
+                            result: resp.result,
+                            screenshot: None,
+                        });
+                        if !ok {
+                            receipt.ok = false;
+                            receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                            return Err(RunError::Step {
+                                id: step.id.clone(),
+                                error: error.unwrap_or_else(|| "request failed".into()),
+                                receipt: Box::new(receipt),
+                            });
+                        }
+                    }
                 }
-                receipt.steps.push(StepReceipt {
-                    id: step.id.clone(),
-                    ok,
-                    error: error.clone(),
-                    elapsed_ms: step_started.elapsed().as_millis() as u64,
-                    result: resp.result,
-                    screenshot,
-                });
-                capture_frame(client, &mut recorder, frame_index, &step.id, ok);
-                frame_index += 1;
-                if !ok {
+                Err(error) => {
                     receipt.ok = false;
+                    receipt.session_reused = client.has_session();
+                    let first = wave_steps[0];
+                    shot_index += 1;
+                    receipt.steps.push(StepReceipt {
+                        id: first.id.clone(),
+                        ok: false,
+                        error: Some(error.clone()),
+                        elapsed_ms: step_started.elapsed().as_millis() as u64,
+                        result: None,
+                        screenshot: None,
+                    });
                     receipt.elapsed_ms = started.elapsed().as_millis() as u64;
                     return Err(RunError::Step {
-                        id: step.id.clone(),
-                        error: error.unwrap_or_else(|| "request failed".into()),
+                        id: first.id.clone(),
+                        error,
                         receipt: Box::new(receipt),
                     });
                 }
             }
-            Err(error) => {
-                receipt.ok = false;
-                receipt.session_reused = client.has_session();
-                let screenshot = capture_screenshot(client, screenshots, shot_index, step);
-                if let Some(shot) = screenshot.clone() {
-                    receipt.screenshots.push(shot);
+            continue;
+        }
+
+        for step in wave_steps {
+            let step_started = Instant::now();
+            shot_index += 1;
+            match client.rpc_op(&step.op) {
+                Ok(resp) => {
+                    receipt.session_reused = client.has_session();
+                    let ok = resp.ok;
+                    let error = resp.error.clone();
+                    let screenshot = capture_screenshot(client, screenshots, shot_index, step);
+                    if let Some(shot) = screenshot.clone() {
+                        receipt.screenshots.push(shot);
+                    }
+                    receipt.steps.push(StepReceipt {
+                        id: step.id.clone(),
+                        ok,
+                        error: error.clone(),
+                        elapsed_ms: step_started.elapsed().as_millis() as u64,
+                        result: resp.result,
+                        screenshot,
+                    });
+                    capture_frame(client, &mut recorder, frame_index, &step.id, ok);
+                    frame_index += 1;
+                    if !ok {
+                        receipt.ok = false;
+                        receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                        return Err(RunError::Step {
+                            id: step.id.clone(),
+                            error: error.unwrap_or_else(|| "request failed".into()),
+                            receipt: Box::new(receipt),
+                        });
+                    }
                 }
-                receipt.steps.push(StepReceipt {
-                    id: step.id.clone(),
-                    ok: false,
-                    error: Some(error.clone()),
-                    elapsed_ms: step_started.elapsed().as_millis() as u64,
-                    result: None,
-                    screenshot,
-                });
-                capture_frame(client, &mut recorder, frame_index, &step.id, false);
-                receipt.elapsed_ms = started.elapsed().as_millis() as u64;
-                return Err(RunError::Step {
-                    id: step.id.clone(),
-                    error,
-                    receipt: Box::new(receipt),
-                });
+                Err(error) => {
+                    receipt.ok = false;
+                    receipt.session_reused = client.has_session();
+                    let screenshot = capture_screenshot(client, screenshots, shot_index, step);
+                    if let Some(shot) = screenshot.clone() {
+                        receipt.screenshots.push(shot);
+                    }
+                    receipt.steps.push(StepReceipt {
+                        id: step.id.clone(),
+                        ok: false,
+                        error: Some(error.clone()),
+                        elapsed_ms: step_started.elapsed().as_millis() as u64,
+                        result: None,
+                        screenshot,
+                    });
+                    capture_frame(client, &mut recorder, frame_index, &step.id, false);
+                    receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                    return Err(RunError::Step {
+                        id: step.id.clone(),
+                        error,
+                        receipt: Box::new(receipt),
+                    });
+                }
             }
         }
     }

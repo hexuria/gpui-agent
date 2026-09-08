@@ -3,15 +3,16 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use crate::ndjson::{read_limited_line_into, write_json_line};
-use crate::protocol::{AssertSpec, DeliveryMode, Op, Request, Response};
+use crate::protocol::{AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response};
 use crate::server::{MAX_LINE_BYTES, default_addr};
 
 /// Blocking NDJSON client used by the CLI, MCP shim, recipes, and tests.
 ///
 /// After the first successful connect, subsequent [`rpc`](Self::rpc) calls
 /// reuse the same TCP session (one process, one connection, many ops).
-/// Use [`rpc_once`](Self::rpc_once) to force the old per-op reconnect path
-/// (benchmarks / comparison).
+/// [`rpc_pipeline`](Self::rpc_pipeline) writes several request lines then
+/// reads (independent recipe waves). Use [`rpc_once`](Self::rpc_once) to
+/// force the old per-op reconnect path (benchmarks / comparison).
 pub struct AgentClient {
     addr: SocketAddr,
     token: Option<String>,
@@ -42,13 +43,24 @@ impl LiveSession {
         Ok(Self {
             writer,
             reader: BufReader::new(stream),
-            encode_buf: Vec::with_capacity(256),
-            line_buf: Vec::with_capacity(256),
+            encode_buf: Vec::with_capacity(4096),
+            line_buf: Vec::with_capacity(4096),
         })
     }
 
-    fn exchange(&mut self, req: &Request) -> Result<Response, String> {
-        write_json_line(&mut self.writer, &mut self.encode_buf, req)
+    fn exchange_wire(
+        &mut self,
+        id: &str,
+        token: Option<&str>,
+        op: &Op,
+    ) -> Result<Response, String> {
+        let req = WireRequest {
+            v: PROTOCOL_VERSION,
+            id,
+            token,
+            op,
+        };
+        write_json_line(&mut self.writer, &mut self.encode_buf, &req)
             .map_err(|err| err.to_string())?;
         self.writer.flush().map_err(|err| err.to_string())?;
         if !read_limited_line_into(&mut self.reader, &mut self.line_buf, MAX_LINE_BYTES)
@@ -58,6 +70,66 @@ impl LiveSession {
         }
         serde_json::from_slice(&self.line_buf).map_err(|err| format!("bad response: {err}"))
     }
+
+    fn exchange_pipeline(
+        &mut self,
+        start_id: u64,
+        token: Option<&str>,
+        ops: &[&Op],
+    ) -> Result<Vec<Response>, String> {
+        let mut id_buf = [0u8; 20];
+        for (i, op) in ops.iter().enumerate() {
+            let id = fmt_u64(start_id + i as u64, &mut id_buf);
+            let req = WireRequest {
+                v: PROTOCOL_VERSION,
+                id,
+                token,
+                op,
+            };
+            write_json_line(&mut self.writer, &mut self.encode_buf, &req)
+                .map_err(|err| err.to_string())?;
+        }
+        self.writer.flush().map_err(|err| err.to_string())?;
+        let mut out = Vec::with_capacity(ops.len());
+        for _ in ops {
+            if !read_limited_line_into(&mut self.reader, &mut self.line_buf, MAX_LINE_BYTES)
+                .map_err(|err| err.to_string())?
+            {
+                return Err("connection closed".into());
+            }
+            out.push(
+                serde_json::from_slice(&self.line_buf)
+                    .map_err(|err| format!("bad response: {err}"))?,
+            );
+        }
+        Ok(out)
+    }
+}
+
+#[derive(serde::Serialize)]
+struct WireRequest<'a> {
+    v: u32,
+    id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<&'a str>,
+    #[serde(flatten)]
+    op: &'a Op,
+}
+
+/// Decimal `n` into `buf`. Returns a subslice of `buf`.
+fn fmt_u64(n: u64, buf: &mut [u8; 20]) -> &str {
+    let mut n = n;
+    let mut i = buf.len();
+    if n == 0 {
+        buf[i - 1] = b'0';
+        return std::str::from_utf8(&buf[i - 1..]).unwrap();
+    }
+    while n > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    std::str::from_utf8(&buf[i..]).unwrap()
 }
 
 impl AgentClient {
@@ -100,8 +172,35 @@ impl AgentClient {
     }
 
     pub fn rpc(&mut self, op: Op) -> Result<Response, String> {
-        let req = self.build_request(op);
-        self.roundtrip_retry(&req)
+        self.rpc_op(&op)
+    }
+
+    /// Like [`rpc`](Self::rpc) but does not take ownership of `op`.
+    pub fn rpc_op(&mut self, op: &Op) -> Result<Response, String> {
+        self.roundtrip_retry(op)
+    }
+
+    /// Write `ops` on the live session, then read one response each.
+    ///
+    /// Each op is still its own NDJSON request (token, version, 1 MiB line).
+    /// Independent recipe waves use this to hide localhost RTT. Chunks larger
+    /// than [`crate::MAX_MAILBOX_DEPTH`] are split so a pipeline cannot exceed
+    /// the mailbox cap. Empty input returns an empty vec.
+    pub fn rpc_pipeline(&mut self, ops: &[&Op]) -> Result<Vec<Response>, String> {
+        if ops.is_empty() {
+            return Ok(Vec::new());
+        }
+        if ops.len() == 1 {
+            return Ok(vec![self.rpc_op(ops[0])?]);
+        }
+        if ops.len() > crate::MAX_MAILBOX_DEPTH {
+            let mut out = Vec::with_capacity(ops.len());
+            for chunk in ops.chunks(crate::MAX_MAILBOX_DEPTH) {
+                out.extend(self.rpc_pipeline(chunk)?);
+            }
+            return Ok(out);
+        }
+        self.pipeline_retry(ops)
     }
 
     /// One request on a fresh connection, then drop it.
@@ -110,30 +209,20 @@ impl AgentClient {
     /// exists so benches can compare it with session reuse.
     pub fn rpc_once(&mut self, op: Op) -> Result<Response, String> {
         self.session = None;
-        let req = self.build_request(op);
-        let resp = self.roundtrip_retry(&req)?;
+        let resp = self.roundtrip_retry(&op)?;
         self.session = None;
         Ok(resp)
     }
 
-    fn build_request(&mut self, op: Op) -> Request {
-        let id = {
-            let id = self.next_id;
-            self.next_id += 1;
-            id.to_string()
-        };
-        let mut req = Request::new(id, op);
-        if let Some(token) = &self.token {
-            req.token = Some(token.clone());
-        }
-        req
-    }
-
-    fn roundtrip_retry(&mut self, req: &Request) -> Result<Response, String> {
+    fn roundtrip_retry(&mut self, op: &Op) -> Result<Response, String> {
+        let id_num = self.next_id;
+        self.next_id += 1;
+        let mut id_buf = [0u8; 20];
+        let id = fmt_u64(id_num, &mut id_buf);
         let mut last_err = String::new();
         let deadline = std::time::Instant::now() + self.timeout;
         while std::time::Instant::now() < deadline {
-            match self.roundtrip(req) {
+            match self.roundtrip_wire(id, op) {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
                     last_err = err;
@@ -148,12 +237,58 @@ impl AgentClient {
         ))
     }
 
-    fn roundtrip(&mut self, req: &Request) -> Result<Response, String> {
+    fn roundtrip_wire(&mut self, id: &str, op: &Op) -> Result<Response, String> {
         if self.session.is_none() {
             self.session = Some(LiveSession::open(self.addr, self.timeout)?);
         }
-        match self.session.as_mut().expect("session").exchange(req) {
+        let token = self.token.as_deref();
+        match self
+            .session
+            .as_mut()
+            .expect("session")
+            .exchange_wire(id, token, op)
+        {
             Ok(resp) => Ok(resp),
+            Err(err) => {
+                self.session = None;
+                Err(err)
+            }
+        }
+    }
+
+    fn pipeline_retry(&mut self, ops: &[&Op]) -> Result<Vec<Response>, String> {
+        let start_id = self.next_id;
+        self.next_id += ops.len() as u64;
+        let mut last_err = String::new();
+        let deadline = std::time::Instant::now() + self.timeout;
+        while std::time::Instant::now() < deadline {
+            match self.pipeline_once(start_id, ops) {
+                Ok(resps) => return Ok(resps),
+                Err(err) => {
+                    last_err = err;
+                    self.session = None;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        Err(format!(
+            "connect {addr} failed: {last_err}",
+            addr = self.addr
+        ))
+    }
+
+    fn pipeline_once(&mut self, start_id: u64, ops: &[&Op]) -> Result<Vec<Response>, String> {
+        if self.session.is_none() {
+            self.session = Some(LiveSession::open(self.addr, self.timeout)?);
+        }
+        let token = self.token.as_deref();
+        match self
+            .session
+            .as_mut()
+            .expect("session")
+            .exchange_pipeline(start_id, token, ops)
+        {
+            Ok(resps) => Ok(resps),
             Err(err) => {
                 self.session = None;
                 Err(err)
@@ -266,5 +401,36 @@ impl AgentClient {
 
     pub fn wait_ready(&mut self) -> Result<Response, String> {
         self.expect_ok(Op::Wait { timeout_ms: None })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::Request;
+
+    #[test]
+    fn wire_request_matches_owned_request_json() {
+        let op = Op::click("todo-add");
+        let req = Request::new("42", op.clone()).with_token("secret");
+        let wire = WireRequest {
+            v: PROTOCOL_VERSION,
+            id: "42",
+            token: Some("secret"),
+            op: &op,
+        };
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            serde_json::to_value(&wire).unwrap()
+        );
+    }
+
+    #[test]
+    fn fmt_u64_matches_display() {
+        let mut buf = [0u8; 20];
+        assert_eq!(fmt_u64(0, &mut buf), "0");
+        assert_eq!(fmt_u64(1, &mut buf), "1");
+        assert_eq!(fmt_u64(10, &mut buf), "10");
+        assert_eq!(fmt_u64(u64::MAX, &mut buf), u64::MAX.to_string());
     }
 }

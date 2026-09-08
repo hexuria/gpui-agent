@@ -1,3 +1,4 @@
+use std::mem;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -10,7 +11,7 @@ pub const MAX_MAILBOX_DEPTH: usize = 128;
 /// GPUI UI thread (or any other single-threaded host).
 #[derive(Clone, Default)]
 pub struct AgentMailbox {
-    inner: Arc<Mutex<Vec<(Request, mpsc::Sender<Response>)>>>,
+    inner: Arc<Mutex<Vec<MailboxRequest>>>,
 }
 
 pub struct MailboxRequest {
@@ -39,17 +40,15 @@ impl AgentMailbox {
             ));
             return rx;
         }
-        inner.push((request, tx));
+        inner.push(MailboxRequest {
+            request,
+            sender: tx,
+        });
         rx
     }
 
     pub fn take(&self) -> Vec<MailboxRequest> {
-        let mut inner = self.inner.lock().expect("mailbox");
-        let mut out = Vec::with_capacity(inner.len());
-        for (request, sender) in inner.drain(..) {
-            out.push(MailboxRequest { request, sender });
-        }
-        out
+        mem::take(&mut *self.inner.lock().expect("mailbox"))
     }
 
     pub fn wait(&self, request: Request, timeout: Duration) -> Result<Response, String> {
@@ -87,5 +86,16 @@ mod tests {
             "expected mailbox full error"
         );
         assert_eq!(mailbox.len(), MAX_MAILBOX_DEPTH);
+    }
+
+    #[test]
+    fn take_is_empty_after_drain() {
+        let mailbox = AgentMailbox::new();
+        let _rx = mailbox.push(Request::new("1", Op::Hello));
+        assert_eq!(mailbox.len(), 1);
+        let taken = mailbox.take();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(mailbox.len(), 0);
+        assert!(mailbox.take().is_empty());
     }
 }

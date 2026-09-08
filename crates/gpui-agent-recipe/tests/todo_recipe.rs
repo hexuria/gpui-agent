@@ -75,6 +75,32 @@ fn json_recipe_params_and_widget_ops() {
 }
 
 #[test]
+fn independent_wave_is_pipelined_on_one_session() {
+    let recipe = gpui_agent_recipe::Recipe::from_json(
+        r#"{
+        "name": "wide",
+        "steps": [
+            {"id": "root", "op": "wait"},
+            {"id": "a", "op": "hello", "needs": ["root"]},
+            {"id": "b", "op": "hello", "needs": ["root"]},
+            {"id": "c", "op": "hello", "needs": ["root"]}
+        ]
+    }"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    assert_eq!(plan.waves.len(), 2);
+    assert_eq!(plan.waves[1].len(), 3);
+
+    let (mut client, shutdown) = spawn_todo();
+    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(receipt.steps.len(), 4);
+    assert!(receipt.session_reused);
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
 fn recipe_does_not_bypass_token() {
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
     let (addr, shutdown) =

@@ -88,7 +88,7 @@ pub fn parse_recipe_source(text: &str, name: &str, force_json: bool) -> Result<R
 
 /// rwmcp-style `--wants`: one protocol op per line, `#` comments.
 pub fn parse_wants(text: &str, name: &str) -> Result<Recipe, String> {
-    let mut steps = Vec::new();
+    let mut steps = Vec::with_capacity(16);
     let mut params = BTreeSet::new();
     for (idx, raw) in text.lines().enumerate() {
         let line = raw.trim();
@@ -101,7 +101,7 @@ pub fn parse_wants(text: &str, name: &str) -> Result<Recipe, String> {
         }
         let id = format!("s{}", steps.len() + 1);
         let step =
-            parse_wants_step(&tokens, id).map_err(|err| format!("line {}: {err}", idx + 1))?;
+            parse_wants_step(tokens, id).map_err(|err| format!("line {}: {err}", idx + 1))?;
         collect_placeholders_in_op(&step.op, &mut params);
         steps.push(step);
     }
@@ -125,11 +125,11 @@ pub fn apply_params(recipe: &Recipe, set: &BTreeMap<String, String>) -> Result<R
     }
     let mut out = recipe.clone();
     for step in &mut out.steps {
-        step.op = substitute_op(&step.op, set)?;
+        substitute_op_in_place(&mut step.op, set)?;
         for need in &mut step.needs {
-            *need = substitute_string(need, set)?;
+            substitute_string_in_place(need, set)?;
         }
-        step.id = substitute_string(&step.id, set)?;
+        substitute_string_in_place(&mut step.id, set)?;
     }
     Ok(out)
 }
@@ -206,8 +206,42 @@ fn validate_placeholders_declared(op: &Op, params: &[String]) -> Result<(), Stri
 }
 
 fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
-    if let Ok(value) = serde_json::to_value(op) {
-        collect_placeholders_in_value(&value, out);
+    match op {
+        Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } => {}
+        Op::Click { target, .. } => collect_placeholders(target, out),
+        Op::Type { target, text, .. } => {
+            collect_placeholders(target, out);
+            collect_placeholders(text, out);
+        }
+        Op::SetValue { target, value } => {
+            collect_placeholders(target, out);
+            collect_placeholders(value, out);
+        }
+        Op::Key { target, key, .. } => {
+            collect_placeholders(target, out);
+            collect_placeholders(key, out);
+        }
+        Op::Assert { spec } => {
+            collect_placeholders(&spec.target, out);
+            if let Some(name) = &spec.name {
+                collect_placeholders(name, out);
+            }
+            if let Some(value) = &spec.value {
+                collect_placeholders(value, out);
+            }
+            if let Some(role) = &spec.role {
+                collect_placeholders(role, out);
+            }
+        }
+        Op::Invoke { name, args } => {
+            collect_placeholders(name, out);
+            collect_placeholders_in_value(args, out);
+        }
+        Op::Screenshot { path } => {
+            if let Some(path) = path {
+                collect_placeholders(path, out);
+            }
+        }
     }
 }
 
@@ -229,42 +263,44 @@ fn collect_placeholders_in_value(value: &Value, out: &mut BTreeSet<String>) {
 }
 
 fn collect_placeholders(s: &str, out: &mut BTreeSet<String>) {
-    let chars: Vec<char> = s.chars().collect();
+    let bytes = s.as_bytes();
     let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '$' {
-            if let Some((name, next)) = parse_placeholder(&chars, i) {
-                out.insert(name);
-                i = next;
-                continue;
-            }
+    while i < bytes.len() {
+        if bytes[i] == b'$'
+            && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
+        {
+            out.insert(name.to_string());
+            i = next;
+            continue;
         }
         i += 1;
     }
 }
 
-fn parse_placeholder(chars: &[char], dollar: usize) -> Option<(String, usize)> {
+/// `$ident` / `${ident}` with ASCII names. `dollar` is a byte offset of `$`.
+fn parse_placeholder_bytes(bytes: &[u8], dollar: usize) -> Option<(&str, usize)> {
     let i = dollar + 1;
-    if i >= chars.len() {
+    if i >= bytes.len() {
         return None;
     }
-    if chars[i] == '{' {
-        let end = chars[i + 1..].iter().position(|c| *c == '}')? + i + 1;
-        let name: String = chars[i + 1..end].iter().collect();
-        if is_ident(&name) {
+    if bytes[i] == b'{' {
+        let rel = bytes[i + 1..].iter().position(|&c| c == b'}')?;
+        let end = i + 1 + rel;
+        let name = std::str::from_utf8(&bytes[i + 1..end]).ok()?;
+        if is_ident(name) {
             return Some((name, end + 1));
         }
         return None;
     }
     let mut end = i;
-    while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+    while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
         end += 1;
     }
     if end == i {
         return None;
     }
-    let name: String = chars[i..end].iter().collect();
-    if is_ident(&name) {
+    let name = std::str::from_utf8(&bytes[i..end]).ok()?;
+    if is_ident(name) {
         Some((name, end))
     } else {
         None
@@ -280,10 +316,46 @@ fn is_ident(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn substitute_op(op: &Op, set: &BTreeMap<String, String>) -> Result<Op, String> {
-    let mut value = serde_json::to_value(op).map_err(|err| err.to_string())?;
-    substitute_value(&mut value, set)?;
-    serde_json::from_value(value).map_err(|err| format!("after $param substitution: {err}"))
+fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result<(), String> {
+    match op {
+        Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } => Ok(()),
+        Op::Click { target, .. } => substitute_string_in_place(target, set),
+        Op::Type { target, text, .. } => {
+            substitute_string_in_place(target, set)?;
+            substitute_string_in_place(text, set)
+        }
+        Op::SetValue { target, value } => {
+            substitute_string_in_place(target, set)?;
+            substitute_string_in_place(value, set)
+        }
+        Op::Key { target, key, .. } => {
+            substitute_string_in_place(target, set)?;
+            substitute_string_in_place(key, set)
+        }
+        Op::Assert { spec } => {
+            substitute_string_in_place(&mut spec.target, set)?;
+            if let Some(name) = &mut spec.name {
+                substitute_string_in_place(name, set)?;
+            }
+            if let Some(value) = &mut spec.value {
+                substitute_string_in_place(value, set)?;
+            }
+            if let Some(role) = &mut spec.role {
+                substitute_string_in_place(role, set)?;
+            }
+            Ok(())
+        }
+        Op::Invoke { name, args } => {
+            substitute_string_in_place(name, set)?;
+            substitute_value(args, set)
+        }
+        Op::Screenshot { path } => {
+            if let Some(path) = path {
+                substitute_string_in_place(path, set)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn substitute_value(value: &mut Value, set: &BTreeMap<String, String>) -> Result<(), String> {
@@ -304,29 +376,47 @@ fn substitute_value(value: &mut Value, set: &BTreeMap<String, String>) -> Result
     Ok(())
 }
 
+fn substitute_string_in_place(
+    input: &mut String,
+    set: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if !input.as_bytes().contains(&b'$') {
+        return Ok(());
+    }
+    *input = substitute_string(input, set)?;
+    Ok(())
+}
+
 fn substitute_string(input: &str, set: &BTreeMap<String, String>) -> Result<String, String> {
-    let chars: Vec<char> = input.chars().collect();
-    let mut out = String::new();
+    let bytes = input.as_bytes();
+    if !bytes.contains(&b'$') {
+        return Ok(input.to_string());
+    }
+    let mut out = String::with_capacity(input.len());
     let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '$'
-            && let Some((name, next)) = parse_placeholder(&chars, i)
+    while i < bytes.len() {
+        if bytes[i] == b'$'
+            && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
         {
             let value = set
-                .get(&name)
+                .get(name)
                 .ok_or_else(|| format!("missing --set {name}=…"))?;
             out.push_str(value);
             i = next;
             continue;
         }
-        out.push(chars[i]);
-        i += 1;
+        let ch = input[i..]
+            .chars()
+            .next()
+            .expect("byte index is a char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     Ok(out)
 }
 
 fn tokenize(line: &str) -> Result<Vec<String>, String> {
-    let mut tokens = Vec::new();
+    let mut tokens = Vec::with_capacity(8);
     let mut buf = String::new();
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
@@ -363,21 +453,17 @@ fn tokenize(line: &str) -> Result<Vec<String>, String> {
     Ok(tokens)
 }
 
-fn parse_wants_step(tokens: &[String], id: String) -> Result<RecipeStep, String> {
+fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, String> {
     let mut screenshot = false;
-    let filtered: Vec<String> = tokens
-        .iter()
-        .filter(|tok| {
-            if tok.as_str() == "--screenshot" {
-                screenshot = true;
-                false
-            } else {
-                true
-            }
-        })
-        .cloned()
-        .collect();
-    let tokens = &filtered;
+    tokens.retain(|tok| {
+        if tok.as_str() == "--screenshot" {
+            screenshot = true;
+            false
+        } else {
+            true
+        }
+    });
+    let tokens = &tokens;
     if tokens.is_empty() {
         return Err("missing op".into());
     }
@@ -772,6 +858,7 @@ assert todo-item-1 name=$title checked=false
 
     #[test]
     fn too_many_steps_are_rejected() {
+        assert_eq!(MAX_RECIPE_STEPS, 256);
         let steps: Vec<serde_json::Value> = (0..=MAX_RECIPE_STEPS)
             .map(|i| serde_json::json!({"id": format!("s{i}"), "op": "hello"}))
             .collect();
@@ -960,5 +1047,47 @@ assert todo-item-1 name=$title checked=false
             other => panic!("{other:?}"),
         }
         assert!(recipe.steps[2].screenshot);
+    }
+
+    #[test]
+    fn unicode_around_placeholders_substitutes() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "p",
+            "params": ["title"],
+            "steps": [
+                {"id": "a", "op": "set_value", "target": "todo-input", "value": "café $title 🎉"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        validate_recipe(&recipe, &todo_registry()).unwrap();
+        let mut set = BTreeMap::new();
+        set.insert("title".into(), "Buy milk".into());
+        let bound = apply_params(&recipe, &set).unwrap();
+        match &bound.steps[0].op {
+            Op::SetValue { value, .. } => assert_eq!(value, "café Buy milk 🎉"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn invoke_args_placeholders_substitute_without_json_roundtrip() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "p",
+            "params": ["title"],
+            "steps": [{"id": "a", "op": "invoke", "name": "todo.add", "args": {"title": "$title"}}]
+        }"#,
+        )
+        .unwrap();
+        validate_recipe(&recipe, &todo_registry()).unwrap();
+        let mut set = BTreeMap::new();
+        set.insert("title".into(), "Nested".into());
+        let bound = apply_params(&recipe, &set).unwrap();
+        match &bound.steps[0].op {
+            Op::Invoke { args, .. } => assert_eq!(args["title"], "Nested"),
+            other => panic!("{other:?}"),
+        }
     }
 }

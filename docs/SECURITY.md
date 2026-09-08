@@ -108,7 +108,7 @@ They do **not** add privilege and do **not** bypass PR #3 caps:
 | Gate | Recipe path |
 | --- | --- |
 | Opt-in / loopback | Host still needs `GPUI_AGENT=1`. CLI still `ensure_loopback`. |
-| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. |
+| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. Independent DAG waves may write several lines before reading (`rpc_pipeline`); each line still has token + version. Not a wire `batch` op. |
 | Line / conn / mailbox | Unchanged. Extra recipe cap: 256 steps. Client also rejects oversized / invalid NDJSON replies. |
 | `invoke` | Names must be `SchemaKind::Invoke` on the local registry. Unknown names and protocol names used as invoke (`click`) fail closed. Schema names are `[A-Za-z0-9_.-]`. |
 | Resolve | Keyword score, fail closed. Shell-like / unknown / ambiguous intents do nothing. Never `Command`. |
@@ -116,8 +116,10 @@ They do **not** add privilege and do **not** bypass PR #3 caps:
 | Delivery | Default `semantic`. `virtual` is still in-process GPUI (never OS HID). |
 
 Session reuse is a client convenience (`AgentClient::rpc` keeps the
-socket; `rpc_once` reconnects for benches). It does not skip auth.
-A mid-recipe failure returns a partial receipt and stops.
+socket; `rpc_pipeline` writes several ops then reads; `rpc_once`
+reconnects for benches). None of these skip auth. A mid-recipe failure
+returns a partial receipt and stops. `--screenshot-dir` / `--record`
+stay sequential so a PNG/frame can land after each step.
 
 Treat `recipe run` / `recipe_run` as equivalent to holding the token
 (same class as M4). Tests for the fail-closed cases live in

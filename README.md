@@ -81,6 +81,7 @@ cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set 
 local schema (fail closed). Shutdown inside a recipe needs `--yes`.
 Design, threat model, schema allow-list: [docs/RECIPES.md](docs/RECIPES.md).
 Caps recipes must not bypass: [docs/SECURITY.md](docs/SECURITY.md#recipes-experimental).
+Measured hot-path notes: [docs/PERF.md](docs/PERF.md).
 
 **On your Mac / laptop** (fetch this PR branch, build, two terminals):
 [docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md). Headless is enough; desktop

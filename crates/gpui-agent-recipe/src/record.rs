@@ -340,7 +340,9 @@ fn flatten_rows(tree: Option<&UiTree>) -> Vec<FrameRow> {
     let Some(tree) = tree else {
         return Vec::new();
     };
-    tree.flatten()
+    let mut nodes = Vec::new();
+    tree.flatten_into(&mut nodes);
+    nodes
         .into_iter()
         .map(|n| FrameRow {
             id: n.id.clone(),

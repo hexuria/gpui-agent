@@ -41,12 +41,14 @@ See [INTEGRATING.md](INTEGRATING.md).
 
 These are also the **only** first-class `gpui-agent` CLI commands (plus
 `mcp` and experimental `recipe`). App-specific verbs are `invoke` names
-or click targets — not new subcommands. `recipe` is a **client-side**
-batch of the ops above (`AgentClient` reuses one TCP session; `rpc_once`
-is the old reconnect path for benches). It is not a new wire `op`.
-`recipe run --screenshot-dir` issues extra `screenshot` ops after steps
-so an agent can visually check UI state mid-run.
-See [RECIPES.md](RECIPES.md), [RECORDING.md](RECORDING.md), and the
+or click targets — not new subcommands. `recipe` is a **client-side** batch of the ops above (`AgentClient`
+reuses one TCP session; independent DAG waves may **pipeline** several
+NDJSON lines before reading — still one request object per line, still
+token + version. `rpc_once` is the old reconnect path for benches). It
+is not a new wire `op`. `recipe run --screenshot-dir` issues extra
+`screenshot` ops after steps so an agent can visually check UI state
+mid-run (that path stays sequential).
+See [RECIPES.md](RECIPES.md), [PERF.md](PERF.md), [RECORDING.md](RECORDING.md), and the
 laptop runbook [TRY_ON_MAC.md](TRY_ON_MAC.md).
 
 ## Response

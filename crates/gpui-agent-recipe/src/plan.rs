@@ -48,19 +48,46 @@ pub fn compile_plan(
     registry: &Registry,
 ) -> Result<Plan, String> {
     validate_recipe(recipe, registry)?;
-    let bound = apply_params(recipe, set)?;
-    let (ordered, waves) = schedule(&bound.steps)?;
+    let bound = if recipe.params.is_empty() {
+        None
+    } else {
+        Some(apply_params(recipe, set)?)
+    };
+    let name = bound
+        .as_ref()
+        .map(|b| b.name.as_str())
+        .unwrap_or(&recipe.name);
+    let app = bound
+        .as_ref()
+        .map(|b| b.app.clone())
+        .unwrap_or_else(|| recipe.app.clone());
+    let steps = match &bound {
+        Some(bound) => bound.steps.as_slice(),
+        None => recipe.steps.as_slice(),
+    };
+    let implicit = steps.iter().all(|step| step.needs.is_empty());
+    let (ordered, waves) = schedule(steps)?;
     let mut planned = Vec::with_capacity(ordered.len());
     let mut effects = BTreeSet::new();
-    for step in ordered {
+    for &i in &ordered {
+        let step = &steps[i];
         let (schema_name, step_effects, idempotent) = annotate(&step.op, registry);
         for effect in &step_effects {
             effects.insert(*effect);
         }
+        let needs = if implicit {
+            if i == 0 {
+                Vec::new()
+            } else {
+                vec![steps[i - 1].id.clone()]
+            }
+        } else {
+            step.needs.clone()
+        };
         planned.push(PlannedStep {
-            id: step.id,
-            op: step.op,
-            needs: step.needs,
+            id: step.id.clone(),
+            op: step.op.clone(),
+            needs,
             screenshot: step.screenshot,
             effects: step_effects,
             schema: schema_name,
@@ -68,10 +95,10 @@ pub fn compile_plan(
         });
     }
     let requires_yes = effects.contains(&Effect::Exit);
-    let fingerprint = fingerprint_plan(&bound.name, &planned);
+    let fingerprint = fingerprint_plan(name, &planned);
     Ok(Plan {
-        name: bound.name,
-        app: bound.app,
+        name: name.to_string(),
+        app,
         steps: planned,
         waves,
         effects: effects.into_iter().collect(),
@@ -145,12 +172,12 @@ fn lookup(name: &str, registry: &Registry) -> (Option<String>, Vec<Effect>, bool
     }
 }
 
-fn schedule(steps: &[RecipeStep]) -> Result<(Vec<RecipeStep>, Vec<Vec<String>>), String> {
-    let steps = if steps.iter().any(|s| !s.needs.is_empty()) {
-        steps.to_vec()
-    } else {
-        implicit_chain(steps)
-    };
+fn schedule(steps: &[RecipeStep]) -> Result<(Vec<usize>, Vec<Vec<String>>), String> {
+    if steps.iter().all(|step| step.needs.is_empty()) {
+        let ordered: Vec<usize> = (0..steps.len()).collect();
+        let waves = steps.iter().map(|step| vec![step.id.clone()]).collect();
+        return Ok((ordered, waves));
+    }
 
     let index: BTreeMap<&str, usize> = steps
         .iter()
@@ -176,16 +203,16 @@ fn schedule(steps: &[RecipeStep]) -> Result<(Vec<RecipeStep>, Vec<Vec<String>>),
         .map(|(i, _)| i)
         .collect();
     // Deterministic: sort each wave by step id.
-    let mut ordered = Vec::new();
+    let mut ordered = Vec::with_capacity(steps.len());
     let mut waves = Vec::new();
     let mut remaining = steps.len();
     while !ready.is_empty() {
         let mut wave: Vec<usize> = ready.drain(..).collect();
-        wave.sort_by_key(|i| steps[*i].id.as_str());
-        waves.push(wave.iter().map(|i| steps[*i].id.clone()).collect());
+        wave.sort_by_key(|&i| steps[i].id.as_str());
+        waves.push(wave.iter().map(|&i| steps[i].id.clone()).collect());
         let mut next = Vec::new();
         for i in wave {
-            ordered.push(steps[i].clone());
+            ordered.push(i);
             remaining -= 1;
             for &j in &adj[i] {
                 indegree[j] -= 1;
@@ -200,15 +227,6 @@ fn schedule(steps: &[RecipeStep]) -> Result<(Vec<RecipeStep>, Vec<Vec<String>>),
         return Err("recipe has a dependency cycle".into());
     }
     Ok((ordered, waves))
-}
-
-fn implicit_chain(steps: &[RecipeStep]) -> Vec<RecipeStep> {
-    let mut out = steps.to_vec();
-    for i in 1..out.len() {
-        let prev = out[i - 1].id.clone();
-        out[i].needs = vec![prev];
-    }
-    out
 }
 
 fn fingerprint_plan(name: &str, steps: &[PlannedStep]) -> String {
@@ -319,6 +337,15 @@ mod tests {
         assert!(plan.steps[1].screenshot);
         assert_eq!(plan.steps[1].schema.as_deref(), Some("screenshot"));
         assert!(plan.steps[1].idempotent);
+    }
+
+    #[test]
+    fn implicit_linear_needs_are_chained() {
+        let recipe = parse_wants("hello\nsnapshot", "lin").unwrap();
+        let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+        assert!(plan.steps[0].needs.is_empty());
+        assert_eq!(plan.steps[1].needs, vec!["s1"]);
+        assert_eq!(plan.waves.len(), 2);
     }
 
     #[test]

@@ -65,3 +65,15 @@ mod parse_id_tests {
         assert_eq!(parse_numbered_id("row-", "row-x"), None);
     }
 }
+
+#[cfg(test)]
+mod cap_tests {
+    use super::{MAX_CONNECTIONS, MAX_LINE_BYTES, MAX_MAILBOX_DEPTH};
+
+    #[test]
+    fn security_caps_unchanged() {
+        assert_eq!(MAX_LINE_BYTES, 1024 * 1024);
+        assert_eq!(MAX_CONNECTIONS, 32);
+        assert_eq!(MAX_MAILBOX_DEPTH, 128);
+    }
+}

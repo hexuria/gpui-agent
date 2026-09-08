@@ -102,9 +102,18 @@ impl UiNode {
     }
 
     pub fn flatten(&self) -> Vec<&UiNode> {
-        let mut out = Vec::with_capacity(self.node_count());
-        self.visit(&mut |node| out.push(node));
+        let mut out = Vec::new();
+        self.flatten_into(&mut out);
         out
+    }
+
+    /// Clear `out` and fill it with this node and descendants, reusing capacity.
+    ///
+    /// Does **not** pre-walk `node_count`: that extra pass was slower than
+    /// letting `Vec` grow (see `tree_flatten_no_precount` in benches).
+    pub fn flatten_into<'a>(&'a self, out: &mut Vec<&'a UiNode>) {
+        out.clear();
+        self.visit(&mut |node| out.push(node));
     }
 
     pub fn apply_bounds_map(&mut self, map: &std::collections::HashMap<String, Bounds>) {
@@ -141,9 +150,18 @@ impl UiTree {
     }
 
     pub fn flatten(&self) -> Vec<&UiNode> {
-        let mut out = Vec::with_capacity(self.node_count());
-        self.visit(&mut |node| out.push(node));
+        let mut out = Vec::new();
+        self.flatten_into(&mut out);
         out
+    }
+
+    /// Flatten into `out`, clearing it first so callers can reuse the buffer.
+    ///
+    /// Skips a `node_count` pre-pass; reuse still wins because `clear` keeps
+    /// capacity after the first call.
+    pub fn flatten_into<'a>(&'a self, out: &mut Vec<&'a UiNode>) {
+        out.clear();
+        self.visit(&mut |node| out.push(node));
     }
 
     pub fn apply_bounds_map(&mut self, map: &std::collections::HashMap<String, Bounds>) {
@@ -177,5 +195,22 @@ mod tests {
         let mut visited = Vec::new();
         tree.visit(&mut |n| visited.push(n.id.as_str()));
         assert_eq!(visited, flat);
+
+        let mut reuse = Vec::with_capacity(8);
+        tree.flatten_into(&mut reuse);
+        let reused: Vec<&str> = reuse.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(reused, flat);
+        let cap = reuse.capacity();
+        tree.flatten_into(&mut reuse);
+        assert!(reuse.capacity() >= cap);
+        assert_eq!(reuse.len(), 4);
+    }
+
+    #[test]
+    fn uinode_layout_stays_compact() {
+        // AoS + String fields: 168 bytes on 64-bit with current field order.
+        // Reordering bools vs Bounds did not shrink this (see docs/PERF.md).
+        assert_eq!(std::mem::size_of::<UiNode>(), 168);
+        assert_eq!(std::mem::size_of::<Bounds>(), 16);
     }
 }

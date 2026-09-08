@@ -287,21 +287,35 @@ cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 
 ## Performance work in this experiment
 
+Measured follow-up (this stacked PR): [PERF.md](PERF.md).
+
+PR #4:
+
 1. **Session reuse** (`AgentClient`): first connect is retried; later
    `rpc` calls share the socket. `rpc_once` keeps the old per-op
    reconnect path for benches.
 2. **NDJSON buffers**: `write_json_line` / `read_limited_line_into`
    reuse `Vec<u8>`; parse with `serde_json::from_slice`.
-3. **Tree walk**: `visit` + `node_count` so `flatten` does one
-   allocation instead of one vec per subtree.
-4. **Mailbox `take`**: pre-size the output vec.
+3. **Tree walk**: `visit` so `flatten` / `flatten_into` do not allocate
+   one vec per subtree.
+4. **Mailbox `take`**: `mem::take` of queued `MailboxRequest`s.
 5. **Docs**: do not spawn a CLI process per op.
+
+This stack additionally:
+
+6. **Pipeline** independent DAG waves (`rpc_pipeline`) on one session
+   (~3.6× vs sequential hellos). Linear recipes stay fail-fast sequential.
+7. **Direct `$param` subst** and index-only `compile_plan` (no serde
+   round-trip, no `Vec<char>`).
+8. **Flatten without a `node_count` pre-walk** (that pass lost).
 
 Criterion benches live in:
 
 - `crates/gpui-agent/benches/agent_perf.rs` — parse, snapshot
-  serialize, flatten, mailbox, session vs reconnect
-- `crates/gpui-agent-recipe/benches/recipe_plan.rs` — compile
+  serialize, flatten, find/bounds, mailbox, session vs reconnect vs
+  pipeline vs in-process, scoped-thread tree walk
+- `crates/gpui-agent-recipe/benches/recipe_plan.rs` — parse, apply,
+  compile, CLI validate+plan, recipe run (linear vs pipelined wave)
 
 ```bash
 cargo bench -p gpui-agent --bench agent_perf
@@ -316,11 +330,12 @@ cargo bench -p gpui-agent-recipe --bench recipe_plan
    shell resolvers. Default remains local schemas.
 3. **Required token?** H1 in SECURITY.md. Recipes make an open socket
    more dangerous; an ephemeral printed token pairs well with this.
-4. **Wire `batch` op?** Would cut per-op authorize + serialize cost
-   further, but is a protocol bump. Client-side session reuse is enough
-   for this experiment.
-5. **Parallel waves on multiple connections?** Needs mailbox fairness
-   and a story for `MAX_CONNECTIONS`. Not worth it for headless CRUD.
+4. **Wire `batch` op?** Measured: pipelining ordinary NDJSON lines is
+   ~4× vs sequential session RPCs without a protocol bump. A nested
+   `batch` op is still open if receipts/screenshots ever need one RTT
+   for a linear recipe. See [PERF.md](PERF.md).
+5. **Parallel waves on multiple connections?** Rejected: mutex / UI
+   thread / `MAX_CONNECTIONS`. Pipeline on one socket instead.
 6. **App-specific registries on disk?** Today the demo todo schema is
    baked in. A `schemas/*.json` directory is the obvious next step.
 7. **Fingerprint stability?** Today it is `DefaultHasher` of the

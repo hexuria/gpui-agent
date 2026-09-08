@@ -200,8 +200,8 @@ fn handle_stream_host<H: AgentHost>(
         Err(_) => return,
     };
     let mut reader = BufReader::new(stream);
-    let mut line_buf = Vec::with_capacity(256);
-    let mut encode_buf = Vec::with_capacity(256);
+    let mut line_buf = Vec::with_capacity(4096);
+    let mut encode_buf = Vec::with_capacity(4096);
     loop {
         match read_limited_line_into(&mut reader, &mut line_buf, limits.max_line_bytes) {
             Ok(true) => {}
@@ -263,8 +263,8 @@ fn handle_stream_mailbox(
         Err(_) => return,
     };
     let mut reader = BufReader::new(stream);
-    let mut line_buf = Vec::with_capacity(256);
-    let mut encode_buf = Vec::with_capacity(256);
+    let mut line_buf = Vec::with_capacity(4096);
+    let mut encode_buf = Vec::with_capacity(4096);
     loop {
         match read_limited_line_into(&mut reader, &mut line_buf, limits.max_line_bytes) {
             Ok(true) => {}
@@ -522,6 +522,20 @@ mod tests {
     }
 
     #[test]
+    fn client_pipelines_many_ops_on_one_session() {
+        let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        let hello = Op::Hello;
+        let ops: Vec<&Op> = (0..8).map(|_| &hello).collect();
+        let resps = client.rpc_pipeline(&ops).expect("pipeline");
+        assert_eq!(resps.len(), 8);
+        assert!(resps.iter().all(|r| r.ok));
+        assert!(client.has_session());
+        assert!(client.rpc_pipeline(&[]).unwrap().is_empty());
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
     fn rpc_once_drops_session_then_rpc_reconnects() {
         let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
         let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
@@ -536,6 +550,36 @@ mod tests {
         assert!(!client.has_session());
         client.expect_ok(Op::Hello).unwrap();
         assert!(client.has_session());
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn pipeline_sends_token_on_each_line() {
+        let (addr, shutdown) = spawn_test_host(
+            Some("secret".into()),
+            ServerLimits {
+                max_line_bytes: 4096,
+                max_connections: 4,
+                idle_timeout: Duration::from_secs(2),
+            },
+        );
+        let hello = Op::Hello;
+        let ops = [&hello, &hello, &hello];
+        let mut ok = AgentClient::connect(addr)
+            .with_token("secret")
+            .with_timeout(Duration::from_secs(2));
+        let resps = ok.rpc_pipeline(&ops).expect("authed pipeline");
+        assert_eq!(resps.len(), 3);
+        assert!(resps.iter().all(|r| r.ok));
+
+        let mut bad = AgentClient::connect(addr)
+            .with_token("wrong")
+            .with_timeout(Duration::from_secs(2));
+        let err = bad.rpc_pipeline(&ops);
+        assert!(
+            err.is_err() || err.as_ref().ok().is_some_and(|rs| rs.iter().any(|r| !r.ok)),
+            "wrong token must not run the wave: {err:?}"
+        );
         shutdown.store(true, Ordering::SeqCst);
     }
 
