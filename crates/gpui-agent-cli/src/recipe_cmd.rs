@@ -39,7 +39,8 @@ pub enum RecipeCommand {
         #[arg(long)]
         receipt_out: Option<PathBuf>,
         /// After steps, ask the host for an app-surface PNG (not the desktop).
-        /// Headless lists `screenshot_unavailable` on the receipt and does not fake a file.
+        /// Headless / Linux / Windows list `screenshot_unavailable` (no fake file).
+        /// macOS desktop `todo` writes this window via `screencapture -l`.
         #[arg(long, value_name = "DIR")]
         screenshot_dir: Option<PathBuf>,
         /// With `--screenshot-dir`, only steps marked `screenshot: true` / `--screenshot`.

@@ -48,9 +48,12 @@ impl AgentHost for MyStore {
 Desktop GPUI: spawn `spawn_mailbox` and drain `AgentMailbox` on the UI
 thread (the TCP thread must not touch GPUI objects). Intercept
 `delivery=virtual` there and call `Window::dispatch_event` /
-`dispatch_keystroke` — never OS HID. Headless / tests: `spawn_host`
-with `Arc<Mutex<YourStore>>` and return `virtual_unavailable` for
-virtual ops.
+`dispatch_keystroke` — never OS HID. Intercept `Op::Screenshot` the
+same way: on macOS call `gpui_agent::capture_window_via_screencapture`
+with this window’s `CGWindowID`; on other OSes return
+`screenshot_unavailable`. Headless / tests: `spawn_host`
+with `Arc<Mutex<YourStore>>` and return `virtual_unavailable` /
+`screenshot_unavailable`.
 
 ## 3. Assign stable ids
 
@@ -127,11 +130,17 @@ reuses a single TCP session across `tools/call`.
       ([RECIPES.md](RECIPES.md); laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md)).
       `invoke` names in the recipe must match the host allow-list;
       shutdown recipes need `--yes`. Optional `--screenshot-dir` is
-      observe-only; headless stays `screenshot_unavailable`. Recipes
-      still cannot bypass [SECURITY.md](SECURITY.md#recipes-experimental).
+      observe-only; headless / Linux / Windows stay
+      `screenshot_unavailable`. macOS desktop writes this window
+      (`screencapture -l`). Recipes still cannot bypass
+      [SECURITY.md](SECURITY.md#recipes-experimental). Visual note:
+      [RECORDING.md](RECORDING.md).
 - [ ] Product builds leave the feature off
 - [ ] `hello.deliveries` lists `semantic` and, on a painted GPUI window, `virtual`
 - [ ] `hello.auth` is `"required"` when `GPUI_AGENT_TOKEN` is set on the host (`"none"` otherwise)
 - [ ] Recipe / MCP clients export the **same** `GPUI_AGENT_TOKEN` as the host
 - [ ] Virtual click/type/key go through the mailbox → UI thread → `Window::dispatch_event` / `dispatch_keystroke` (never OS HID)
-- [ ] Headless returns `virtual_unavailable` instead of pretending
+- [ ] Headless returns `virtual_unavailable` / `screenshot_unavailable`
+      instead of pretending
+- [ ] Desktop screenshot runs on the UI thread with a real `Window`
+      (macOS: `screencapture -l` of that window only)

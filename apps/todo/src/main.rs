@@ -6,6 +6,9 @@ mod app;
 #[cfg(feature = "agent")]
 mod agent_bridge;
 
+#[cfg(all(feature = "agent", target_os = "macos"))]
+mod macos_window;
+
 use app::TodoApp;
 
 fn main() {

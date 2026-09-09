@@ -104,7 +104,7 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "screenshot",
-            "Observe-only PNG of the app surface (not the full desktop). The host writes `path` on the same machine so the image does not ride NDJSON. Headless returns screenshot_unavailable instead of a fake image.",
+            "Observe-only PNG of the app surface (not the full desktop). The host writes `path` on the same machine so the image does not ride NDJSON. Headless / Linux / Windows return screenshot_unavailable. macOS desktop writes this window via screencapture -l (Screen Recording permission).",
             json!({
                 "type": "object",
                 "properties": {
@@ -199,7 +199,7 @@ pub(crate) fn tools() -> Vec<Value> {
                     "recipe": { "description": "JSON recipe object (canonical) or wants text." },
                     "set": { "type": "object", "description": "Parameter bindings." },
                     "yes": { "type": "boolean" },
-                    "screenshot_dir": { "type": "string", "description": "After each step (or flagged steps), write an app-surface PNG. Receipt lists paths; headless is screenshot_unavailable." },
+                    "screenshot_dir": { "type": "string", "description": "After each step (or flagged steps), write an app-surface PNG. Receipt lists paths; headless/Linux/Windows are screenshot_unavailable; macOS desktop uses screencapture -l of this window." },
                     "screenshot_flagged": { "type": "boolean", "description": "Only steps with screenshot: true." }
                 },
                 "required": ["recipe"]

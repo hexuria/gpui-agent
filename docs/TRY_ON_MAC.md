@@ -4,11 +4,12 @@ Coding stays on the cloud agent. Local is **pull + run only**.
 
 Typical checkout: `/Volumes/goldcoders/OSS/gpui-agent`.
 
-This verifies **P2** (token required for `recipe run` / `mcp`) on
-current `main` plus this PR. P1 recipes (JSON canonical) are already
-on `main`. **Headless is enough.** The desktop `todo` window needs a
-display; skip it unless you want to watch the same protocol drive a
-GPUI window.
+This verifies **P3** (macOS window PNG via `screencapture -l`; headless
+stays honest) on current `main` plus this PR. P0–P2 (session reuse,
+recipes, token-for-recipe/MCP) are already on `main`. **Headless is
+enough** to check recipes and unavailable screenshots. The desktop
+`todo` window needs a display **and Screen Recording** if you want a
+real PNG.
 
 Format, threat model, and `--yes` / session-reuse notes:
 [RECIPES.md](RECIPES.md). Caps that recipes must not bypass:
@@ -19,8 +20,8 @@ Format, threat model, and `--yes` / session-reuse notes:
 ```bash
 cd /Volumes/goldcoders/OSS/gpui-agent
 git fetch origin
-git checkout gol/p2-recipe-mcp-token-138d
-git pull origin gol/p2-recipe-mcp-token-138d
+git checkout gol/no-brainer-p3-screenshot-b20f
+git pull origin gol/no-brainer-p3-screenshot-b20f
 ```
 
 `rust-toolchain.toml` pins **1.98.1**. First `cargo` on this branch may
@@ -232,6 +233,7 @@ env -u GPUI_AGENT_TOKEN $CLI mcp </dev/null
 | `node \`todo-item-1\` exists` / name mismatch | Host still has todos from a previous run — `shutdown` and start a fresh host |
 | `unknown invoke` | Recipe used a name not in the local schema (only demo `todo.*` + protocol ops) |
 | Desktop window won't start | Expected on a display-less session — use `todo-headless` |
+| `screenshot_unavailable` … Screen Recording | Grant Screen Recording to the terminal/`todo`, then retry. Linux/Windows desktop is Mac-only for real PNG. |
 | Recipe syntax questions | [RECIPES.md](RECIPES.md) |
 
 ## Tests (optional on the laptop)
@@ -244,11 +246,10 @@ That suite includes the recipe parse / resolve / run / session-reuse
 edge cases, CLI fail-fast without a token, and step-screenshot receipt
 plumbing. It does not need a display.
 
-## 8. Step screenshots (honest unavailable on headless)
+## 8. Step screenshots
 
-**This is plumbing for an agent between steps**, not a real Mac PNG
-(that is P3). Headless cannot invent pixels; the receipt still lists
-the intended paths. Keep `GPUI_AGENT_TOKEN` exported.
+**Headless stays honest.** The receipt lists intended paths; no fake
+PNG is written. Keep `GPUI_AGENT_TOKEN` exported.
 
 ```bash
 mkdir -p artifacts/steps
@@ -267,3 +268,30 @@ One-shot between **manual** clicks (same protocol):
 $CLI screenshot --out artifacts/steps/mid.png
 # headless: error screenshot_unavailable (no fake file)
 ```
+
+### macOS desktop (real PNG of this window)
+
+Needs a display. Grant **Screen Recording** to the terminal (or the
+`todo` binary) in System Settings → Privacy & Security. First capture
+can show a permission dialog; grant it, then retry. This is
+observe-only (`screencapture -l` of the Agent Todo window). It does
+not warp the cursor and does not grab the full desktop.
+
+```bash
+# terminal 1
+export GPUI_AGENT=1
+export GPUI_AGENT_ADDR=127.0.0.1:17421
+export GPUI_AGENT_TOKEN=dev-secret
+./target/debug/todo
+
+# terminal 2 (same exports)
+mkdir -p artifacts/steps
+$CLI screenshot --out artifacts/steps/mid.png
+# success: {"ok": true, "result": {"path": "…", "backend": "screencapture"}}
+# open artifacts/steps/mid.png — should be the Agent Todo window only
+```
+
+If you see `screenshot_unavailable` mentioning Screen Recording, the
+grant did not stick — that is still correct (no invented pixels).
+Linux/Windows desktop is Mac-only for real PNG in P3; same unavailable
+error. See [RECORDING.md](RECORDING.md). `--record` is not in this PR.
