@@ -24,6 +24,7 @@ impl AgentHost for EmptyHost {
             platform: PlatformKind::Headless,
             ready: true,
             deliveries: vec![DeliveryMode::Semantic],
+            auth: gpui_agent::HelloAuth::None,
         }
     }
 

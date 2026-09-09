@@ -24,11 +24,21 @@ fn main() {
     };
 
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+    let token_set = config.token.is_some();
     let (addr, shutdown) =
         spawn_host(config.addr, config.token, store.clone()).expect("bind agent server");
 
     eprintln!("gpui-agent listening on {addr} (platform=headless, app=todo)");
     eprintln!("opt-in: GPUI_AGENT=1 · loopback only · protocol v1");
+    if token_set {
+        eprintln!(
+            "auth: required (GPUI_AGENT_TOKEN set; recipe/MCP clients must send the same token)"
+        );
+    } else {
+        eprintln!(
+            "auth: none (one-off click/snapshot ok; recipe run and mcp need the same token on host and client)"
+        );
+    }
     eprintln!("delivery: semantic only (virtual_unavailable — no GPUI event pipeline)");
 
     while !shutdown.load(std::sync::atomic::Ordering::SeqCst) {

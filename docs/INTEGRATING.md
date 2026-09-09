@@ -11,7 +11,7 @@ semantic tree and action handlers; the CLI/MCP never learn your domain.
 | Runtime | Start the server only when `GPUI_AGENT=1` (`true`/`yes`/`on`). |
 | Release | Also require `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | Loopback only. `gpui_agent::security::from_env` enforces this. |
-| Token | Optional `GPUI_AGENT_TOKEN` on both app and CLI. **Set it** unless you are on a single-user box and accept that any local process can drive the UI. Every recipe step carries the same token. P1 does not require a token; **ask before requiring one when recipes/MCP are on** (P2). |
+| Token | Optional on the host (`GPUI_AGENT_TOKEN`). When set, every request must carry it. CLI **`recipe run` and `mcp` require** a non-empty client token (`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on host and client for those workflows. One-off `click`/`snapshot` do not. `hello.auth` is `"required"` or `"none"`. |
 | DoS caps | The server caps line size (1 MiB), concurrent connections (32), mailbox depth (128), and idle sockets (30s). See [SECURITY.md](SECURITY.md). |
 
 ```rust
@@ -24,7 +24,7 @@ if let Ok(Some(config)) = gpui_agent::from_env() {
 
 ```rust
 impl AgentHost for MyStore {
-    fn hello(&self) -> HelloInfo { /* app name, platform, ready */ }
+    fn hello(&self) -> HelloInfo { /* app name, platform, ready; server fills hello.auth */ }
     fn snapshot(&self) -> UiTree { /* nodes with stable ids */ }
     fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
         if op.is_virtual_input() {
@@ -98,17 +98,22 @@ script without polluting `gpui-agent`.
     "gpui-agent": {
       "command": "gpui-agent",
       "args": ["mcp"],
-      "env": { "GPUI_AGENT_ADDR": "127.0.0.1:17421" }
+      "env": {
+        "GPUI_AGENT_ADDR": "127.0.0.1:17421",
+        "GPUI_AGENT_TOKEN": "dev-secret"
+      }
     }
   }
 }
 ```
 
 MCP tools are the protocol ops only, plus experimental `recipe_*`
-batching tools (not app-specific verbs). List your ids and invoke
-names in the project instructions. Recipe format (JSON canonical) and
-`--yes`: [RECIPES.md](RECIPES.md). The MCP process holds one
-`AgentClient` and reuses a single TCP session across `tools/call`.
+batching tools (not app-specific verbs). `gpui-agent mcp` **refuses to
+start** without a non-empty `GPUI_AGENT_TOKEN` / `--token`. Set the
+same token on the host. List your ids and invoke names in the project
+instructions. Recipe format (JSON canonical) and `--yes`:
+[RECIPES.md](RECIPES.md). The MCP process holds one `AgentClient` and
+reuses a single TCP session across `tools/call`.
 
 ## 7. Checklist
 
@@ -126,5 +131,7 @@ names in the project instructions. Recipe format (JSON canonical) and
       still cannot bypass [SECURITY.md](SECURITY.md#recipes-experimental).
 - [ ] Product builds leave the feature off
 - [ ] `hello.deliveries` lists `semantic` and, on a painted GPUI window, `virtual`
+- [ ] `hello.auth` is `"required"` when `GPUI_AGENT_TOKEN` is set on the host (`"none"` otherwise)
+- [ ] Recipe / MCP clients export the **same** `GPUI_AGENT_TOKEN` as the host
 - [ ] Virtual click/type/key go through the mailbox → UI thread → `Window::dispatch_event` / `dispatch_keystroke` (never OS HID)
 - [ ] Headless returns `virtual_unavailable` instead of pretending

@@ -265,6 +265,7 @@ impl AgentHost for TodoStore {
                 PlatformKind::Desktop => vec![DeliveryMode::Semantic, DeliveryMode::Virtual],
                 _ => vec![DeliveryMode::Semantic],
             },
+            auth: gpui_agent::HelloAuth::None,
         }
     }
 

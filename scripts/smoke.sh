@@ -4,6 +4,9 @@
 # This script drives the *sample todo app* with generic protocol ops
 # (set-value / click / assert / invoke). There is no `gpui-agent todo`
 # command — app-specific verbs are host `invoke` names or click targets.
+#
+# P2: one-off click/snapshot stay untokened. `recipe run` / `mcp` require
+# a token; the recipe phase below exports the same value on host and CLI.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,7 +30,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> starting todo-headless on $ADDR"
+echo "==> recipe run / mcp without token fail fast"
+if out=$(env -u GPUI_AGENT_TOKEN "$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --set title="x" 2>&1); then
+  echo "expected recipe run without token to fail, got: $out" >&2
+  exit 1
+fi
+echo "$out" | grep -E -i 'GPUI_AGENT_TOKEN|token' >/dev/null
+
+if out=$(env -u GPUI_AGENT_TOKEN "$CLI" --addr "$ADDR" mcp </dev/null 2>&1); then
+  echo "expected mcp without token to fail, got: $out" >&2
+  exit 1
+fi
+echo "$out" | grep -E -i 'GPUI_AGENT_TOKEN|token' >/dev/null
+
+echo "==> starting todo-headless on $ADDR (no token; one-off click/snapshot)"
 "$HOST" &
 HOST_PID=$!
 
@@ -72,5 +88,17 @@ echo "==> shutdown"
 "$CLI" --addr "$ADDR" shutdown
 HOST_PID=""
 
+echo "==> recipe run with matching host + client token"
+export GPUI_AGENT_TOKEN=smoke-p2-token
+"$HOST" &
+HOST_PID=$!
+receipt="$("$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --set title="Buy milk")"
+echo "$receipt"
+echo "$receipt" | grep -F '"ok": true' >/dev/null
+echo "$receipt" | grep -F '"session_reused": true' >/dev/null
+"$CLI" --addr "$ADDR" shutdown
+HOST_PID=""
+
 echo
 echo "smoke ok: create / toggle / delete / assert via generic protocol ops"
+echo "smoke ok: recipe run with matching token (ok + session_reused)"

@@ -23,9 +23,12 @@ pub enum SecurityError {
 /// - Off unless `GPUI_AGENT` is a truthy value (`1`, `true`, `yes`).
 /// - Release binaries also require `GPUI_AGENT_ALLOW_RELEASE=1`.
 /// - The listen address must be loopback (default `127.0.0.1:17421`).
-/// - Optional shared secret via `GPUI_AGENT_TOKEN`; when set, every request
-///   must carry the same token. Anyone who can reach the socket can drive
-///   the UI, so this is a local developer/agent tool, not a remote API.
+/// Optional shared secret via `GPUI_AGENT_TOKEN`; when set, every request
+/// must carry the same token. Anyone who can reach the socket can drive
+/// the UI, so this is a local developer/agent tool, not a remote API.
+/// Host token stays optional so one-off `click`/`snapshot` smoke still
+/// works. CLI `recipe run` and `mcp` require a non-empty client token
+/// (P2); set the same value on host and client for those workflows.
 #[derive(Clone)]
 pub struct AgentConfig {
     pub addr: SocketAddr,

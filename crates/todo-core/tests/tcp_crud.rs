@@ -56,6 +56,7 @@ fn agent_can_create_toggle_delete_over_tcp() {
 
     let hello = client.expect_ok(Op::Hello).unwrap().hello.unwrap();
     assert_eq!(hello.deliveries, vec![DeliveryMode::Semantic]);
+    assert_eq!(hello.auth, gpui_agent::HelloAuth::None);
 
     client.expect_ok(Op::Shutdown).unwrap();
     std::thread::sleep(Duration::from_millis(30));

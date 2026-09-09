@@ -49,6 +49,38 @@ assert todo-item-1 checked=true
 }
 
 #[test]
+fn json_todo_crud_with_matching_token_reuses_session() {
+    let json = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/recipes/todo-crud.json"),
+    )
+    .expect("example recipe");
+    let recipe = gpui_agent_recipe::Recipe::from_json(&json).unwrap();
+    let mut set = BTreeMap::new();
+    set.insert("title".into(), "Buy milk".into());
+    let plan = compile_plan(&recipe, &set, &todo_registry()).unwrap();
+
+    let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+    let (addr, shutdown) = spawn_host(
+        "127.0.0.1:0".parse().unwrap(),
+        Some("p2-secret".into()),
+        store,
+    )
+    .expect("bind");
+    let mut client = AgentClient::connect(addr)
+        .with_token("p2-secret")
+        .with_timeout(Duration::from_secs(3));
+    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    assert!(receipt.ok, "{receipt:?}");
+    assert!(
+        receipt.session_reused,
+        "matching token must still reuse the TCP session"
+    );
+
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
 fn json_recipe_params_and_widget_ops() {
     let json = r#"{
         "name": "widget-crud",

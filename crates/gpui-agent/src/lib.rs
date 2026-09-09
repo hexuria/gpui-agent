@@ -27,7 +27,8 @@ pub use host::AgentHost;
 pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{line_is_blank, read_limited_line, read_limited_line_into, write_json_line};
 pub use protocol::{
-    AssertSpec, DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response,
+    AssertSpec, DeliveryMode, HelloAuth, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request,
+    Response,
 };
 pub use screenshot::{
     SCREENSHOT_UNAVAILABLE, TEST_PNG, is_screenshot_unavailable, screenshot_unavailable, write_png,

@@ -356,6 +356,7 @@ mod tests {
                 platform: PlatformKind::Headless,
                 ready: true,
                 deliveries: vec![DeliveryMode::Semantic],
+                auth: crate::protocol::HelloAuth::None,
             }
         }
 
@@ -463,7 +464,11 @@ mod tests {
         let mut ok = AgentClient::connect(addr)
             .with_token("correct-token")
             .with_timeout(Duration::from_secs(2));
-        assert!(ok.expect_ok(Op::Hello).is_ok());
+        let hello = ok.expect_ok(Op::Hello).expect("authed hello");
+        assert_eq!(
+            hello.hello.unwrap().auth,
+            crate::protocol::HelloAuth::Required
+        );
 
         shutdown.store(true, Ordering::SeqCst);
     }

@@ -12,8 +12,8 @@ TCP session, many ops — instead of a tool round-trip per action.
 thin alias. Laptop (pull + run only): [TRY_ON_MAC.md](TRY_ON_MAC.md).
 Threat model vs PR #3 caps: [SECURITY.md](SECURITY.md#recipes-experimental).
 Wire ops stay one NDJSON request each: [PROTOCOL.md](PROTOCOL.md).
-Roadmap: [NO_BRAINER_PLAN.md](NO_BRAINER_PLAN.md) (P0 session reuse is
-on `main`; this is P1).
+Roadmap: [NO_BRAINER_PLAN.md](NO_BRAINER_PLAN.md) (P0 session reuse and
+P1 recipes are on `main`; this tree includes **P2** token-for-recipe/MCP).
 
 ## What was borrowed
 
@@ -117,14 +117,15 @@ Restart the host before a second run.
 ## Commands (`validate` / `plan` / `run` / `resolve`)
 
 These subcommands and the matching MCP tools are labeled
-**experimental** in `--help` / tool descriptions.
+**experimental** in `--help` / tool descriptions. MCP itself requires a
+token to start; `recipe_run` then sends it on every step.
 
-| Command | Host? | What it does |
-| --- | --- | --- |
-| `recipe validate <path>` | No | Parse + lint (version, ids, `needs`, declared `$params`, invoke allow-list) |
-| `recipe plan <path> [--set k=v] [--order-check]` | No | Bind params, schedule waves, print effects / fingerprint / `requires_yes` |
-| `recipe run <path> [--set k=v] [--yes] [--receipt-out FILE] [--screenshot-dir DIR]` | Yes | Compile, then execute each `Op` **sequentially** on one reused TCP session |
-| `recipe resolve '…'` | No | Map prose through the local schema registry (fail closed) |
+| Command | Host? | Token? | What it does |
+| --- | --- | --- | --- |
+| `recipe validate <path>` | No | No | Parse + lint (version, ids, `needs`, declared `$params`, invoke allow-list) |
+| `recipe plan <path> [--set k=v] [--order-check]` | No | No | Bind params, schedule waves, print effects / fingerprint / `requires_yes` |
+| `recipe run <path> [--set k=v] [--yes] [--receipt-out FILE] [--screenshot-dir DIR]` | Yes | **Yes** (`GPUI_AGENT_TOKEN` or `--token`, same as host) | Compile, then execute each `Op` **sequentially** on one reused TCP session |
+| `recipe resolve '…'` | No | No | Map prose through the local schema registry (fail closed) |
 
 MCP tools with the same jobs: `recipe_validate`, `recipe_plan`,
 `recipe_run` (pass `yes: true` for shutdown), `recipe_resolve`. They
@@ -132,6 +133,9 @@ are batching helpers, not app-specific verbs. Per-op tools stay for
 interactive debugging.
 
 ```bash
+# both terminals — recipe run / mcp require this (same value as the host)
+export GPUI_AGENT_TOKEN=dev-secret
+
 # no host
 gpui-agent recipe validate examples/recipes/todo-crud.json
 gpui-agent recipe plan examples/recipes/todo-crud.json --set title="Buy milk"
@@ -249,7 +253,7 @@ do the same things the CLI already can. They do not add privilege.
 | --- | --- |
 | Opt-in | Host still needs `GPUI_AGENT=1` (release: `GPUI_AGENT_ALLOW_RELEASE=1`) |
 | Bind | CLI still `ensure_loopback` before connect |
-| Token | Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Token remains **optional** in P1 (H1). **Ask the user before requiring a token when recipes/MCP are on** (P2). |
+| Token | CLI `recipe run` and `mcp` **refuse to start** without a non-empty `GPUI_AGENT_TOKEN` or `--token` (P2). Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Host token stays optional for one-off `click`/`snapshot`. **Set the same token on host and client** for recipe/MCP. `hello.auth` is `"required"` \| `"none"`. |
 | Line / conn / idle / mailbox | Unchanged. Recipe cap 256 is extra, not a replacement. |
 | No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--screenshot-dir` is observe-only. |
 | No shell | Resolve/plan/run never call `Command`. `invoke` is still an in-process host callback. Unknown invoke names are rejected. |
@@ -281,7 +285,8 @@ least:
 - Resolve: shell-like intents, unknown verbs, ambiguous titles,
   missing required args
 - Run: assert fail mid-recipe (partial receipt), host down, wrong
-  token, shutdown without `--yes`; screenshot paths on the receipt;
+  token, CLI `recipe run` / `mcp` without token fail fast; shutdown
+  without `--yes`; screenshot paths on the receipt;
   headless `screenshot_unavailable` without a fake PNG; mocked host
   writes `TEST_PNG` when `--screenshot-dir` / flagged steps are set
 - Session: second recipe on one `AgentClient` stays connected;
@@ -318,9 +323,8 @@ cargo bench -p gpui-agent-recipe --bench recipe_plan -- --quick
    adopt rwmcp predicates (`invoice(…).exists`) if a world model lands.
 2. **Path-dep `tmp-core`?** Only if we can take schema/resolve without
    shell resolvers. Default remains local schemas.
-3. **Required token (P2)?** H1 in SECURITY.md. Recipes make an open
-   socket cheaper to drive. **Do not require a token in this PR.** Ask
-   the user before requiring a token when recipes/MCP are on.
+3. **Ephemeral Jupyter mint?** Not in P2. Host token stays optional.
+   Recipe/MCP already require a client token. Ask before minting at bind.
 4. **Wire `batch` / `rpc_pipeline`?** Measured on PR #5 (~4× vs
    sequential session RPCs) but left out of P1 to keep review scope
    small. Include the retry-after-write + sibling-receipt fail-fast

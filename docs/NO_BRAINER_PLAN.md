@@ -5,19 +5,19 @@ Roadmap for landing the experimental work from
 [PR #5](https://github.com/hexuria/gpui-agent/pull/5) **without** merging
 those branches wholesale.
 
-P0 is already on `main`. P1 is the code in the PR that updates this
+P0 and P1 are on `main`. P2 is the code in the PR that updates this
 document. Later phases are **documented here only** until a human
-picks them. Do not implement P2–P5 on a P1 branch.
+picks them. Do not implement P3–P5 on a P2 branch.
 
 ## Status
 
 | Phase | What | Status |
 | --- | --- | --- |
 | **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | **Done** (PR #6 / `c4069d9`) |
-| **P1** | Recipes, experimental, JSON canonical (`.wants` alias) | **This PR** |
-| **P2** | Token required / ephemeral when recipes or MCP is on | Not started. Details **UNDECIDED — ask the user** before requiring a token when recipes/MCP are on |
-| **P3** | Real desktop PNG, or honest Mac-only visuals | Not started (P1 keeps `screenshot_unavailable` on headless) |
-| **P4** | CI: headless recipe run + receipt assert | Not started (needs this P1) |
+| **P1** | Recipes, experimental, JSON canonical (`.wants` alias) | **Done** (PR #9) |
+| **P2** | Token required for CLI `recipe run` and `mcp` (same token on host) | **This PR**. No ephemeral Jupyter mint. One-off `click`/`snapshot` stay optional. |
+| **P3** | Real desktop PNG, or honest Mac-only visuals | Not started (headless stays `screenshot_unavailable`) |
+| **P4** | CI: headless recipe run + receipt assert | Not started (set a test token in the workflow; do not disable P2) |
 | **P5** | Squash / stack hygiene vs leftover #4/#5 | Not started |
 
 Recipes, TMP-style registry, and an honest `screenshot` protocol op
@@ -37,10 +37,12 @@ These never change unless the user explicitly forks the product:
 
 - **No OS HID.** Virtual delivery is in-process GPUI events only. No
   warp, no PostMessage, no XTEST, no stealing the real cursor/keyboard.
-- **Loopback + caps.** `GPUI_AGENT=1`, loopback bind, optional token
-  (until P2 — **ask the user** before requiring a token when
-  recipes/MCP are on), `MAX_LINE_BYTES` 1 MiB, `MAX_CONNECTIONS` 32,
-  `MAX_MAILBOX_DEPTH` 128, 30s idle. Do not weaken them.
+- **Loopback + caps.** `GPUI_AGENT=1`, loopback bind, host token still
+  optional (one-off `click`/`snapshot` smoke). CLI `recipe run` and
+  `mcp` **require** a non-empty `GPUI_AGENT_TOKEN` / `--token`; set the
+  **same** value on host and client. `MAX_LINE_BYTES` 1 MiB,
+  `MAX_CONNECTIONS` 32, `MAX_MAILBOX_DEPTH` 128, 30s idle. Do not
+  weaken them. No ephemeral Jupyter mint unless a later prompt asks.
 - **Semantic default.** `delivery=virtual` stays opt-in per op.
 - **Ask the user** before product forks: recipe syntax freeze, required
   tokens, screenshot/recording backends, CI gates, merging experimental
@@ -88,11 +90,12 @@ Numbers: [PERF.md](PERF.md).
 
 ---
 
-## P1 — recipes (experimental), JSON canonical (this PR)
+## P1 — recipes (experimental), JSON canonical (done)
 
 **Decided:** JSON is canonical. `.wants` remains accepted as a thin
-alias (demoted in docs/CLI help). Token policy is **not** decided —
-do not require tokens in P1.
+alias (demoted in docs/CLI help). Token policy landed in **P2**
+(`recipe run` / `mcp` require a client token; host token stays
+optional for one-off click/snapshot).
 
 Port from PR #4 / #5 without merging those branches. Fail closed on
 unknown `invoke` names. `shutdown` still needs `--yes`. Do not path-dep
@@ -108,12 +111,13 @@ optional `--screenshot-dir` plumbing. Full visual/Mac PNG is P3.
   **experimental**
 - Recipe run uses the kept `AgentClient` session
 - Docs: this file, `RECIPES.md`, `TRY_ON_MAC.md`, SECURITY recipes
-  section (token still optional)
+  section (token still optional in P1; P2 requires it for recipe run / mcp)
 - Example: `examples/recipes/todo-crud.json` (+ `.wants` alias)
 
 **Out of scope**
 
-- Required / ephemeral token (P2 — ask first)
+- Required / ephemeral token (P2 — **done** in this tree: CLI
+  `recipe run` / `mcp` require a token; no Jupyter mint)
 - Real desktop PNG / OS capture (P3)
 - CI Action (P4)
 - Merging leftover #4/#5 branches (P5)
@@ -123,7 +127,8 @@ optional `--screenshot-dir` plumbing. Full visual/Mac PNG is P3.
 -p gpui-agent-recipe` green. Headless
 `recipe run examples/recipes/todo-crud.json --set title="Buy milk"`
 prints `ok` + `session_reused`. JSON documented as canonical.
-Experimental labeling visible. No token requirement yet.
+Experimental labeling visible. Token still optional in P1 (P2 requires
+it for `recipe run` / `mcp`).
 
 ### Ready-to-paste agent prompt (P1)
 
@@ -142,49 +147,46 @@ token when recipes/MCP on.”
 
 ---
 
-## P2 — token required / ephemeral when recipes or MCP is on
+## P2 — token required when recipes or MCP is on (this PR)
 
-**UNDECIDED details — ask the user.** Security audit H1: token is
-optional. Recipes/MCP make an open loopback socket cheaper to drive.
+**Decided:** require a token for **recipes or MCP**, not for every CLI
+op. Do **not** mint an ephemeral Jupyter token.
 
-Options to present (do not pick silently):
+| Surface | Token |
+| --- | --- |
+| Host `from_env` | Still optional. When `GPUI_AGENT_TOKEN` is set, existing `authorize_request` applies. `hello.auth` is `"required"` or `"none"`. |
+| CLI `recipe run` / `mcp` | Refuse unless `GPUI_AGENT_TOKEN` or `--token` is non-empty. Send it on every request (`AgentClient`). |
+| CLI `recipe validate\|plan\|resolve` | Local; no host, no token required. |
+| CLI `hello` / `click` / `snapshot` / … | Unchanged. Smoke can stay untokened. |
+| Recipe/MCP workflows | **Same** non-empty token on host **and** client. |
 
-1. Document-only (status quo) + louder README
-2. Require `GPUI_AGENT_TOKEN` when MCP or `recipe run` starts (CLI-side)
-3. Server generates an ephemeral token at bind, prints once (Jupyter model)
-4. Both 2 and 3, with an explicit `--allow-empty-token` for local smoke
+Old PR #8 (mint + `--allow-empty-token` on every connecting command)
+is closed; this branch starts from `main` after P1.
 
-Do not break `./scripts/smoke.sh` without a documented env example.
+**In scope**
+
+- CLI fail-fast for `recipe run` and `mcp` (empty env is unset)
+- Docs + smoke example exports for both terminals
+- Tests: without token → nonzero; with matching token, todo-crud is
+  `ok` + `session_reused`
+- Optional `hello.auth: "required" \| "none"`
+
+**Out of scope**
+
+- Ephemeral token mint / `--allow-empty-token`
+- Forcing a host token for one-off click/snapshot
+- Unix sockets, TLS, `SO_PEERCRED`
+
+**Success.** `recipe run` / `mcp` without a token exit nonzero with a
+clear error. With matching host+client token, headless
+`examples/recipes/todo-crud.json` still prints `ok` + `session_reused`.
+`./scripts/smoke.sh` still runs untokened click/snapshot, then a
+tokened recipe phase.
 
 ### Ready-to-paste agent prompt (P2)
 
-```text
-Repo: https://github.com/hexuria/gpui-agent
-Start from main. P0 session reuse is already merged.
-
-## STOP — ask the user first
-Token policy is UNDECIDED (security H1). Ask which of:
-(A) docs only
-(B) CLI/MCP refuse to talk if GPUI_AGENT_TOKEN is unset
-(C) server mints ephemeral token at bind and prints it once
-(D) B+C with --allow-empty-token for smoke scripts
-Also ask: does recipe run (if present) follow the same rule?
-
-## Goal
-Implement only the chosen policy. Update docs/SECURITY.md H1, README,
-smoke scripts, and tests. Do not add Unix sockets, TLS, or SO_PEERCRED
-unless the user asked (those are larger than P2).
-
-## Success
-- Chosen policy has tests (refuse / mint / allow-empty)
-- smoke.sh still documented and green under that policy
-- Caps, loopback, no OS HID unchanged
-- No recipe/screenshot work unless already on main
-
-## Constraints
-No OS HID. Do not weaken line/conn/mailbox caps. Semantic default.
-Ask before product forks (required vs optional token in shipping apps).
-```
+Superseded by the user prompt that produced this PR. Kept for history
+in git; do not re-ask A/B/C/D.
 
 ---
 

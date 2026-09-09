@@ -23,7 +23,8 @@ struct Cli {
     /// Host:port of the automation server (loopback only on the app side).
     #[arg(long, default_value = DEFAULT_ADDR_STR, env = "GPUI_AGENT_ADDR")]
     addr: SocketAddr,
-    /// Shared secret; must match GPUI_AGENT_TOKEN in the app when set.
+    /// Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host
+    /// has one. Required (non-empty) for `recipe run` and `mcp`.
     #[arg(long, env = "GPUI_AGENT_TOKEN")]
     token: Option<String>,
     #[command(subcommand)]
@@ -35,7 +36,8 @@ App-specific helpers (for example the sample todo app) live in examples/,
 not in this CLI. Navigate pages with click + assert on stable ids, or invoke
 a command the host registered. Experimental: batch many ops in one process
 with `recipe validate|plan|run|resolve` (JSON canonical; `.wants` also
-accepted — see docs/RECIPES.md).";
+accepted — see docs/RECIPES.md). `recipe run` and `mcp` require a non-empty
+GPUI_AGENT_TOKEN or --token; set the same value on the host.";
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -111,9 +113,9 @@ enum Command {
     },
     /// Ask the host to exit.
     Shutdown,
-    /// Tiny MCP stdio server exposing the same generic tools.
+    /// Tiny MCP stdio server exposing the same generic tools. Requires `--token` / `GPUI_AGENT_TOKEN`.
     Mcp,
-    /// Experimental: validate / plan / run / resolve a JSON recipe of protocol ops (`.wants` also accepted).
+    /// Experimental: validate / plan / run / resolve a JSON recipe of protocol ops (`.wants` also accepted). `run` requires a token.
     Recipe {
         #[command(subcommand)]
         action: RecipeCommand,
@@ -130,21 +132,34 @@ fn main() -> ExitCode {
     }
 }
 
+fn take_non_empty_token(token: Option<String>) -> Option<String> {
+    token.filter(|s| !s.is_empty())
+}
+
+const RECIPE_MCP_TOKEN_REQUIRED: &str = "recipe run and mcp require a non-empty GPUI_AGENT_TOKEN or --token \
+     (set the same token on the host)";
+
+fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
+    match token {
+        Some(t) if !t.is_empty() => Ok(t),
+        _ => Err(anyhow!("{RECIPE_MCP_TOKEN_REQUIRED}")),
+    }
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     gpui_agent::ensure_loopback(cli.addr)
         .with_context(|| format!("refusing non-loopback agent address {}", cli.addr))?;
+    let token = take_non_empty_token(cli.token);
+
     if matches!(cli.command, Command::Mcp) {
-        return mcp::run(cli.addr, cli.token);
+        let token = require_recipe_mcp_token(token.as_deref())?;
+        return mcp::run(cli.addr, token.to_string());
     }
     if let Command::Recipe { action } = cli.command {
-        let needs_client = matches!(action, RecipeCommand::Run { .. });
-        let client = if needs_client {
-            let mut client = AgentClient::connect(cli.addr);
-            if let Some(token) = cli.token {
-                client = client.with_token(token);
-            }
-            Some(client)
+        let client = if matches!(action, RecipeCommand::Run { .. }) {
+            let token = require_recipe_mcp_token(token.as_deref())?;
+            Some(AgentClient::connect(cli.addr).with_token(token))
         } else {
             None
         };
@@ -152,7 +167,7 @@ fn run() -> Result<()> {
     }
 
     let mut client = AgentClient::connect(cli.addr);
-    if let Some(token) = cli.token {
+    if let Some(token) = token {
         client = client.with_token(token);
     }
 
@@ -548,5 +563,35 @@ mod tests {
 
         let local = Cli::try_parse_from(["gpui-agent", "hello"]).unwrap();
         assert!(gpui_agent::ensure_loopback(local.addr).is_ok());
+    }
+
+    #[test]
+    fn empty_cli_token_is_treated_as_unset() {
+        assert_eq!(take_non_empty_token(None), None);
+        assert_eq!(take_non_empty_token(Some(String::new())), None);
+        assert_eq!(
+            take_non_empty_token(Some("secret".into())),
+            Some("secret".into())
+        );
+    }
+
+    #[test]
+    fn recipe_run_and_mcp_require_non_empty_token() {
+        assert!(require_recipe_mcp_token(None).is_err());
+        assert!(require_recipe_mcp_token(Some("")).is_err());
+        let err = require_recipe_mcp_token(None).unwrap_err().to_string();
+        assert!(err.contains("GPUI_AGENT_TOKEN"), "{err}");
+        assert!(err.contains("recipe run"), "{err}");
+        assert!(err.contains("mcp"), "{err}");
+        assert_eq!(require_recipe_mcp_token(Some("secret")).unwrap(), "secret");
+    }
+
+    #[test]
+    fn help_mentions_recipe_mcp_token() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            help.contains("GPUI_AGENT_TOKEN") && help.to_ascii_lowercase().contains("recipe run"),
+            "{help}"
+        );
     }
 }

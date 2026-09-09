@@ -57,7 +57,9 @@ pub fn handle_request(
     match req.op {
         Op::Hello | Op::Wait { .. } => {
             let mut resp = Response::ok(&req.id);
-            resp.hello = Some(host.hello());
+            let mut hello = host.hello();
+            hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
+            resp.hello = Some(hello);
             resp
         }
         Op::Snapshot => {
@@ -163,6 +165,7 @@ mod tests {
                 platform: PlatformKind::Headless,
                 ready: true,
                 deliveries: vec![],
+                auth: crate::protocol::HelloAuth::None,
             }
         }
 
@@ -237,5 +240,25 @@ mod tests {
         let err = authorize_request(&req, None).unwrap_err();
         assert!(!err.ok);
         assert!(err.error.unwrap().contains("unsupported protocol"));
+    }
+
+    #[test]
+    fn hello_auth_none_without_host_token() {
+        let mut host = EmptyHost;
+        let resp = handle_request(&mut host, Request::new("1", Op::Hello), None);
+        assert!(resp.ok);
+        assert_eq!(resp.hello.unwrap().auth, crate::protocol::HelloAuth::None);
+    }
+
+    #[test]
+    fn hello_auth_required_with_host_token() {
+        let mut host = EmptyHost;
+        let req = Request::new("1", Op::Hello).with_token("secret");
+        let resp = handle_request(&mut host, req, Some("secret"));
+        assert!(resp.ok);
+        assert_eq!(
+            resp.hello.unwrap().auth,
+            crate::protocol::HelloAuth::Required
+        );
     }
 }
