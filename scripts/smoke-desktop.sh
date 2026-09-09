@@ -6,6 +6,10 @@
 #
 # Same generic CLI as the headless smoke — todo ids are the demo app's,
 # not part of gpui-agent.
+#
+# One-off click/snapshot do not require a token. Recipe / MCP workflows
+# must export the same GPUI_AGENT_TOKEN on host and client; see
+# scripts/smoke.sh (recipe phase) and docs/TRY_ON_MAC.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

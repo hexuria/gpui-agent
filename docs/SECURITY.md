@@ -18,7 +18,7 @@ bind.
 | Runtime | `GPUI_AGENT=1` (`true` / `yes` / `on`). |
 | Release | Also `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | Loopback only. `from_env` / `ensure_loopback` reject anything that is not IPv4 `127.0.0.0/8` or IPv6 `::1`. IPv4-mapped loopback (`::ffff:127.0.0.1`) is **rejected** (fail closed). |
-| Token | Optional `GPUI_AGENT_TOKEN`. When set, every request must carry it. |
+| Token | Optional on the host (`GPUI_AGENT_TOKEN`). When set, every request must carry it. CLI **`recipe run` and `mcp` require** a non-empty client token (`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on host and client for those workflows. One-off `click` / `snapshot` / `hello` do not require a client token. |
 | Transport | NDJSON over TCP. Not HTTP, not TLS, not a remote API. |
 | Delivery | `semantic` (default) calls widget handlers. `virtual` synthesizes in-process GPUI events. **Never OS HID.** |
 
@@ -36,12 +36,12 @@ leaves the machine.” Do not enable this in shipping product builds.
 
 | ID | Severity | Kind | Finding | Evidence | Exploit | Fix |
 | --- | --- | --- | --- | --- | --- | --- |
-| H1 | **High** | Design | Token is optional. With `GPUI_AGENT=1` and no `GPUI_AGENT_TOKEN`, **any local process** can snapshot, click, invoke, and shut down the app. | `security.rs` `from_env` treats empty/missing token as `None`. `handle_request` skips auth when `expected_token` is `None`. | Malware, another user on the same box, or a compromised MCP client talks to `127.0.0.1:17421` and drives the UI / reads field values. | **Documented.** Recommended: require a token, or auto-generate an ephemeral one at bind time (Jupyter model) and print it once. Do not half-implement that here — it would break existing smoke scripts. Integrators: set `GPUI_AGENT_TOKEN`. |
+| H1 | **High** | Design | Host token is optional. With `GPUI_AGENT=1` and no `GPUI_AGENT_TOKEN`, **any local process** can snapshot, click, invoke, and shut down the app via one-off CLI ops. | `security.rs` `from_env` treats empty/missing token as `None`. `handle_request` skips auth when `expected_token` is `None`. | Malware, another user on the same box, or a compromised MCP client talks to `127.0.0.1:17421` and drives the UI / reads field values. | **Partially mitigated (P2).** CLI `recipe run` and `mcp` refuse to start without a non-empty `GPUI_AGENT_TOKEN` / `--token`, and they send it on every request. Host token stays optional so `./scripts/smoke.sh` click/snapshot still works. Recipe/MCP workflows **must set the same token on host and client**. `hello.auth` is `"required"` \| `"none"`. Ephemeral Jupyter mint is **not** implemented. Integrators: still set `GPUI_AGENT_TOKEN` on the host. |
 | H2 | **High** | Bug | Unbounded NDJSON lines + one OS thread per connection. A client could grow a request line without limit (`BufRead::lines`) and/or open unbounded handler threads. | Former `server.rs` `reader.lines()` and `thread::spawn` on every `accept`. | Local process (no token needed if H1) sends a multi-GB line or opens thousands of connections → memory / thread exhaustion of the GUI process. | **Patched.** `read_limited_line` (default 1 MiB), `MAX_CONNECTIONS` (32), idle read/write timeout (30s). Extra clients are dropped. Oversized lines get an error and the socket is closed (no resync). |
 | M1 | **Medium** | Bug | CLI/MCP accepted any `SocketAddr`. A mistyped or injected `--addr` / `GPUI_AGENT_ADDR` would send `GPUI_AGENT_TOKEN` off-box. | Former `gpui-agent-cli` parsed `addr: SocketAddr` and connected with no loopback check. Server bind was already loopback-only. | User or wrapper runs `gpui-agent --addr 1.2.3.4:17421 hello` with a token in the env → secret leaves the machine. | **Patched.** CLI calls `ensure_loopback` before connect/MCP. Server bind unchanged. |
 | M2 | **Medium** | Design | TCP loopback has no peer credentials. Any UID on the host can connect. | `TcpListener::bind` on `127.0.0.1`. No Unix socket, no `SO_PEERCRED`. | User B on a shared Linux box automates user A’s app (especially if H1). | **Documented.** Next step: optional `AF_UNIX` socket with `0600` and peer-uid check. Large change; do not add a second transport in this patch. |
 | M3 | **Medium** | Design | `snapshot` returns widget `value`s (draft text, later passwords if an app puts them on the tree). | `todo-core` `tree()` includes `todo-input` value. Protocol has no redaction. | Local client (H1) reads whatever the user typed. | **Documented.** Integrators must not put secrets on the semantic tree, or must redact `role=password` / similar. A protocol-level redaction hook is a later feature. |
-| M4 | **Medium** | Design | `gpui-agent mcp` is a full confused-deputy: stdio `tools/call` maps 1:1 onto protocol ops, including `invoke` and `shutdown`. | `crates/gpui-agent-cli/src/mcp.rs` | Whoever can write to the MCP process (the IDE/agent) can do anything the socket allows. | **Documented / intended.** Treat the MCP client as equivalent to holding the token. Do not expose this stdio shim on a network. Prefer a token even for local MCP. |
+| M4 | **Medium** | Design | `gpui-agent mcp` is a full confused-deputy: stdio `tools/call` maps 1:1 onto protocol ops, including `invoke` and `shutdown`. | `crates/gpui-agent-cli/src/mcp.rs` | Whoever can write to the MCP process (the IDE/agent) can do anything the socket allows. | **Documented / intended.** Treat the MCP client as equivalent to holding the token. Do not expose this stdio shim on a network. P2: `gpui-agent mcp` **refuses to start** without a non-empty client token. Set the same token on the host. |
 | M5 | **Medium** | Bug | Mailbox queue was unbounded. A stalled UI thread + fast TCP clients could grow RAM without bound. | Former `AgentMailbox::push` always `Vec::push`. | Local client floods `wait`/`click` while the UI thread is blocked. | **Patched.** `MAX_MAILBOX_DEPTH` (128); further pushes return `mailbox full` without queueing. |
 | L1 | **Low** | Bug | Token compared with `==` (non-constant-time). | Former `dispatch.rs` / mailbox `got == expected`. | Local attacker times responses to recover a short token. Unrealistic vs just reading `/proc/<pid>/environ`. | **Patched.** `tokens_match` XOR-folds both byte strings (`#[inline(never)]`). Still leaks the longer length; acceptable for a local secret. |
 | L2 | **Low** | Bug | Auth / version failures kept the connection open, allowing unlimited guesses on one socket. | Former stream loops `continue` after token errors. | Local brute-force of a short token. | **Patched.** `authorize_request` failures write one error and **close**. |
@@ -66,10 +66,12 @@ token cannot be sent to a remote IP.
 
 ### Auth
 
-`authorize_request` is the single gate (version + optional token). Used
-by `handle_request` and by both TCP stream handlers **before** mailbox
-post / host dispatch. Comparison is `tokens_match`. Failures close the
-socket.
+`authorize_request` is the single gate (version + optional host token).
+Used by `handle_request` and by both TCP stream handlers **before**
+mailbox post / host dispatch. Comparison is `tokens_match`. Failures
+close the socket. `hello.auth` is `"required"` when the host has a
+token and `"none"` otherwise. CLI `recipe run` and `mcp` require a
+client token before they connect.
 
 ### Request parsing / DoS
 
@@ -108,7 +110,7 @@ They do **not** add privilege and do **not** bypass PR #3 caps:
 | Gate | Recipe path |
 | --- | --- |
 | Opt-in / loopback | Host still needs `GPUI_AGENT=1`. CLI still `ensure_loopback`. |
-| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. Token remains **optional** in P1 (H1). **Ask the user before requiring a token when recipes or MCP are on** (P2). Not a wire `batch` op. |
+| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. CLI `recipe run` and `mcp` **refuse to start** without a non-empty client token (P2). Host token remains optional so one-off `click`/`snapshot` smoke still works. Set the **same** token on host and client for recipe/MCP. `hello.auth` advertises `"required"` \| `"none"`. Not a wire `batch` op. |
 | Line / conn / mailbox | Unchanged. Extra recipe cap: 256 steps. |
 | `invoke` | Names must be `SchemaKind::Invoke` on the local registry. Unknown names and protocol names used as invoke (`click`) fail closed. Schema names are `[A-Za-z0-9_.-]`. |
 | Resolve | Keyword score, fail closed. Shell-like / unknown / ambiguous intents do nothing. Never `Command`. |
@@ -177,13 +179,11 @@ commit `Cargo.lock`; CI should generate one and run `cargo audit`.
 Security-relevant items first, then reliability and DX. These are
 intentionally **not** half-implemented in this patch.
 
-1. **Required or ephemeral token (H1 / P2).** If `GPUI_AGENT_TOKEN` is unset,
-   generate a 32-byte random secret at bind time, print it once to
-   stderr, and require it. Keep an explicit `GPUI_AGENT_TOKEN=` empty
-   opt-out for single-user smoke scripts if needed. This is the highest
-   leverage change; it needs a CLI/docs/smoke coordinated bump.
-   **Ask the user before requiring a token when recipes or MCP are on.**
-   P1 does not change the optional-token policy.
+1. **Required token for recipe/MCP (H1 / P2 — done).** CLI `recipe run`
+   and `mcp` require a non-empty `GPUI_AGENT_TOKEN` / `--token`. Host
+   token stays optional. No ephemeral Jupyter mint. Remaining H1: a
+   host started without a token is still driveable by one-off CLI ops
+   and any local process that speaks NDJSON.
 2. **Unix-domain socket + peer uid (M2).** Optional
    `GPUI_AGENT_SOCK=~/.gpui-agent.sock` with `0600` and
    `SO_PEERCRED` / equivalent. Stronger than TCP loopback on multi-user
@@ -191,8 +191,10 @@ intentionally **not** half-implemented in this patch.
 3. **Snapshot redaction (M3).** Host hook or well-known roles
    (`password`, `secret`) that strip `value` from `snapshot`. Document
    the convention in PROTOCOL.md.
-4. **`hello` advertises auth.** e.g. `hello.auth: "required" | "none"`
-   so agents fail closed instead of discovering via an error string.
+4. **`hello` advertises auth (done in P2).** `hello.auth: "required" | "none"`
+   reflects whether the host has a token configured. Agents can fail
+   closed early. CLI `recipe run` / `mcp` still require a client token
+   even when `auth` is `"none"` — set the same token on the host anyway.
 5. **`wait.timeout_ms` should wait.** Today `Wait` is immediate hello.
    Poll `ready` / first painted frame (desktop bounds non-zero) until
    the budget expires. Fixes a real agent flake.
@@ -227,5 +229,7 @@ intentionally **not** half-implemented in this patch.
 
 ## Recommended (not implemented here)
 
-Items 1–4 and 9 are the security follow-ups. Do not enable the bridge
-in shipping product builds; do not add HTTP without an Origin allow-list.
+Unix sockets (M2), snapshot redaction, and CI audit remain the next
+security follow-ups. P2 does not mint ephemeral tokens. Do not enable
+the bridge in shipping product builds; do not add HTTP without an
+Origin allow-list.

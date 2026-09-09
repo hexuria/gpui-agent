@@ -29,7 +29,7 @@ See [INTEGRATING.md](INTEGRATING.md).
 
 | `op` | Fields | Effect |
 | --- | --- | --- |
-| `hello` | | Protocol, app name, platform, ready, supported `deliveries` |
+| `hello` | | Protocol, app name, platform, ready, supported `deliveries`, `auth` (`required` \| `none`) |
 | `snapshot` | | Semantic UI tree |
 | `click` | `target`, optional `delivery` | Activate a widget by stable id |
 | `type` | `target`, `text`, optional `delivery` | Append to an editable widget |
@@ -57,7 +57,7 @@ See [RECIPES.md](RECIPES.md) and the laptop runbook [TRY_ON_MAC.md](TRY_ON_MAC.m
   "v": 1,
   "id": "1",
   "ok": true,
-  "hello": { "protocol": 1, "app": "my-app", "platform": "headless", "ready": true, "deliveries": ["semantic"] },
+  "hello": { "protocol": 1, "app": "my-app", "platform": "headless", "ready": true, "deliveries": ["semantic"], "auth": "none" },
   "tree": { "app": "my-app", "platform": "headless", "ready": true, "nodes": [] },
   "result": {},
   "error": null
@@ -129,6 +129,11 @@ virtual_unavailable: …
 Do not treat that as success. Use `delivery=semantic`, or a painted desktop
 window. `hello.deliveries` lists what the host actually implements
 (`["semantic"]` on headless; `["semantic","virtual"]` on desktop).
+`hello.auth` is `"required"` when the host was started with a
+non-empty `GPUI_AGENT_TOKEN`, otherwise `"none"`. Agents can fail
+closed from that field. CLI `recipe run` and `mcp` still require a
+client token even when `auth` is `"none"` — set the same token on the
+host for those workflows.
 
 ## Navigation
 
@@ -166,10 +171,10 @@ plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; client-side batching; see
 [RECIPES.md](RECIPES.md)).
 
-Point Claude Code at the binary (`args: ["mcp"]`, optional
-`GPUI_AGENT_ADDR` / `GPUI_AGENT_TOKEN`). Document your app’s ids and
-`invoke` names in the project prompt — do not add per-app MCP tools to
-this repo.
+Point Claude Code at the binary (`args: ["mcp"]`). Set
+`GPUI_AGENT_ADDR` and **`GPUI_AGENT_TOKEN`** (required; same value as
+the host). Document your app’s ids and `invoke` names in the project
+prompt — do not add per-app MCP tools to this repo.
 
 ## Named commands (`invoke`)
 

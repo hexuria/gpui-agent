@@ -8,7 +8,7 @@ The CLI and MCP tools are **framework-agnostic**. They speak only the protocol o
 
 **Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md).
 
-**Experimental recipes (P1).** JSON is canonical (`.wants` also accepted). `gpui-agent recipe validate|plan|run|resolve` (and MCP `recipe_*`) batch many protocol ops in one process on that kept session. See [docs/RECIPES.md](docs/RECIPES.md). Merge roadmap: [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+**Experimental recipes (P1).** JSON is canonical (`.wants` also accepted). `gpui-agent recipe validate|plan|run|resolve` (and MCP `recipe_*`) batch many protocol ops in one process on that kept session. **P2:** `recipe run` and `mcp` require a non-empty `GPUI_AGENT_TOKEN` or `--token` (same value on the host). See [docs/RECIPES.md](docs/RECIPES.md). Merge roadmap: [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
 
 ```mermaid
 flowchart LR
@@ -73,11 +73,19 @@ cargo run -p gpui-agent-cli -- shutdown
 spawning `gpui-agent` per click (each spawn is a process + TCP
 handshake). `AgentClient` reuses one loopback session; each step is
 still a normal token-bearing request. Semantic delivery stays the
-default. Token is still optional (P2: ask before requiring one when
-recipes/MCP are on).
+default. **`recipe run` and `mcp` require a non-empty token**
+(`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on the host.
+One-off `click` / `snapshot` / `hello` do not require a client token
+unless the host has `GPUI_AGENT_TOKEN` set.
 
 ```bash
-GPUI_AGENT=1 cargo run -p todo-headless
+# terminal 1
+export GPUI_AGENT=1
+export GPUI_AGENT_TOKEN=dev-secret
+cargo run -p todo-headless
+
+# terminal 2 — same token
+export GPUI_AGENT_TOKEN=dev-secret
 cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set title="Buy milk"
 ```
 
@@ -119,7 +127,7 @@ crates/gpui-agent-recipe   Experimental recipes + TMP-inspired mapping
 crates/todo-core           Demo store and semantic ids
 docs/PROTOCOL.md           Wire format
 docs/INTEGRATING.md        How to embed AgentHost in another app
-docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P0 done; P1 recipes in this tree)
+docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P0–P2 done in this tree)
 docs/PERF.md               P0 Criterion numbers (session vs reconnect)
 docs/RECIPES.md            Experimental recipes (JSON canonical)
 docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
@@ -140,12 +148,18 @@ chmod +x scripts/smoke.sh
 ./scripts/smoke.sh
 ```
 
-Experimental recipes (one CLI invocation, one TCP session): see
-[docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md) for copy-paste laptop steps, or:
+Experimental recipes (one CLI invocation, one TCP session). **Same
+token in both terminals** (`recipe run` / `mcp` refuse without one).
+Copy-paste: [docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md).
 
 ```bash
-GPUI_AGENT=1 cargo run -p todo-headless
-# other terminal
+# terminal 1
+export GPUI_AGENT=1
+export GPUI_AGENT_TOKEN=dev-secret
+cargo run -p todo-headless
+
+# terminal 2
+export GPUI_AGENT_TOKEN=dev-secret
 cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set title="Buy milk"
 ```
 
@@ -184,7 +198,13 @@ plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; see [docs/RECIPES.md](docs/RECIPES.md)).
 
 ```bash
-GPUI_AGENT=1 cargo run -p todo-headless
+# terminal 1
+export GPUI_AGENT=1
+export GPUI_AGENT_TOKEN=dev-secret
+cargo run -p todo-headless
+
+# terminal 2
+export GPUI_AGENT_TOKEN=dev-secret
 cargo run -p gpui-agent-cli -- mcp
 ```
 
@@ -197,7 +217,8 @@ Claude Code (`~/.claude/settings.json` or a project `.mcp.json`):
       "command": "gpui-agent",
       "args": ["mcp"],
       "env": {
-        "GPUI_AGENT_ADDR": "127.0.0.1:17421"
+        "GPUI_AGENT_ADDR": "127.0.0.1:17421",
+        "GPUI_AGENT_TOKEN": "dev-secret"
       }
     }
   }
@@ -242,7 +263,8 @@ Automation is **opt-in and off by default**. Full audit: [docs/SECURITY.md](docs
 | Runtime | `GPUI_AGENT=1` (`true`/`yes`/`on` also work) |
 | Release binaries | Also require `GPUI_AGENT_ALLOW_RELEASE=1` |
 | Bind address | Loopback only (`127.0.0.1:17421`). Non-loopback `GPUI_AGENT_ADDR` is refused. The CLI also refuses a non-loopback `--addr`. |
-| Optional token | `GPUI_AGENT_TOKEN` — every request must repeat it. **Set this on shared machines.** Without it, any local process can drive the UI. |
+| Optional host token | `GPUI_AGENT_TOKEN` — when set, every request must repeat it. **Set this on shared machines.** |
+| Required for `recipe run` / `mcp` | Non-empty `GPUI_AGENT_TOKEN` or `--token` on the **client**. Set the **same** value on the host. One-off `click`/`snapshot`/`hello` do not require a client token. `hello.auth` is `"required"` or `"none"`. |
 | DoS caps | 1 MiB NDJSON line, 32 concurrent connections, 128 mailbox depth, 30s idle timeout |
 
 Anyone who can connect to that loopback socket can drive the UI as the user. Treat this as a **developer/agent tool**, not a remote API. Do not enable it in shipping product builds. There is no sandbox, no origin check, and no encryption beyond “it never leaves the machine.”
@@ -299,14 +321,13 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 
 ## Next steps
 
-Phased plan (P0 session reuse is on `main`; P1 experimental recipes are in this tree): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+Phased plan (P0–P2 are in this tree): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
 
 1. Richer virtual input (scroll, drag, IME composition, multi-click)
 2. In-app GPUI offscreen frames so `screenshot` can write real pixels when a GPU is present (P3)
-3. Token required / ephemeral when recipes or MCP is on (P2 — **ask first**)
-4. WASM host implementing `AgentHost` for `platform: web`
-5. Auto-export nodes from AccessKit so apps register fewer ids by hand
-6. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store
+3. WASM host implementing `AgentHost` for `platform: web`
+4. Auto-export nodes from AccessKit so apps register fewer ids by hand
+5. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store
 
 ## License
 

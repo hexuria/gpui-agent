@@ -19,11 +19,8 @@ use serde_json::{Value, json};
 ///
 /// One [`AgentClient`] lives for the process: protocol `rpc` reuses a single
 /// TCP session across `tools/call` (no per-tool reconnect).
-pub fn run(addr: SocketAddr, token: Option<String>) -> Result<()> {
-    let mut client = AgentClient::connect(addr);
-    if let Some(token) = token {
-        client = client.with_token(token);
-    }
+pub fn run(addr: SocketAddr, token: String) -> Result<()> {
+    let mut client = AgentClient::connect(addr).with_token(token);
 
     let mut stdin = BufReader::new(std::io::stdin());
     let mut stdout = std::io::stdout();
@@ -203,7 +200,7 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "recipe_run",
-            "[experimental] Validate, plan, and execute a JSON recipe sequentially on one reused TCP session. `.wants` also accepted. Still requires token/caps. Pass yes=true if the plan includes shutdown.",
+            "[experimental] Validate, plan, and execute a JSON recipe sequentially on one reused TCP session. `.wants` also accepted. This MCP process already required a token; each step still carries it. Pass yes=true if the plan includes shutdown.",
             json!({
                 "type": "object",
                 "properties": {

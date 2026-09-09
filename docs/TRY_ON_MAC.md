@@ -4,10 +4,11 @@ Coding stays on the cloud agent. Local is **pull + run only**.
 
 Typical checkout: `/Volumes/goldcoders/OSS/gpui-agent`.
 
-This verifies **P1 experimental recipes** (JSON canonical) on current
-`main` plus this PR. **Headless is enough.** The desktop `todo` window
-needs a display; skip it unless you want to watch the same protocol
-drive a GPUI window.
+This verifies **P2** (token required for `recipe run` / `mcp`) on
+current `main` plus this PR. P1 recipes (JSON canonical) are already
+on `main`. **Headless is enough.** The desktop `todo` window needs a
+display; skip it unless you want to watch the same protocol drive a
+GPUI window.
 
 Format, threat model, and `--yes` / session-reuse notes:
 [RECIPES.md](RECIPES.md). Caps that recipes must not bypass:
@@ -18,8 +19,8 @@ Format, threat model, and `--yes` / session-reuse notes:
 ```bash
 cd /Volumes/goldcoders/OSS/gpui-agent
 git fetch origin
-git checkout gol/experimental-recipes-p1-c575
-git pull origin gol/experimental-recipes-p1-c575
+git checkout gol/p2-recipe-mcp-token-138d
+git pull origin gol/p2-recipe-mcp-token-138d
 ```
 
 `rust-toolchain.toml` pins **1.98.1**. First `cargo` on this branch may
@@ -39,25 +40,29 @@ Binaries:
 - `target/debug/todo-headless` — no window (use this)
 - `target/debug/todo` — GPUI window (display required)
 
-Confirm experimental labeling:
+Confirm experimental labeling and the token note:
 
 ```bash
 ./target/debug/gpui-agent --help | grep -i experimental
+./target/debug/gpui-agent --help | grep -i token
 ./target/debug/gpui-agent recipe --help
 ```
 
 ## 3. Terminal 1 — start the host
 
 Default bind is **`127.0.0.1:17421`**. Automation is off unless
-`GPUI_AGENT=1`. Token is still **optional** in P1 (do not require it
-for this smoke).
+`GPUI_AGENT=1`.
+
+**Recipe / MCP workflows must set the same token on host and client.**
+One-off `click` / `snapshot` / `hello` still work without a token if
+the host has none. This laptop path uses a token because you are about
+to `recipe run`.
 
 ```bash
 cd /Volumes/goldcoders/OSS/gpui-agent
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR=127.0.0.1:17421
-# optional, recommended on a shared machine:
-# export GPUI_AGENT_TOKEN=dev-secret
+export GPUI_AGENT_TOKEN=dev-secret
 ./target/debug/todo-headless
 ```
 
@@ -66,6 +71,7 @@ You should see:
 ```text
 gpui-agent listening on 127.0.0.1:17421 (platform=headless, app=todo)
 opt-in: GPUI_AGENT=1 · loopback only · protocol v1
+auth: required (GPUI_AGENT_TOKEN set; recipe/MCP clients must send the same token)
 ```
 
 **Desktop instead** (needs a real display; not required to verify recipes):
@@ -73,6 +79,7 @@ opt-in: GPUI_AGENT=1 · loopback only · protocol v1
 ```bash
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR=127.0.0.1:17421
+export GPUI_AGENT_TOKEN=dev-secret
 ./target/debug/todo
 ```
 
@@ -89,12 +96,12 @@ lsof -iTCP:17421 -sTCP:LISTEN
 ```bash
 cd /Volumes/goldcoders/OSS/gpui-agent
 export GPUI_AGENT_ADDR=127.0.0.1:17421
-# export GPUI_AGENT_TOKEN=dev-secret   # required if terminal 1 set it
+export GPUI_AGENT_TOKEN=dev-secret
 CLI=./target/debug/gpui-agent
 ```
 
-`validate` / `plan` / `resolve` do **not** need a host (and do not open
-a socket). JSON is the documented path; `.wants` is an alias:
+`validate` / `plan` / `resolve` do **not** need a host (and do not need
+a token). JSON is the documented path; `.wants` is an alias:
 
 ```bash
 $CLI recipe validate examples/recipes/todo-crud.json
@@ -104,8 +111,9 @@ $CLI recipe plan examples/recipes/todo-crud.wants --set title="Buy milk" --order
 $CLI recipe resolve 'add a todo titled Buy milk'
 ```
 
-`run` needs the host. Both sample recipes assume an **empty** todo list
-(they hard-code `todo-item-1` / `id=1`). Use a freshly started host.
+`run` needs the host **and** a non-empty token. Both sample recipes
+assume an **empty** todo list (they hard-code `todo-item-1` / `id=1`).
+Use a freshly started host.
 
 ```bash
 $CLI recipe run examples/recipes/todo-crud.json --set title="Buy milk"
@@ -145,7 +153,9 @@ That receipt should also be `"ok": true` and `"session_reused": true`
 
 ## 5. Optional: old per-click CLI vs one recipe
 
-Same host, after a **fresh** start (empty list):
+Same host, after a **fresh** start (empty list). These one-off commands
+do **not** require a client token *unless the host has one* — here the
+host does, so keep `GPUI_AGENT_TOKEN=dev-secret` exported:
 
 ```bash
 $CLI wait
@@ -159,13 +169,19 @@ $CLI assert --id todo-item-1 --checked true
 That is six process spawns. The recipe above is the same CRUD in **one**
 process and **one** TCP session.
 
+`hello` includes `"auth": "required"` when the host has a token:
+
+```bash
+$CLI hello
+# "auth": "required"
+```
+
 ## 6. Shut down
 
 ```bash
 $CLI shutdown
 ```
 
-If you set `GPUI_AGENT_TOKEN`, pass `--token` or export the same var.
 A recipe that includes `shutdown` will refuse unless you also pass
 `--yes`.
 
@@ -187,18 +203,22 @@ $CLI recipe resolve 'rm -rf /'
 
 # shutdown in a recipe without --yes (does not contact the host)
 printf '%s\n' $'hello\nshutdown' | $CLI recipe run -
-# expect: pass --yes
+# expect: pass --yes  (still needs a token; fails on --yes first if token is set)
 
 # non-loopback refused (token would not leave the machine)
 $CLI --addr 8.8.8.8:17421 hello
 # expect: refusing non-loopback agent address
 ```
 
-If terminal 1 set `GPUI_AGENT_TOKEN`, a CLI without it should fail:
+`recipe run` and `mcp` **always** fail without a token (P2), even if
+the host is untokened:
 
 ```bash
 env -u GPUI_AGENT_TOKEN $CLI recipe run examples/recipes/todo-crud.json --set title="Milk"
-# expect: "automation token required"
+# expect: recipe run and mcp require a non-empty GPUI_AGENT_TOKEN or --token
+
+env -u GPUI_AGENT_TOKEN $CLI mcp </dev/null
+# expect: same error, nonzero (does not hang on stdin)
 ```
 
 ## If something fails
@@ -207,7 +227,8 @@ env -u GPUI_AGENT_TOKEN $CLI recipe run examples/recipes/todo-crud.json --set ti
 | --- | --- |
 | `automation is disabled` | Host was started without `GPUI_AGENT=1` |
 | `connect … failed` | Host not up, or `GPUI_AGENT_ADDR` differs between terminals |
-| `automation token required` / `invalid automation token` | Export the same `GPUI_AGENT_TOKEN` in both terminals, or pass `--token` |
+| `recipe run and mcp require a non-empty GPUI_AGENT_TOKEN` | Export `GPUI_AGENT_TOKEN` (or pass `--token`) in the **client** terminal |
+| `automation token required` / `invalid automation token` | Export the **same** `GPUI_AGENT_TOKEN` in both terminals |
 | `node \`todo-item-1\` exists` / name mismatch | Host still has todos from a previous run — `shutdown` and start a fresh host |
 | `unknown invoke` | Recipe used a name not in the local schema (only demo `todo.*` + protocol ops) |
 | Desktop window won't start | Expected on a display-less session — use `todo-headless` |
@@ -220,14 +241,14 @@ cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 ```
 
 That suite includes the recipe parse / resolve / run / session-reuse
-edge cases and step-screenshot receipt plumbing. It does not need a
-display.
+edge cases, CLI fail-fast without a token, and step-screenshot receipt
+plumbing. It does not need a display.
 
 ## 8. Step screenshots (honest unavailable on headless)
 
 **This is plumbing for an agent between steps**, not a real Mac PNG
 (that is P3). Headless cannot invent pixels; the receipt still lists
-the intended paths.
+the intended paths. Keep `GPUI_AGENT_TOKEN` exported.
 
 ```bash
 mkdir -p artifacts/steps

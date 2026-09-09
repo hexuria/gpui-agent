@@ -182,6 +182,37 @@ pub struct Response {
     pub result: Option<serde_json::Value>,
 }
 
+/// Whether the host will enforce `GPUI_AGENT_TOKEN` on every request.
+///
+/// Filled by the server from its configured token, not by `AgentHost::hello`.
+/// `"required"` means a matching token is mandatory; `"none"` means the host
+/// will accept unauthenticated requests (one-off `click`/`snapshot` smoke).
+/// CLI `recipe run` and `mcp` still require a client token either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelloAuth {
+    #[default]
+    None,
+    Required,
+}
+
+impl HelloAuth {
+    pub fn from_token_configured(token: Option<&str>) -> Self {
+        if token.is_some() {
+            Self::Required
+        } else {
+            Self::None
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Required => "required",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HelloInfo {
     pub protocol: u32,
@@ -192,6 +223,9 @@ pub struct HelloInfo {
     /// Headless typically lists only `semantic`. Desktop GPUI lists both.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deliveries: Vec<DeliveryMode>,
+    /// `required` when the host was started with a non-empty token.
+    #[serde(default)]
+    pub auth: HelloAuth,
 }
 
 impl Request {
@@ -357,6 +391,32 @@ mod tests {
         assert!(
             !rendered.contains("super-secret-token"),
             "token leaked in Debug: {rendered}"
+        );
+    }
+
+    #[test]
+    fn hello_auth_roundtrip() {
+        let hello = HelloInfo {
+            protocol: PROTOCOL_VERSION,
+            app: "todo".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            deliveries: vec![DeliveryMode::Semantic],
+            auth: HelloAuth::Required,
+        };
+        let json = serde_json::to_value(&hello).unwrap();
+        assert_eq!(json["auth"], "required");
+        let back: HelloInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(back.auth, HelloAuth::Required);
+
+        let none: HelloInfo =
+            serde_json::from_str(r#"{"protocol":1,"app":"x","platform":"headless","ready":true}"#)
+                .unwrap();
+        assert_eq!(none.auth, HelloAuth::None);
+        assert_eq!(HelloAuth::from_token_configured(None), HelloAuth::None);
+        assert_eq!(
+            HelloAuth::from_token_configured(Some("s")),
+            HelloAuth::Required
         );
     }
 }

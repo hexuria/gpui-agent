@@ -27,6 +27,7 @@ pub enum RecipeCommand {
         order_check: bool,
     },
     /// [experimental] Run the compiled plan sequentially on one reused TCP session.
+    /// Requires a non-empty `--token` / `GPUI_AGENT_TOKEN` (same value as the host).
     Run {
         path: PathBuf,
         #[arg(long = "set", value_name = "KEY=VALUE")]
