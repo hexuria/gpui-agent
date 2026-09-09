@@ -580,4 +580,42 @@ mod tests {
         );
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
+
+    #[test]
+    fn recipe_run_success_is_not_error() {
+        use std::sync::{Arc, Mutex};
+
+        use gpui_agent::protocol::PlatformKind;
+        use gpui_agent::server::spawn_host;
+        use todo_core::TodoStore;
+
+        let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+        let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).unwrap();
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
+        let result = tools_call_result(
+            &mut client,
+            &json!({
+                "name": "recipe_run",
+                "arguments": {
+                    "recipe": {
+                        "name": "ok-hello",
+                        "steps": [
+                            {"id": "wait", "op": "wait"},
+                            {"id": "hello", "op": "hello"}
+                        ]
+                    }
+                }
+            }),
+        );
+        assert!(
+            result.get("isError").is_none(),
+            "successful recipe_run must not set isError: {result}"
+        );
+        let text = result["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("\"ok\": true") || text.contains("\"ok\":true"),
+            "success payload should carry the receipt: {text}"
+        );
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }

@@ -1070,6 +1070,27 @@ assert todo-item-1 name=$title checked=false
     }
 
     #[test]
+    fn placeholder_in_needs_is_not_confused_with_a_real_step_id() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "p",
+            "params": ["title"],
+            "steps": [
+                {"id": "wait", "op": "wait"},
+                {"id": "add", "op": "hello", "needs": ["$title"]}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(err.contains("needs"), "{err}");
+        assert!(
+            err.contains("$params") || err.contains("graph identity"),
+            "placeholder needs must fail validate even if a later --set would bind: {err}"
+        );
+    }
+
+    #[test]
     fn wants_standalone_quoted_value() {
         let recipe = parse_wants(r#"set-value todo-input "Buy milk""#, "q").unwrap();
         match &recipe.steps[0].op {
