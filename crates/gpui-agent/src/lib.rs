@@ -40,7 +40,7 @@ pub use server::{
     AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, MAX_CONNECTIONS, MAX_LINE_BYTES, ServerLimits,
     default_addr,
 };
-pub use tree::{Bounds, UiNode, UiTree};
+pub use tree::{Bounds, UiNode, UiTree, role};
 pub use virtual_input::{
     AgentCursor, VIRTUAL_UNAVAILABLE, VirtualPointerClick, hit_point, keystroke_token, plan_click,
     text_keystrokes, virtual_unavailable,

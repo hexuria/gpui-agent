@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+/// Well-known role strings for semantic trees.
+///
+/// Wire format stays a string so apps can add their own. These constants
+/// (and the `UiNode` constructors below) cut boilerplate for the common set.
+pub mod role {
+    pub const WINDOW: &str = "window";
+    pub const PAGE: &str = "page";
+    pub const NAVIGATION: &str = "navigation";
+    pub const BUTTON: &str = "button";
+    pub const TEXTBOX: &str = "textbox";
+    pub const LIST: &str = "list";
+    pub const LIST_ITEM: &str = "listitem";
+    pub const CHECKBOX: &str = "checkbox";
+    pub const NOTE: &str = "note";
+    pub const STATUS: &str = "status";
+}
+
 /// Axis-aligned bounds in logical pixels. Hosts that cannot measure
 /// layout (headless, or before the first frame) send zeros.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -57,8 +74,63 @@ impl UiNode {
         }
     }
 
+    pub fn window(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::WINDOW, name)
+    }
+
+    pub fn page(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::PAGE, name)
+    }
+
+    pub fn navigation(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::NAVIGATION, name)
+    }
+
+    pub fn button(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::BUTTON, name)
+    }
+
+    pub fn textbox(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::TEXTBOX, name)
+    }
+
+    pub fn list(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::LIST, name)
+    }
+
+    pub fn listitem(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::LIST_ITEM, name)
+    }
+
+    pub fn checkbox(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::CHECKBOX, name)
+    }
+
+    pub fn note(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::NOTE, name)
+    }
+
+    pub fn status(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::STATUS, name)
+    }
+
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = Some(value.into());
+        self
+    }
+
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn with_bounds(mut self, bounds: Bounds) -> Self {
+        self.bounds = bounds;
         self
     }
 
@@ -204,6 +276,17 @@ mod tests {
         tree.flatten_into(&mut reuse);
         assert!(reuse.capacity() >= cap);
         assert_eq!(reuse.len(), 4);
+    }
+
+    #[test]
+    fn typed_role_constructors_match_constants() {
+        assert_eq!(UiNode::window("w", "W").role, role::WINDOW);
+        assert_eq!(UiNode::page("p", "P").role, role::PAGE);
+        assert_eq!(UiNode::navigation("n", "N").role, role::NAVIGATION);
+        assert_eq!(UiNode::button("b", "B").role, role::BUTTON);
+        assert_eq!(UiNode::textbox("t", "T").role, role::TEXTBOX);
+        assert_eq!(UiNode::checkbox("c", "C").with_focused(true).focused, true);
+        assert!(!UiNode::note("n", "N").with_enabled(false).enabled);
     }
 
     #[test]
