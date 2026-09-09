@@ -11,7 +11,7 @@ semantic tree and action handlers; the CLI/MCP never learn your domain.
 | Runtime | Start the server only when `GPUI_AGENT=1` (`true`/`yes`/`on`). |
 | Release | Also require `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | Loopback only. `gpui_agent::security::from_env` enforces this. |
-| Token | Optional `GPUI_AGENT_TOKEN` on both app and CLI. **Set it** unless you are on a single-user box and accept that any local process can drive the UI. |
+| Token | Optional `GPUI_AGENT_TOKEN` on both app and CLI. **Set it** unless you are on a single-user box and accept that any local process can drive the UI. Every recipe step carries the same token. P1 does not require a token; **ask before requiring one when recipes/MCP are on** (P2). |
 | DoS caps | The server caps line size (1 MiB), concurrent connections (32), mailbox depth (128), and idle sockets (30s). See [SECURITY.md](SECURITY.md). |
 
 ```rust
@@ -104,9 +104,11 @@ script without polluting `gpui-agent`.
 }
 ```
 
-MCP tools are the protocol ops only. List your ids and invoke names in
-the project instructions. The MCP process holds one `AgentClient` and
-reuses a single TCP session across `tools/call`.
+MCP tools are the protocol ops only, plus experimental `recipe_*`
+batching tools (not app-specific verbs). List your ids and invoke
+names in the project instructions. Recipe format (JSON canonical) and
+`--yes`: [RECIPES.md](RECIPES.md). The MCP process holds one
+`AgentClient` and reuses a single TCP session across `tools/call`.
 
 ## 7. Checklist
 
@@ -115,6 +117,13 @@ reuses a single TCP session across `tools/call`.
 - [ ] Desktop mailbox drain on the UI thread
 - [ ] Page roots assertable after nav clicks
 - [ ] Optional `invoke` map documented for agents
+- [ ] Optional: check in a JSON `recipe` of those ops so agents run one
+      CLI invocation instead of one process per click
+      ([RECIPES.md](RECIPES.md); laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md)).
+      `invoke` names in the recipe must match the host allow-list;
+      shutdown recipes need `--yes`. Optional `--screenshot-dir` is
+      observe-only; headless stays `screenshot_unavailable`. Recipes
+      still cannot bypass [SECURITY.md](SECURITY.md#recipes-experimental).
 - [ ] Product builds leave the feature off
 - [ ] `hello.deliveries` lists `semantic` and, on a painted GPUI window, `virtual`
 - [ ] Virtual click/type/key go through the mailbox → UI thread → `Window::dispatch_event` / `dispatch_keystroke` (never OS HID)

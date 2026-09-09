@@ -1,0 +1,38 @@
+{
+  "v": 1,
+  "name": "todo-crud",
+  "app": "todo",
+  "params": ["title"],
+  "steps": [
+    { "id": "wait", "op": "wait" },
+    {
+      "id": "add",
+      "op": "invoke",
+      "name": "todo.add",
+      "args": { "title": "$title" },
+      "needs": ["wait"]
+    },
+    {
+      "id": "seen",
+      "op": "assert",
+      "target": "todo-item-1",
+      "name": "$title",
+      "checked": false,
+      "needs": ["add"]
+    },
+    {
+      "id": "toggle",
+      "op": "invoke",
+      "name": "todo.toggle",
+      "args": { "id": 1 },
+      "needs": ["seen"]
+    },
+    {
+      "id": "done",
+      "op": "assert",
+      "target": "todo-item-1",
+      "checked": true,
+      "needs": ["toggle"]
+    }
+  ]
+}

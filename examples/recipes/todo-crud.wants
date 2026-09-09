@@ -1,0 +1,7 @@
+# One CLI invocation, many protocol ops, one TCP session.
+# Bind $title with: gpui-agent recipe run examples/recipes/todo-crud.wants --set title="Buy milk"
+wait
+invoke todo.add title=$title
+assert todo-item-1 name=$title checked=false
+invoke todo.toggle id=1
+assert todo-item-1 checked=true

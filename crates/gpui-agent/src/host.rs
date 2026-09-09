@@ -10,4 +10,16 @@ pub trait AgentHost: Send {
     fn hello(&self) -> HelloInfo;
     fn snapshot(&self) -> UiTree;
     fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String>;
+
+    /// Observe-only PNG of the **app surface** (not the desktop).
+    ///
+    /// Write `path` on this machine. Headless hosts — and desktop GPUI
+    /// until it can export a frame — must return
+    /// [`crate::screenshot_unavailable`] instead of inventing pixels.
+    fn screenshot(&self, path: Option<&str>) -> Result<DispatchResult, String> {
+        let _ = path;
+        Err(crate::screenshot_unavailable(
+            "this host has no pixel surface",
+        ))
+    }
 }

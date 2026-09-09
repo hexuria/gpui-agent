@@ -96,6 +96,41 @@ Same generic ops as the CLI. Stdio lines are now capped at `MAX_LINE_BYTES`.
 Framing is still newline JSON, not MCP `Content-Length` (product gap).
 The parent process is trusted.
 
+### Recipes (experimental)
+
+`gpui-agent recipe run` and MCP `recipe_run` compile a local **JSON**
+recipe (`.wants` also accepted) into ordinary protocol ops and send
+them **sequentially** on one reused TCP session. Design:
+[RECIPES.md](RECIPES.md). Laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md).
+
+They do **not** add privilege and do **not** bypass PR #3 caps:
+
+| Gate | Recipe path |
+| --- | --- |
+| Opt-in / loopback | Host still needs `GPUI_AGENT=1`. CLI still `ensure_loopback`. |
+| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. Token remains **optional** in P1 (H1). **Ask the user before requiring a token when recipes or MCP are on** (P2). Not a wire `batch` op. |
+| Line / conn / mailbox | Unchanged. Extra recipe cap: 256 steps. |
+| `invoke` | Names must be `SchemaKind::Invoke` on the local registry. Unknown names and protocol names used as invoke (`click`) fail closed. Schema names are `[A-Za-z0-9_.-]`. |
+| Resolve | Keyword score, fail closed. Shell-like / unknown / ambiguous intents do nothing. Never `Command`. |
+| Shutdown | `Effect::Exit` requires CLI `--yes` or MCP `yes: true`. The run does not start without it. |
+| Delivery | Default `semantic`. `virtual` is still in-process GPUI (never OS HID). |
+
+Session reuse is a client convenience (`AgentClient::rpc` keeps the
+socket; `rpc_once` reconnects for benches). None of these skip auth.
+A mid-recipe failure returns a partial receipt and stops; later
+siblings in the same DAG wave do **not** run (P1 is sequential).
+
+Treat `recipe run` / `recipe_run` as equivalent to holding the token
+(same class as M4). Tests for the fail-closed cases live in
+`gpui-agent-recipe` and the CLI/MCP suite — see
+[RECIPES.md](RECIPES.md#edge-case-coverage) and
+[RECIPES.md](RECIPES.md#threat-model-recipes-must-not-bypass-caps).
+
+Optional `--screenshot-dir` asks the host for an app-surface PNG after
+steps (receipt lists paths). Headless returns `screenshot_unavailable`
+and does not invent a file. Do not put tokens or CI secrets on the
+painted window. Real desktop PNG is P3.
+
 ### Logging of secrets
 
 Startup logs print the bind address, not the token. Responses do not
@@ -142,11 +177,13 @@ commit `Cargo.lock`; CI should generate one and run `cargo audit`.
 Security-relevant items first, then reliability and DX. These are
 intentionally **not** half-implemented in this patch.
 
-1. **Required or ephemeral token (H1).** If `GPUI_AGENT_TOKEN` is unset,
+1. **Required or ephemeral token (H1 / P2).** If `GPUI_AGENT_TOKEN` is unset,
    generate a 32-byte random secret at bind time, print it once to
    stderr, and require it. Keep an explicit `GPUI_AGENT_TOKEN=` empty
    opt-out for single-user smoke scripts if needed. This is the highest
    leverage change; it needs a CLI/docs/smoke coordinated bump.
+   **Ask the user before requiring a token when recipes or MCP are on.**
+   P1 does not change the optional-token policy.
 2. **Unix-domain socket + peer uid (M2).** Optional
    `GPUI_AGENT_SOCK=~/.gpui-agent.sock` with `0600` and
    `SO_PEERCRED` / equivalent. Stronger than TCP loopback on multi-user
@@ -178,13 +215,15 @@ intentionally **not** half-implemented in this patch.
 11. **Mailbox + token + virtual integration test.** Needs a GPU/display
     or a fake `Window`. Until then, keep the unit gates
     (`authorize_request` on virtual ops, mailbox overflow).
-12. **`screenshot` on desktop** when a GPU is present (already on the
-    README next-steps list).
+12. **In-app GPUI offscreen PNG** so `screenshot` can write real pixels
+    on desktop (the op exists; hosts without a surface stay honest).
 13. **AccessKit auto-export** so apps register fewer ids by hand.
 14. **Per-connection QPS cap** if anyone runs this as a long-lived
     host. Line/connection/mailbox caps are enough for v1.
 15. **Invoke allow-lists in docs per app.** Sample todo is CRUD-only;
-    integrators must not map `invoke` onto a shell.
+    integrators must not map `invoke` onto a shell. Experimental recipes
+    fail closed on unknown invoke names; that is not a substitute for
+    a tight host allow-list.
 
 ## Recommended (not implemented here)
 

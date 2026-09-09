@@ -65,6 +65,14 @@ pub fn handle_request(
             resp.tree = Some(host.snapshot());
             resp
         }
+        Op::Screenshot { path } => match host.screenshot(path.as_deref()) {
+            Ok(result) => {
+                let mut resp = Response::ok(req.id);
+                resp.result = result.value;
+                resp
+            }
+            Err(error) => Response::err(req.id, error),
+        },
         Op::Assert { spec } => match assert_tree(&host.snapshot(), &spec) {
             Ok(()) => Response::ok(req.id),
             Err(error) => Response::err(req.id, error),
@@ -197,6 +205,29 @@ mod tests {
         let resp = handle_request(&mut host, req, Some("secret"));
         assert!(resp.ok);
         assert!(resp.hello.is_some());
+    }
+
+    #[test]
+    fn screenshot_is_honestly_unavailable_on_empty_host() {
+        let mut host = EmptyHost;
+        let dest =
+            std::env::temp_dir().join(format!("gpui-agent-empty-shot-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dest);
+        let req = Request::new(
+            "1",
+            Op::Screenshot {
+                path: Some(dest.to_string_lossy().into_owned()),
+            },
+        );
+        let resp = handle_request(&mut host, req, None);
+        assert!(!resp.ok);
+        let err = resp.error.unwrap();
+        assert!(crate::is_screenshot_unavailable(&err), "{err}");
+        assert!(
+            !dest.exists(),
+            "unavailable must not invent a PNG at {}",
+            dest.display()
+        );
     }
 
     #[test]
