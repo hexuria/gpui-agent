@@ -40,7 +40,7 @@ leaves the machine.” Do not enable this in shipping product builds.
 | H2 | **High** | Bug | Unbounded NDJSON lines + one OS thread per connection. A client could grow a request line without limit (`BufRead::lines`) and/or open unbounded handler threads. | Former `server.rs` `reader.lines()` and `thread::spawn` on every `accept`. | Local process (no token needed if H1) sends a multi-GB line or opens thousands of connections → memory / thread exhaustion of the GUI process. | **Patched.** `read_limited_line` (default 1 MiB), `MAX_CONNECTIONS` (32), idle read/write timeout (30s). Extra clients are dropped. Oversized lines get an error and the socket is closed (no resync). |
 | M1 | **Medium** | Bug | CLI/MCP accepted any `SocketAddr`. A mistyped or injected `--addr` / `GPUI_AGENT_ADDR` would send `GPUI_AGENT_TOKEN` off-box. | Former `gpui-agent-cli` parsed `addr: SocketAddr` and connected with no loopback check. Server bind was already loopback-only. | User or wrapper runs `gpui-agent --addr 1.2.3.4:17421 hello` with a token in the env → secret leaves the machine. | **Patched.** CLI calls `ensure_loopback` before connect/MCP. Server bind unchanged. |
 | M2 | **Medium** | Design | TCP loopback has no peer credentials. Any UID on the host can connect. | `TcpListener::bind` on `127.0.0.1`. No Unix socket, no `SO_PEERCRED`. | User B on a shared Linux box automates user A’s app (especially if H1). | **Documented.** Next step: optional `AF_UNIX` socket with `0600` and peer-uid check. Large change; do not add a second transport in this patch. |
-| M3 | **Medium** | Design | `snapshot` returns widget `value`s (draft text, later passwords if an app puts them on the tree). | `todo-core` `tree()` includes `todo-input` value. Protocol has no redaction. | Local client (H1) reads whatever the user typed. | **Documented.** Integrators must not put secrets on the semantic tree, or must redact `role=password` / similar. A protocol-level redaction hook is a later feature. |
+| M3 | **Medium** | Design | `snapshot` returns widget `value`s (draft text, later passwords if an app puts them on the tree). A PNG of the window shows the same pixels. | `todo-core` `tree()` includes `todo-input` value. Protocol has no redaction. | Local client (H1) reads whatever the user typed **or** screenshots the window. | **Documented.** Integrators must not put secrets on the semantic tree **or** the painted window. A protocol-level redaction hook is a later feature. |
 | M4 | **Medium** | Design | `gpui-agent mcp` is a full confused-deputy: stdio `tools/call` maps 1:1 onto protocol ops, including `invoke` and `shutdown`. | `crates/gpui-agent-cli/src/mcp.rs` | Whoever can write to the MCP process (the IDE/agent) can do anything the socket allows. | **Documented / intended.** Treat the MCP client as equivalent to holding the token. Do not expose this stdio shim on a network. P2: `gpui-agent mcp` **refuses to start** without a non-empty client token. Set the same token on the host. |
 | M5 | **Medium** | Bug | Mailbox queue was unbounded. A stalled UI thread + fast TCP clients could grow RAM without bound. | Former `AgentMailbox::push` always `Vec::push`. | Local client floods `wait`/`click` while the UI thread is blocked. | **Patched.** `MAX_MAILBOX_DEPTH` (128); further pushes return `mailbox full` without queueing. |
 | L1 | **Low** | Bug | Token compared with `==` (non-constant-time). | Former `dispatch.rs` / mailbox `got == expected`. | Local attacker times responses to recover a short token. Unrealistic vs just reading `/proc/<pid>/environ`. | **Patched.** `tokens_match` XOR-folds both byte strings (`#[inline(never)]`). Still leaks the longer length; acceptable for a local secret. |
@@ -49,7 +49,7 @@ leaves the machine.” Do not enable this in shipping product builds.
 | L4 | **Low** | Bug | Desktop mailbox path authorized the token in the TCP thread, then `delivery=virtual` skipped `handle_request` entirely — so **protocol version was not checked** for virtual click/type/key. | `apps/todo/src/app.rs` `apply_agent` + former `handle_stream_mailbox` | A `v: 99` virtual click still ran if it reached the mailbox. Not a privilege bypass; it would break a future v2 security field. | **Patched.** Mailbox stream calls `authorize_request` (version + token) before `mailbox.wait`. Host path already went through `handle_request`. |
 | L5 | **Low** | Design | Token lives in the process environment (`GPUI_AGENT_TOKEN`), visible via `/proc/<pid>/environ` and some `ps` invocations. | `from_env`, clap `env = "GPUI_AGENT_TOKEN"` | Local attacker with the same or root uid reads the secret. Same class as H1/M2. | **Documented.** Unix-socket + file secret (0600) or an ephemeral printed token is the real fix. |
 | L6 | **Low** | Leftover | No request-rate limit beyond connection/line/mailbox caps. `Wait.timeout_ms` is ignored (hello is immediate). serde_json nesting is capped by serde’s recursion limit (~128). | `dispatch.rs` `Op::Wait`, `server.rs` | Slowloris is mitigated by idle timeout; CPU spam of small valid ops is still possible. | Acceptable for v1. Add a simple per-connection QPS cap if this becomes a real host. |
-| I1 | **Info** | Positive | No `unsafe`, no filesystem or `Command` surface in the protocol. `invoke` is an in-process host callback (sample todo: CRUD only). Virtual keys have **no modifiers** (no synthetic ⌘Q). | repo-wide `unsafe` grep; `todo-core` `invoke`; `virtual_input.rs` `keystroke_token` | — | Keep `invoke` allow-listed in each app. Never map protocol ops onto a shell. |
+| I1 | **Info** | Positive | `gpui-agent` still has no `unsafe`. Recipe/CLI never map ops onto a shell. `invoke` is an in-process host callback (sample todo: CRUD only). Virtual keys have **no modifiers** (no synthetic ⌘Q). P3: desktop macOS may exec **`screencapture`** with a host-chosen `-l<CGWindowID>` and a client `path` (same write as `write_png`). Argv is otherwise fixed — not a shell. Tiny `unsafe` lives in `apps/todo` (`objc` `windowNumber` only). | repo-wide `unsafe` grep; `todo-core` `invoke`; `virtual_input.rs` `keystroke_token`; `screenshot.rs` `screencapture_window_argv` | — | Keep `invoke` allow-listed in each app. Never map protocol ops onto a shell. Do not add an env override for the `screencapture` binary. |
 | I2 | **Info** | Design | Release gate is `cfg!(debug_assertions)`, not `cfg!(feature = …)`. `cargo run` (dev) does not need `GPUI_AGENT_ALLOW_RELEASE`. | `security.rs` | Shipping a **debug** binary with `GPUI_AGENT=1` baked into a wrapper skips the release latch. | Product builds: release profile + feature off + no env. |
 | I3 | **Info** | Design | Sample `todo` feature `default = ["agent"]`. Copy-paste into a product without turning it off compiles the bridge in. Runtime still needs `GPUI_AGENT=1`. | `apps/todo/Cargo.toml` | Developer runs the product with leftover env from a test session. | Templates should default the feature **off**. |
 | I4 | **Info** | Product | Bind check is IP-literal only (`SocketAddr`). `localhost` as a hostname is not accepted — safer than DNS. CLI and server now agree on loopback. | `from_env`, `ensure_loopback` | — | Keep it this way. |
@@ -134,9 +134,10 @@ Treat `recipe run` / `recipe_run` as equivalent to holding the token
 [RECIPES.md](RECIPES.md#threat-model-recipes-must-not-bypass-caps).
 
 Optional `--screenshot-dir` asks the host for an app-surface PNG after
-steps (receipt lists paths). Headless returns `screenshot_unavailable`
-and does not invent a file. Do not put tokens or CI secrets on the
-painted window. Real desktop PNG is P3.
+steps (receipt lists paths). Headless / Linux / Windows return
+`screenshot_unavailable` and do not invent a file. macOS desktop writes
+**this window** via `screencapture -l` (Screen Recording). Do not put
+tokens or CI secrets on the painted window. See [RECORDING.md](RECORDING.md).
 
 ### Logging of secrets
 
@@ -158,7 +159,8 @@ connections may finish one more request. Fine.
 ### Dependencies
 
 `gpui-agent` itself depends only on `serde`, `serde_json`, `thiserror`.
-The CLI adds `anyhow` + `clap`. `cargo audit` at review time reported
+The CLI adds `anyhow` + `clap`. P3 screenshot execs the system
+`screencapture` binary on macOS only (fixed argv). `cargo audit` at review time reported
 **no yanked crates and no vulnerability advisories** on a generated
 lockfile. Six *unmaintained* warnings appear in the GPUI Kit /
 windowing stack (`bincode`, `instant`, `paste`, `rustls-pemfile`,
@@ -224,8 +226,12 @@ intentionally **not** half-implemented in this patch.
 11. **Mailbox + token + virtual integration test.** Needs a GPU/display
     or a fake `Window`. Until then, keep the unit gates
     (`authorize_request` on virtual ops, mailbox overflow).
-12. **In-app GPUI offscreen PNG** so `screenshot` can write real pixels
-    on desktop (the op exists; hosts without a surface stay honest).
+12. **In-app GPUI offscreen PNG (P3 partial).** Protocol `screenshot`
+    writes a real PNG on **macOS desktop** (`screencapture -l` of this
+    window). Headless / Linux / Windows stay honest. GPUI
+    `render_to_image` is still `test-support` only — do not enable it
+    in production without asking. `--record` / ScreenCaptureKit crate
+    stay later.
 13. **AccessKit auto-export** so apps register fewer ids by hand.
 14. **Per-connection QPS cap** if anyone runs this as a long-lived
     host. Line/connection/mailbox caps are enough for v1.
@@ -237,6 +243,6 @@ intentionally **not** half-implemented in this patch.
 ## Recommended (not implemented here)
 
 Unix sockets (M2), snapshot redaction, and `cargo audit` remain the next
-security follow-ups. P4 does not mint ephemeral tokens. Do not enable
-the bridge in shipping product builds; do not add HTTP without an
-Origin allow-list.
+security follow-ups. P4 does not mint ephemeral tokens. P3 does not add
+ScreenCaptureKit or entitlements. Do not enable the bridge in shipping
+product builds; do not add HTTP without an Origin allow-list.

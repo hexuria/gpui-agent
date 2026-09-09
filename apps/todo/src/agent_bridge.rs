@@ -42,6 +42,10 @@ pub fn maybe_start() -> Option<AgentMailbox> {
                     eprintln!(
                         "delivery: semantic (default) or virtual (in-window GPUI events, no OS HID)"
                     );
+                    eprintln!(
+                        "screenshot: macOS writes this window via screencapture -l (Screen Recording); \
+                         other OSes and headless stay screenshot_unavailable"
+                    );
                     Some(mailbox)
                 }
                 Err(err) => {

@@ -6,10 +6,9 @@ Roadmap for landing the experimental work from
 those branches wholesale. Inventory of what closed, what duplicated P0,
 and what stayed museum: [STACK_HYGIENE.md](STACK_HYGIENE.md).
 
-P0–P2, P4, the all-Read pipeline, and MCP `isError`/`$params` hardenings
-are on `main`. P3 (Mac window PNG) remains open as
-([#20](https://github.com/hexuria/gpui-agent/pull/20)). P5 is this hygiene
-note plus closing leftover #4/#5 **without merge**.
+P0–P2, P4, the all-Read pipeline, MCP `isError`/`$params` hardenings,
+and P5 hygiene are on `main`. P3 (Mac window PNG via `screencapture -l`)
+is this PR.
 
 ## Status
 
@@ -18,16 +17,16 @@ note plus closing leftover #4/#5 **without merge**.
 | **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | **Done** ([#6](https://github.com/hexuria/gpui-agent/pull/6) / `c4069d9`) |
 | **P1** | Recipes, experimental, JSON canonical (`.wants` alias) | **Done** ([#9](https://github.com/hexuria/gpui-agent/pull/9)) |
 | **P2** | Token required for CLI `recipe run` and `mcp` (same token on host) | **Done** ([#19](https://github.com/hexuria/gpui-agent/pull/19)). No ephemeral Jupyter mint. One-off `click`/`snapshot` stay optional. |
-| **P3** | Real desktop PNG, or honest Mac-only visuals | **In flight** ([#20](https://github.com/hexuria/gpui-agent/pull/20)). Headless stays `screenshot_unavailable`. |
+| **P3** | Real desktop PNG, or honest Mac-only visuals | **This PR**. Headless stays `screenshot_unavailable`. macOS desktop uses `screencapture -l` of this window. |
 | **P4** | CI: headless recipe run + receipt assert | **Done** ([#21](https://github.com/hexuria/gpui-agent/pull/21)). `ubuntu-latest`; token only on the recipe CI step. Gate is receipt `ok` + `session_reused`. |
-| **P5** | Squash / stack hygiene vs leftover #4/#5 | **This PR**. Close #4/#5 without merge; keep remote branches as museum. |
+| **P5** | Squash / stack hygiene vs leftover #4/#5 | **Done** ([#22](https://github.com/hexuria/gpui-agent/pull/22)). Close #4/#5 without merge; keep remote branches as museum. |
 
 Recipes, TMP-style registry, and an honest `screenshot` protocol op
-land in **P1**. Recording / real desktop PNG stay **P3**. NDJSON
-**pipeline** for **all-Read** DAG waves lives in this follow-on (`rpc_pipeline`
-write-N-then-read, plus the `4d464c7` retry-after-write / sibling-receipt
-rules). Write / Exit / mixed waves stay sequential fail-fast. Do not merge
-leftover #4/#5.
+landed in **P1**. Token-for-recipe/MCP landed in **P2**. Real Mac PNG
+of this window lands in **P3**. NDJSON **pipeline** for **all-Read** DAG
+waves is on `main` (`rpc_pipeline` write-N-then-read, plus the `4d464c7`
+retry-after-write / sibling-receipt rules). Write / Exit / mixed waves
+stay sequential fail-fast. Do not merge leftover #4/#5.
 
 Museum branches (closed PRs; do not merge, do not delete unless asked):
 
@@ -49,7 +48,7 @@ These never change unless the user explicitly forks the product:
 - **Semantic default.** `delivery=virtual` stays opt-in per op.
 - **Ask the user** before product forks: recipe syntax freeze, required
   tokens, screenshot/recording backends, CI gates, merging experimental
-  PRs.
+  PRs, ScreenCaptureKit crate / entitlements, `--record` / ffmpeg.
 
 ## P0 — session reuse + buffers / flatten (done)
 
@@ -165,7 +164,7 @@ PR #19.
 | Recipe/MCP workflows | **Same** non-empty token on host **and** client. |
 
 Old PR #8 (mint + `--allow-empty-token` on every connecting command)
-is closed; this branch starts from `main` after P1.
+is closed; P2 landed from `main` after P1.
 
 **In scope**
 
@@ -189,25 +188,55 @@ tokened recipe phase.
 
 ### Ready-to-paste agent prompt (P2)
 
-Superseded by the user prompt that produced this PR. Kept for history
-in git; do not re-ask A/B/C/D.
+Superseded. Kept for history in git; do not re-ask A/B/C/D.
 
 ---
 
-## P3 — real desktop PNG or honest Mac-only visuals
+## P3 — real desktop PNG or honest Mac-only visuals (this PR)
 
-**In flight:** [PR #20](https://github.com/hexuria/gpui-agent/pull/20)
-(`gol/no-brainer-p3-screenshot-b20f`). Keep that PR open; do not fold it
-into P5.
+**Decided** (the prompt said ask if unclear; P1/P2 went ahead with a
+default, so this PR does too):
 
-Headless must stay honest: `screenshot_unavailable`, **no fake PNG**.
-Desktop PNG of the **app surface** (not the full desktop) is the AI-useful
-path. Mac `screencapture -l` is observe-only and not a CI gate.
+| Choice | Default in this PR |
+| --- | --- |
+| In-app GPUI offscreen vs Mac `screencapture -l` first? | **Mac `screencapture -l` of this window.** `Window::render_to_image` on gpui-kit 0.6 / gpui-pre 0.3.4 is `#[cfg(test-support)]` only. Enabling `test-support` in the production `todo` binary is a product fork. Linux/Windows desktop stays honest `screenshot_unavailable`. |
+| `--record` / SVG+PPM? | **Later.** See [RECORDING.md](RECORDING.md). |
 
-Do not land a protocol `screenshot` op that invents pixels. Video/`--record`
-is secondary; do not block P3 on ffmpeg or ScreenCaptureKit.
+Desktop mailbox intercepts `Op::Screenshot` on the UI thread (same
+place as virtual ops) so capture has a real `Window`. Headless and
+`TodoStore` without a window still return `screenshot_unavailable`
+and **must not** create a file. `TEST_PNG` stays tests/mock hosts only.
+
+macOS argv is fixed: `screencapture -l<CGWindowID> -o -x <path>`
+(no shadow, no sound). Window id is read from this process’s NSView,
+not from the client. Missing Screen Recording → unavailable, leftover
+non-PNG deleted. Not a CI gate.
+
+**In scope**
+
+- `capture_window_via_screencapture` / argv builder + PNG accept
+- Desktop `todo` intercept + macOS `CGWindowID`
+- Docs: PROTOCOL, SECURITY (no secrets in frames), RECORDING.md,
+  TRY_ON_MAC screenshot section, this file
+- Tests: unavailable paths, argv never full-desktop/interactive,
+  non-PNG deleted, mock `TEST_PNG` unchanged
+
+**Out of scope**
+
+- ffmpeg / `--record` / ScreenCaptureKit crate / entitlements
+- Full-desktop capture, OS cursor warp (`screencapture -C`)
+- Enabling gpui `test-support` / `render_to_image` in production
+- P4 CI recipe job
+
+**Success.** Headless: `screenshot_unavailable`, no file.
+macOS desktop: PNG of the app window (or unavailable if permission
+denied). Linux/Windows desktop: documented Mac-only + unavailable.
+`cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+does not need a GPU.
 
 ### Ready-to-paste agent prompt (P3)
+
+Superseded by this PR. Kept for history:
 
 ```text
 Repo: https://github.com/hexuria/gpui-agent

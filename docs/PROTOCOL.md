@@ -38,7 +38,7 @@ See [INTEGRATING.md](INTEGRATING.md).
 | `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists` | Check snapshot fields |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
 | `wait` | optional `timeout_ms` | Block until hello/ready |
-| `screenshot` | optional `path` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Headless / no-export hosts return `screenshot_unavailable` instead of a fake image. |
+| `screenshot` | optional `path` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Headless / Linux / Windows desktop return `screenshot_unavailable` instead of a fake image. macOS desktop `todo` writes **this window** via `screencapture -l` (Screen Recording). Never the full desktop. |
 | `shutdown` | | Ask the host to exit |
 
 These are also the **only** first-class `gpui-agent` CLI commands (plus
@@ -48,7 +48,8 @@ batch of the ops above (`AgentClient` reuses one TCP session; `rpc_once`
 is the old reconnect path for benches). It is not a new wire `op`.
 `recipe run --screenshot-dir` issues extra `screenshot` ops after steps
 so an agent can visually check UI state mid-run. Headless stays honest.
-See [RECIPES.md](RECIPES.md) and the laptop runbook [TRY_ON_MAC.md](TRY_ON_MAC.md).
+macOS desktop writes the app window. Details: [RECORDING.md](RECORDING.md)
+and [TRY_ON_MAC.md](TRY_ON_MAC.md).
 
 ## Response
 
@@ -199,6 +200,14 @@ gpui-agent invoke prefs.set --arg theme=dark
 
 `platform` is `desktop` | `headless` | `web` | `mobile`. Only the first two
 are implemented. New hosts implement `AgentHost` and keep this document.
+
+`screenshot` backends:
+
+| Host | Result |
+| --- | --- |
+| Headless | `screenshot_unavailable`, no file |
+| Desktop Linux / Windows | Same (no production GPUI framebuffer export on this pin) |
+| Desktop macOS | PNG of **this window** (`screencapture -l`); permission failure is unavailable, not a fake PNG |
 
 ## Extending
 

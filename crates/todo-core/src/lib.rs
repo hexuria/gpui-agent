@@ -277,7 +277,10 @@ impl AgentHost for TodoStore {
         let _ = path;
         let detail = match self.platform {
             PlatformKind::Headless => "headless host has no pixel surface",
-            PlatformKind::Desktop => "desktop host has no GPUI surface export yet",
+            PlatformKind::Desktop => {
+                "desktop screenshot must run on the GPUI UI thread with a Window \
+                 (mailbox intercept). This store has no pixel surface."
+            }
             _ => "this host has no pixel surface",
         };
         Err(gpui_agent::screenshot_unavailable(detail))
@@ -381,6 +384,28 @@ mod tests {
         let err = resp.error.unwrap();
         assert!(gpui_agent::is_screenshot_unavailable(&err), "{err}");
         assert!(err.contains("headless"), "{err}");
+        assert!(!dest.exists(), "must not invent {}", dest.display());
+    }
+
+    #[test]
+    fn desktop_store_screenshot_stays_unavailable_without_a_window() {
+        let mut store = TodoStore::new(PlatformKind::Desktop);
+        let dest = std::env::temp_dir().join(format!(
+            "gpui-agent-desktop-store-no-shot-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&dest);
+        let req = Request::new(
+            "s",
+            Op::Screenshot {
+                path: Some(dest.to_string_lossy().into_owned()),
+            },
+        );
+        let resp = handle_request(&mut store, req, None);
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(gpui_agent::is_screenshot_unavailable(&err), "{err}");
+        assert!(err.contains("UI thread") || err.contains("Window"), "{err}");
         assert!(!dest.exists(), "must not invent {}", dest.display());
     }
 
