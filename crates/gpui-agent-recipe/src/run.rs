@@ -104,7 +104,6 @@ pub fn run_plan_with_screenshots(
                     let elapsed = step_started.elapsed().as_millis() as u64;
                     let mut failed: Option<(String, String)> = None;
                     for (step, resp) in wave_steps.iter().zip(resps) {
-                        shot_index += 1;
                         let ok = resp.ok;
                         let error = resp.error.clone();
                         if !ok && failed.is_none() {
@@ -136,7 +135,6 @@ pub fn run_plan_with_screenshots(
                     receipt.ok = false;
                     receipt.session_reused = client.has_session();
                     let first = wave_steps[0];
-                    shot_index += 1;
                     receipt.steps.push(StepReceipt {
                         id: first.id.clone(),
                         ok: false,

@@ -23,7 +23,7 @@ cargo bench -p gpui-agent --bench agent_perf
 | --- | --- | --- |
 | `rpc_once_reconnect_32_hellos` | **324 ms** | Historical per-op TCP connect |
 | `rpc_session_reuse_32_hellos` | **536 µs** | **~605×** vs reconnect |
-| `rpc_pipeline_32_hellos` | *(run Criterion on this branch)* | Write-N-then-read on the kept session |
+| `rpc_pipeline_32_hellos` | **145 µs** | **~3.7×** vs sequential session hellos |
 | `handle_request_inprocess_32_hellos` | **1.88 µs** | CPU floor, no socket |
 | `tree_flatten_naive_intermediate_vecs` | **5.29 µs** | Old per-child `Vec` (100-row tree) |
 | `tree_flatten_capacity` | **1.06 µs** | **~5.0×** vs naive |

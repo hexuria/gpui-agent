@@ -511,7 +511,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn rpc_pipeline_wrong_token_fails_fast() {
         let (addr, shutdown) = spawn_test_host(
             Some("correct-token".into()),
