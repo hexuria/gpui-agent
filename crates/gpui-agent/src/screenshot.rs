@@ -246,6 +246,17 @@ mod tests {
     }
 
     #[test]
+    fn test_png_is_mock_helper_not_a_live_window_capture() {
+        // TEST_PNG is for tests/mock hosts (`write_png`). Live Mac capture
+        // is `screencapture -l` (TRY_ON_MAC §8) and is not proven here.
+        assert!(TEST_PNG.starts_with(b"\x89PNG"));
+        assert_eq!(TEST_PNG.len(), 67, "1×1 fixture, not a window grab");
+        assert_ne!(SCREENSHOT_BACKEND_SCREENCAPTURE, "test_png");
+    }
+
+    /// Mock/desktop helper: keep a real PNG that some other path already wrote.
+    /// This is not proof that macOS `screencapture -l` ran.
+    #[test]
     fn accept_written_png_keeps_real_png() {
         let dir =
             std::env::temp_dir().join(format!("gpui-agent-accept-png-{}", std::process::id()));
@@ -279,13 +290,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Linux/Windows CI must not claim a Mac window PNG. Gated so a Mac
+    /// `cargo test` cannot skip-pass this by returning early.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn capture_without_macos_does_not_invent_a_file() {
-        if cfg!(target_os = "macos") {
-            // Live capture needs this process's CGWindowID and Screen
-            // Recording. Do not call screencapture with a guessed id.
-            return;
-        }
         let dest = std::env::temp_dir().join(format!(
             "gpui-agent-no-screencapture-{}",
             std::process::id()
@@ -294,6 +303,10 @@ mod tests {
         let err = capture_window_via_screencapture(7, dest.to_str()).unwrap_err();
         assert!(is_screenshot_unavailable(&err), "{err}");
         assert!(err.contains("macOS-only"), "{err}");
+        assert!(
+            !err.to_ascii_lowercase().contains("backend"),
+            "must not claim a screencapture PNG on this OS: {err}"
+        );
         assert!(!dest.exists(), "must not invent {}", dest.display());
     }
 }
