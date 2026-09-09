@@ -38,8 +38,9 @@ pub mod ids {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
+    #[default]
     Todos,
     Settings,
 }
@@ -49,6 +50,50 @@ pub struct Todo {
     pub id: u64,
     pub title: String,
     pub done: bool,
+}
+
+/// GUI / client projection of a snapshot. The daemon `TodoStore` remains SoT.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TodoView {
+    pub items: Vec<Todo>,
+    pub draft: String,
+    pub page: Page,
+    pub confirm_delete: bool,
+}
+
+impl TodoView {
+    pub fn from_tree(tree: &UiTree) -> Self {
+        let page = if tree.find(ids::PAGE_SETTINGS).is_some() {
+            Page::Settings
+        } else {
+            Page::Todos
+        };
+        let draft = tree
+            .find(ids::INPUT)
+            .and_then(|node| node.value.clone())
+            .unwrap_or_default();
+        let confirm_delete = tree
+            .find(ids::SETTINGS_CONFIRM_DELETE)
+            .and_then(|node| node.checked)
+            .unwrap_or(false);
+        let mut items = Vec::new();
+        tree.visit(&mut |node| {
+            if let Some(id) = gpui_agent::parse_numbered_id("todo-item-", &node.id) {
+                items.push(Todo {
+                    id,
+                    title: node.name.clone(),
+                    done: node.checked.unwrap_or(false),
+                });
+            }
+        });
+        items.sort_by_key(|todo| todo.id);
+        Self {
+            items,
+            draft,
+            page,
+            confirm_delete,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +136,10 @@ impl TodoStore {
 
     pub fn go(&mut self, page: Page) {
         self.page = page;
+    }
+
+    pub fn toggle_confirm_delete(&mut self) {
+        self.confirm_delete = !self.confirm_delete;
     }
 
     pub fn items(&self) -> &[Todo] {
@@ -469,6 +518,22 @@ mod tests {
         assert_eq!(store.page(), Page::Todos);
         assert!(store.tree().find(ids::PAGE_TODOS).is_some());
         assert!(store.tree().find("todo-item-1").is_some());
+    }
+
+    #[test]
+    fn view_from_tree_roundtrips_items_and_page() {
+        let mut store = TodoStore::default();
+        add(&mut store, "Milk");
+        store.toggle(1).unwrap();
+        let view = TodoView::from_tree(&store.tree());
+        assert_eq!(view.page, Page::Todos);
+        assert_eq!(view.items.len(), 1);
+        assert_eq!(view.items[0].title, "Milk");
+        assert!(view.items[0].done);
+        store.go(Page::Settings);
+        let settings = TodoView::from_tree(&store.tree());
+        assert_eq!(settings.page, Page::Settings);
+        assert!(settings.items.is_empty());
     }
 
     #[test]

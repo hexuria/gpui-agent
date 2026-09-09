@@ -30,9 +30,10 @@ fi
 echo "==> building CLI + headless host"
 cargo build -p gpui-agent-cli -p todo-headless
 
-CLI="$ROOT/target/debug/gpui-agent"
-HOST="$ROOT/target/debug/todo-headless"
-RECEIPT="${RECEIPT_OUT:-$ROOT/target/ci-recipe-receipt.json}"
+TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
+CLI="$TARGET/debug/gpui-agent"
+HOST="$TARGET/debug/todo-headless"
+RECEIPT="${RECEIPT_OUT:-$TARGET/ci-recipe-receipt.json}"
 mkdir -p "$(dirname "$RECEIPT")"
 
 cleanup() {

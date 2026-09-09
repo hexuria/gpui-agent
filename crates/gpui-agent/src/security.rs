@@ -37,8 +37,8 @@ pub enum SecurityError {
 /// - CLI remote connect requires the same token **and** `--allow-remote`
 ///   / `GPUI_AGENT_ALLOW_REMOTE=1` so a mistyped `--addr` cannot leak
 ///   the token off-box (M1).
-/// CLI `recipe run` and `mcp` still require a non-empty client token (P2)
-/// even on loopback.
+/// - CLI `recipe run` and `mcp` still require a non-empty client token
+///   (P2) even on loopback.
 #[derive(Clone)]
 pub struct AgentConfig {
     pub addr: SocketAddr,

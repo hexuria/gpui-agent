@@ -55,7 +55,7 @@ gpui-agent assert --id page-settings --role window
 
 ```bash
 # terminal 1
-GPUI_AGENT=1 cargo run -p todo-headless
+GPUI_AGENT=1 cargo run -p todo-headless -- serve
 
 # terminal 2
 cargo run -p gpui-agent-cli -- wait
@@ -82,7 +82,7 @@ unless the host has `GPUI_AGENT_TOKEN` set.
 # terminal 1
 export GPUI_AGENT=1
 export GPUI_AGENT_TOKEN=dev-secret
-cargo run -p todo-headless
+cargo run -p todo-headless -- serve
 
 # terminal 2 — same token
 export GPUI_AGENT_TOKEN=dev-secret
@@ -119,25 +119,30 @@ The desktop app is a real `gpui-kit = "0.6"` window. The same protocol runs agai
 ## Layout
 
 ```
-apps/todo                  GPUI Kit 0.6 desktop demo
-apps/todo-headless         Same domain + protocol, no window
-crates/gpui-agent          Protocol, server, client, security, mailbox, ndjson
+apps/todo                  GPUI Kit 0.6 desktop **client** of the daemon (ADR-001)
+apps/todo-headless         Logic daemon: serve / status / shutdown (no GPU)
+crates/gpui-agent          Embeddable SDK: protocol, server, client, tree, TestHost
 crates/gpui-agent-cli      gpui-agent CLI + tiny MCP stdio shim
 crates/gpui-agent-recipe   Experimental recipes + TMP-inspired mapping
 crates/todo-core           Demo store and semantic ids
+docs/README.md             Doc index
+docs/ADR-001-daemon-sot.md Daemon is source of truth; GUI is a client
+docs/SDK.md                Embeddable SDK cookbook
+docs/INSTALL.md            cargo install CLI + daemon (no GPUI)
 docs/PROTOCOL.md           Wire format
 docs/INTEGRATING.md        How to embed AgentHost in another app
-docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P0–P2 + P4 + pipeline + MCP hardenings in this tree; P3 Mac PNG still open as #20)
-docs/STACK_HYGIENE.md      P5: leftover #4/#5 closed without merge (museum branches)
+docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P3 Mac PNG still open as #20)
+docs/STACK_HYGIENE.md      P5 leftover experiment PRs
 docs/PERF.md               P0 Criterion numbers (session vs reconnect)
 docs/RECIPES.md            Experimental recipes (JSON canonical)
 docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
-docs/SECURITY.md           Trust model, caps, recipe threat model
+docs/SECURITY.md           Trust model, caps, remote bind, recipe threat model
 examples/todo.sh           Demo-only invoke wrappers
 examples/recipes/          Sample todo CRUD recipe (JSON + wants)
 scripts/smoke.sh           Full CRUD against the headless host
+scripts/smoke-daemon.sh    Daemon serve / status / shutdown
 scripts/ci-recipe.sh       CI recipe receipt assert (ok + session_reused)
-.github/workflows/ci.yml   ubuntu-latest: cargo test + ci-recipe.sh
+.github/workflows/ci.yml   ubuntu-latest: cargo test + ci-recipe.sh + release artifacts
 ```
 
 ## How to run
@@ -159,7 +164,7 @@ Copy-paste: [docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md).
 # terminal 1
 export GPUI_AGENT=1
 export GPUI_AGENT_TOKEN=dev-secret
-cargo run -p todo-headless
+cargo run -p todo-headless -- serve
 
 # terminal 2
 export GPUI_AGENT_TOKEN=dev-secret
@@ -168,11 +173,15 @@ cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set 
 
 ### Desktop app (needs a real display)
 
-```bash
-GPUI_AGENT=1 cargo run -p todo
-```
+The window is a **client of the daemon** ([ADR-001](docs/ADR-001-daemon-sot.md)). Start `todo-headless serve` first. Widget E2E (in-process `AgentHost`) is `cargo run -p todo --features embedded-host` with `GPUI_AGENT=1`.
 
-Then the same generic CLI commands. Without `GPUI_AGENT=1` the window is a normal app and no socket is opened.
+```bash
+# terminal 1 — source of truth
+GPUI_AGENT=1 cargo run -p todo-headless -- serve -- serve
+
+# terminal 2 — GUI client
+cargo run -p todo
+```
 
 A cloud VM with Xvfb/`DISPLAY` may still fail if Vulkan/GPU is missing. That is a **display/GPU** limit, not a protocol limit. Use `todo-headless` and `cargo test` there.
 
@@ -204,7 +213,7 @@ plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 # terminal 1
 export GPUI_AGENT=1
 export GPUI_AGENT_TOKEN=dev-secret
-cargo run -p todo-headless
+cargo run -p todo-headless -- serve
 
 # terminal 2
 export GPUI_AGENT_TOKEN=dev-secret

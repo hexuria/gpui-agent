@@ -100,15 +100,17 @@ fn connect_running() -> Result<AgentClient, ExitCode> {
         })?,
         Err(_) => DEFAULT_ADDR_STR.parse().expect("default addr"),
     };
-    gpui_agent::ensure_loopback(addr).map_err(|err| {
+    let token = std::env::var("GPUI_AGENT_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let allow_remote = gpui_agent::security::truthy_env("GPUI_AGENT_ALLOW_REMOTE");
+    gpui_agent::authorize_client(addr, token.as_deref(), allow_remote).map_err(|err| {
         eprintln!("refusing agent address: {err}");
         ExitCode::from(2)
     })?;
     let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
-    if let Ok(token) = std::env::var("GPUI_AGENT_TOKEN") {
-        if !token.is_empty() {
-            client = client.with_token(token);
-        }
+    if let Some(token) = token {
+        client = client.with_token(token);
     }
     Ok(client)
 }
