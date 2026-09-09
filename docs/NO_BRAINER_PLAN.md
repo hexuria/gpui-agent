@@ -3,23 +3,24 @@
 Roadmap for landing the experimental work from
 [PR #4](https://github.com/hexuria/gpui-agent/pull/4) and
 [PR #5](https://github.com/hexuria/gpui-agent/pull/5) **without** merging
-those branches wholesale.
+those branches wholesale. Inventory of what closed, what duplicated P0,
+and what stayed museum: [STACK_HYGIENE.md](STACK_HYGIENE.md).
 
-P0–P2 are on `main`. P4 is the code in the PR that updates this
-document. P3 (Mac window PNG) is a separate PR
-([#20](https://github.com/hexuria/gpui-agent/pull/20)) and is **not**
-this branch. Do not implement P3 or P5 on a P4 branch.
+P0–P2, P4, the all-Read pipeline, and MCP `isError`/`$params` hardenings
+are on `main`. P3 (Mac window PNG) remains open as
+([#20](https://github.com/hexuria/gpui-agent/pull/20)). P5 is this hygiene
+note plus closing leftover #4/#5 **without merge**.
 
 ## Status
 
 | Phase | What | Status |
 | --- | --- | --- |
-| **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | **Done** (PR #6 / `c4069d9`) |
-| **P1** | Recipes, experimental, JSON canonical (`.wants` alias) | **Done** (PR #9) |
-| **P2** | Token required for CLI `recipe run` and `mcp` (same token on host) | **Done** (PR #19) |
-| **P3** | Real desktop PNG, or honest Mac-only visuals | In flight ([PR #20](https://github.com/hexuria/gpui-agent/pull/20)); not this branch |
-| **P4** | CI: headless recipe run + receipt assert | **This PR**. `ubuntu-latest`; test token in the workflow. Gate is receipt `ok`, not pixels. |
-| **P5** | Squash / stack hygiene vs leftover #4/#5 | Not started |
+| **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | **Done** ([#6](https://github.com/hexuria/gpui-agent/pull/6) / `c4069d9`) |
+| **P1** | Recipes, experimental, JSON canonical (`.wants` alias) | **Done** ([#9](https://github.com/hexuria/gpui-agent/pull/9)) |
+| **P2** | Token required for CLI `recipe run` and `mcp` (same token on host) | **Done** ([#19](https://github.com/hexuria/gpui-agent/pull/19)). No ephemeral Jupyter mint. One-off `click`/`snapshot` stay optional. |
+| **P3** | Real desktop PNG, or honest Mac-only visuals | **In flight** ([#20](https://github.com/hexuria/gpui-agent/pull/20)). Headless stays `screenshot_unavailable`. |
+| **P4** | CI: headless recipe run + receipt assert | **Done** ([#21](https://github.com/hexuria/gpui-agent/pull/21)). `ubuntu-latest`; token only on the recipe CI step. Gate is receipt `ok` + `session_reused`. |
+| **P5** | Squash / stack hygiene vs leftover #4/#5 | **This PR**. Close #4/#5 without merge; keep remote branches as museum. |
 
 Recipes, TMP-style registry, and an honest `screenshot` protocol op
 land in **P1**. Recording / real desktop PNG stay **P3**. NDJSON
@@ -28,7 +29,7 @@ write-N-then-read, plus the `4d464c7` retry-after-write / sibling-receipt
 rules). Write / Exit / mixed waves stay sequential fail-fast. Do not merge
 leftover #4/#5.
 
-Reference-only branches (do not merge as-is):
+Museum branches (closed PRs; do not merge, do not delete unless asked):
 
 - `gol/recipes-tmp-perf-e79b` (PR #4)
 - `gol/recipes-measured-perf-762f` (PR #5, stacked on #4)
@@ -195,6 +196,10 @@ in git; do not re-ask A/B/C/D.
 
 ## P3 — real desktop PNG or honest Mac-only visuals
 
+**In flight:** [PR #20](https://github.com/hexuria/gpui-agent/pull/20)
+(`gol/no-brainer-p3-screenshot-b20f`). Keep that PR open; do not fold it
+into P5.
+
 Headless must stay honest: `screenshot_unavailable`, **no fake PNG**.
 Desktop PNG of the **app surface** (not the full desktop) is the AI-useful
 path. Mac `screencapture -l` is observe-only and not a CI gate.
@@ -240,7 +245,9 @@ Reference-only screenshot work lives on PR #4; re-implement cleanly if it fights
 
 ## P4 — CI headless recipe run + receipt assert (this PR)
 
-Needs P1 (recipes) and P2 (token). CI gate is **receipt `ok`**, not
+**Done on `main`:** [PR #21](https://github.com/hexuria/gpui-agent/pull/21).
+
+Needs P1 (recipes) and P2 (token). CI gate is **receipt `ok`** (+ `session_reused`), not
 pixels. No display, no Vulkan, no screenshot files, no macOS runner.
 
 **Decided:** GitHub Actions `ubuntu-latest` (free public runner; no
@@ -293,12 +300,15 @@ Semantic default. Ask the user before adding paid runners or extra crates.
 
 ---
 
-## P5 — squash / stack hygiene
+## P5 — squash / stack hygiene (this PR)
 
-After P0 (and whatever of P1–P4 landed), do not merge leftover stacked
-PRs #4/#5 onto main. Close or retarget them. If recipes still live only
-on those branches, rebase **onto current main** and drop commits that
-duplicate P0.
+P0–P2 are on `main`. Do not merge leftover stacked PRs #4/#5. Close them
+without merge; keep the remote branches as a museum. Written inventory:
+[STACK_HYGIENE.md](STACK_HYGIENE.md).
+
+If a leftover experiment is kept later: new branch from **current main**,
+re-implement only not-yet-landed pieces; drop duplicate client / ndjson /
+flatten / mailbox. Include `4d464c7` fail-fast if porting `rpc_pipeline`.
 
 ### Ready-to-paste agent prompt (P5)
 
