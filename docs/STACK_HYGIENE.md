@@ -53,14 +53,29 @@ If a leftover experiment is wanted later: **new branch from current
 `main`**, re-implement only the not-yet-landed piece. Drop duplicate
 client / ndjson / flatten / mailbox.
 
+## Later open PRs (verified 2026-09-09 against GitHub; not this branch)
+
+These landed as separate drafts on current `main` after this inventory
+was first written. Keep them; do not fold them into P5.
+
+| PR | Title | Disposition |
+| --- | --- | --- |
+| [#23](https://github.com/hexuria/gpui-agent/pull/23) | Pipeline all-Read recipe waves; keep writes sequential | **Open draft** (`gol/read-wave-pipeline-b20f`). This is the `rpc_pipeline` follow-on (include `4d464c7` retry-after-write + sibling receipts). |
+| [#24](https://github.com/hexuria/gpui-agent/pull/24) | MCP `isError` on failed `recipe_run`; `$params` do not rewrite `id`/`needs` | **Open draft** (`gol/mcp-iserror-params-b20f`). This is the P1 review leftover. |
+
+GitHub facts for the closed leftovers (same day this note was written):
+
+- [#4](https://github.com/hexuria/gpui-agent/pull/4): `state=closed`, `merged=false`, `closed_at=2026-09-09T12:27:03Z`, base still old `main` `b50fb8a`, `mergeable_state=dirty`
+- [#5](https://github.com/hexuria/gpui-agent/pull/5): `state=closed`, `merged=false`, `closed_at=2026-09-09T12:27:03Z`, stacked on #4
+- [#7](https://github.com/hexuria/gpui-agent/pull/7): already closed (`closed_at=2026-09-09T10:50:38Z`), superseded by #9
+- [#8](https://github.com/hexuria/gpui-agent/pull/8): already closed (`closed_at=2026-09-09T11:10:49Z`), superseded by #19
+
+Museum remotes still present: `gol/recipes-tmp-perf-e79b`, `gol/recipes-measured-perf-762f`.
+
 ## Optional later (document only; not this PR)
 
-- **`rpc_pipeline`** from #5 (~4× vs sequential session hellos). If it
-  lands, include retry-after-write + sibling-receipt fail-fast from
-  `4d464c7` on `gol/recipes-measured-perf-762f`. See [PERF.md](PERF.md).
-- P1 review leftovers vs #9: MCP `recipe_run` mapping `RunError::Step` to
-  `Ok(value)` so `tools/call` is not `isError` on a failed assert; `$params`
-  still rewriting `id` / `needs`. Fix on a fresh main-based PR if wanted.
+- Write-wave `rpc_pipeline` / simd / tokio / mimalloc / wire `batch` remain rejected.
+- `--record` / ffmpeg / ScreenCaptureKit remain later.
 
 ## Constraints (unchanged)
 
