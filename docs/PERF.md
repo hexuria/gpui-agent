@@ -5,7 +5,8 @@ buffer reuse, tree flatten, mailbox `take`. **No recipes, no
 `rpc_pipeline`.**
 
 Numbers: cloud VM, `x86_64`, `rustc 1.98.1`, Criterion `--quick`,
-`cargo bench -p gpui-agent --bench agent_perf` (release). Median times.
+`cargo bench -p gpui-agent --bench agent_perf` (release). Median times
+from this branch.
 
 Security caps are unchanged: `MAX_LINE_BYTES = 1 MiB`,
 `MAX_CONNECTIONS = 32`, `MAX_MAILBOX_DEPTH = 128`. No OS HID. No
@@ -17,21 +18,20 @@ cargo bench -p gpui-agent --bench agent_perf
 
 ## P0 measured (this branch)
 
-Fill-in after `cargo bench` on this PR’s VM. Until then, the same
-shapes on the experimental recipe branches (PR #4/#5, same class of
-cloud VM) were:
-
-| Bench | Number | Notes |
+| Bench | Median | Notes |
 | --- | --- | --- |
-| `rpc_once_reconnect_32_hellos` | **~324 ms** | Historical per-op TCP connect |
-| `rpc_session_reuse_32_hellos` | **~526–550 µs** | **~600×** vs reconnect |
-| `handle_request_inprocess_32_hellos` | **~1.8 µs** | CPU floor, no socket |
-| `tree_flatten_capacity` (100-row tree) | **~1.2 µs** | vs naive intermediate vecs **~4.9 µs** (~3–4×) |
-| `tree_flatten_into_reuse` | **~1.15 µs** | `clear` keeps capacity |
-| `mailbox_push_take_full` (128) | **~23 µs** | `mem::take` vs drain+map |
+| `rpc_once_reconnect_32_hellos` | **324 ms** | Historical per-op TCP connect |
+| `rpc_session_reuse_32_hellos` | **536 µs** | **~605×** vs reconnect |
+| `handle_request_inprocess_32_hellos` | **1.88 µs** | CPU floor, no socket |
+| `tree_flatten_naive_intermediate_vecs` | **5.29 µs** | Old per-child `Vec` (100-row tree) |
+| `tree_flatten_capacity` | **1.06 µs** | **~5.0×** vs naive |
+| `tree_flatten_into_reuse` | **994 ns** | `clear` keeps capacity |
+| `mailbox_push_take_full` (128) | **22.4 µs** | `mem::take` |
+| `snapshot_to_string` | **43.4 µs** | 100-row tree |
+| `snapshot_write_json_line_reuse` | **43.4 µs** | Same ballpark; avoids the extra `String` |
 
-Re-measure on this branch and replace the table above with the
-Criterion medians from this PR (keep the same bench names).
+Same shape as the experimental recipe branches (PR #4/#5). The headline
+win is session reuse, not serialize.
 
 ## What P0 changed
 

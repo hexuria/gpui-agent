@@ -68,6 +68,10 @@ impl AgentMailbox {
     pub fn len(&self) -> usize {
         self.inner.lock().expect("mailbox").len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().expect("mailbox").is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -103,7 +107,7 @@ mod tests {
         assert_eq!(mailbox.len(), 1);
         let taken = mailbox.take();
         assert_eq!(taken.len(), 1);
-        assert_eq!(mailbox.len(), 0);
+        assert!(mailbox.is_empty());
         assert!(mailbox.take().is_empty());
     }
 }
