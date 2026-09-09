@@ -38,11 +38,17 @@ See [INTEGRATING.md](INTEGRATING.md).
 | `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists` | Check snapshot fields |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
 | `wait` | optional `timeout_ms` | Block until hello/ready |
+| `screenshot` | optional `path` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Headless / no-export hosts return `screenshot_unavailable` instead of a fake image. |
 | `shutdown` | | Ask the host to exit |
 
 These are also the **only** first-class `gpui-agent` CLI commands (plus
-`mcp`). App-specific verbs are `invoke` names or click targets — not new
-subcommands.
+`mcp` and experimental `recipe`). App-specific verbs are `invoke` names
+or click targets — not new subcommands. `recipe` is a **client-side**
+batch of the ops above (`AgentClient` reuses one TCP session; `rpc_once`
+is the old reconnect path for benches). It is not a new wire `op`.
+`recipe run --screenshot-dir` issues extra `screenshot` ops after steps
+so an agent can visually check UI state mid-run. Headless stays honest.
+See [RECIPES.md](RECIPES.md) and the laptop runbook [TRY_ON_MAC.md](TRY_ON_MAC.md).
 
 ## Response
 
@@ -153,8 +159,12 @@ Reuse `gpui-agent-cli` unchanged. Details: [INTEGRATING.md](INTEGRATING.md).
 
 `gpui-agent mcp` exposes the same generic tools over stdio:
 
-`wait`, `hello`, `snapshot`, `click`, `type`, `set_value`, `key`,
-`assert`, `invoke`, `shutdown`
+`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`,
+`key`, `assert`, `invoke`, `shutdown`
+
+plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
+`recipe_resolve` (JSON canonical; client-side batching; see
+[RECIPES.md](RECIPES.md)).
 
 Point Claude Code at the binary (`args: ["mcp"]`, optional
 `GPUI_AGENT_ADDR` / `GPUI_AGENT_TOKEN`). Document your app’s ids and
@@ -192,3 +202,7 @@ are implemented. New hosts implement `AgentHost` and keep this document.
 - Changing the meaning of an existing field or removing one is a major bump (`v: 2`).
 - Do **not** extend the CLI with app-specific subcommands. New product
   verbs go on the host (`invoke`) or in agent prompts.
+- Experimental recipes ([RECIPES.md](RECIPES.md)) batch existing ops on
+  the client. Additive only; servers that never heard of recipes still
+  speak v1 NDJSON one request at a time. Caps and fail-closed invoke:
+  [SECURITY.md](SECURITY.md#recipes-experimental).

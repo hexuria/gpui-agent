@@ -5,25 +5,26 @@ Roadmap for landing the experimental work from
 [PR #5](https://github.com/hexuria/gpui-agent/pull/5) **without** merging
 those branches wholesale.
 
-P0 is the only code in the PR that adds this document. Later phases are
-**documented here only** until a human picks them. Do not implement P1–P5
-on a P0 branch.
+P0 is already on `main`. P1 is the code in the PR that updates this
+document. Later phases are **documented here only** until a human
+picks them. Do not implement P2–P5 on a P1 branch.
 
 ## Status
 
 | Phase | What | Status |
 | --- | --- | --- |
-| **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | **This PR** (merge independently) |
-| **P1** | Recipes, experimental, **one** canonical format | Not started. JSON vs `.wants` is **UNDECIDED — ask the user** |
-| **P2** | Token required / ephemeral when recipes or MCP is on | Not started. Details **UNDECIDED — ask the user** |
-| **P3** | Real desktop PNG, or honest Mac-only visuals | Not started |
-| **P4** | CI: headless recipe run + receipt assert | Not started (needs P1) |
+| **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | **Done** (PR #6 / `c4069d9`) |
+| **P1** | Recipes, experimental, JSON canonical (`.wants` alias) | **This PR** |
+| **P2** | Token required / ephemeral when recipes or MCP is on | Not started. Details **UNDECIDED — ask the user** before requiring a token when recipes/MCP are on |
+| **P3** | Real desktop PNG, or honest Mac-only visuals | Not started (P1 keeps `screenshot_unavailable` on headless) |
+| **P4** | CI: headless recipe run + receipt assert | Not started (needs this P1) |
 | **P5** | Squash / stack hygiene vs leftover #4/#5 | Not started |
 
-Recipes, TMP-style registry, screenshot protocol, recording, and NDJSON
-**pipeline** (`rpc_pipeline` / DAG waves) stay **out of P0**. Pipeline is
-a later phase: it has no protocol bump but is easy to review-mix with
-recipes. Prefer it with P1 (or a tiny follow-up after P1), not here.
+Recipes, TMP-style registry, and an honest `screenshot` protocol op
+land in **P1**. Recording / real desktop PNG stay **P3**. NDJSON
+**pipeline** (`rpc_pipeline` / DAG waves) stays **out of P1**: sequential
+ops on the P0 session are enough. If pipeline lands later, include the
+retry-after-write + sibling-receipt fail-fast fixes from `4d464c7`.
 
 Reference-only branches (do not merge as-is):
 
@@ -37,19 +38,22 @@ These never change unless the user explicitly forks the product:
 - **No OS HID.** Virtual delivery is in-process GPUI events only. No
   warp, no PostMessage, no XTEST, no stealing the real cursor/keyboard.
 - **Loopback + caps.** `GPUI_AGENT=1`, loopback bind, optional token
-  (until P2), `MAX_LINE_BYTES` 1 MiB, `MAX_CONNECTIONS` 32,
+  (until P2 — **ask the user** before requiring a token when
+  recipes/MCP are on), `MAX_LINE_BYTES` 1 MiB, `MAX_CONNECTIONS` 32,
   `MAX_MAILBOX_DEPTH` 128, 30s idle. Do not weaken them.
 - **Semantic default.** `delivery=virtual` stays opt-in per op.
 - **Ask the user** before product forks: recipe syntax freeze, required
   tokens, screenshot/recording backends, CI gates, merging experimental
   PRs.
 
-## P0 — session reuse + buffers / flatten (this PR)
+## P0 — session reuse + buffers / flatten (done)
 
 **Goal.** Make `AgentClient::rpc` keep one TCP session so MCP and any
 in-process loop stop paying a connect+handshake per op. Reuse NDJSON
 read/write buffers. Flatten the semantic tree without per-child `Vec`s.
 Mailbox `take` is a `mem::take`.
+
+Landed on `main` via PR #6. Numbers: [PERF.md](PERF.md).
 
 **In scope**
 
@@ -84,50 +88,56 @@ Numbers: [PERF.md](PERF.md).
 
 ---
 
-## P1 — recipes (experimental), one canonical format
+## P1 — recipes (experimental), JSON canonical (this PR)
 
-**UNDECIDED:** JSON recipe vs line-based `.wants` (or both, with one
-canonical). **Ask the user before writing a crate.** Do not land two
-syntaxes “for now” unless they say so.
+**Decided:** JSON is canonical. `.wants` remains accepted as a thin
+alias (demoted in docs/CLI help). Token policy is **not** decided —
+do not require tokens in P1.
 
-Port from PR #4 only after that answer. Fail closed on unknown `invoke`
-names. `shutdown` still needs `--yes`. Do not path-dep `tmp-core` unless
-the user asks. Do not add `rpc_pipeline` unless the user wants DAG waves
-in the same PR — default is sequential ops on the **P0 session**.
+Port from PR #4 / #5 without merging those branches. Fail closed on
+unknown `invoke` names. `shutdown` still needs `--yes`. Do not path-dep
+`tmp-core`. Do **not** add `rpc_pipeline` in this PR — sequential ops
+on the **P0 session**. Honest `screenshot_unavailable` on headless;
+optional `--screenshot-dir` plumbing. Full visual/Mac PNG is P3.
+
+**In scope**
+
+- `gpui-agent-recipe`: JSON primary; `.wants` parser kept; validate /
+  plan / run / resolve; receipts; local TMP-shaped todo schemas
+- CLI `recipe validate|plan|run|resolve` and MCP `recipe_*`, labeled
+  **experimental**
+- Recipe run uses the kept `AgentClient` session
+- Docs: this file, `RECIPES.md`, `TRY_ON_MAC.md`, SECURITY recipes
+  section (token still optional)
+- Example: `examples/recipes/todo-crud.json` (+ `.wants` alias)
+
+**Out of scope**
+
+- Required / ephemeral token (P2 — ask first)
+- Real desktop PNG / OS capture (P3)
+- CI Action (P4)
+- Merging leftover #4/#5 branches (P5)
+- `rpc_pipeline` / mimalloc / simd
+
+**Success.** `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli
+-p gpui-agent-recipe` green. Headless
+`recipe run examples/recipes/todo-crud.json --set title="Buy milk"`
+prints `ok` + `session_reused`. JSON documented as canonical.
+Experimental labeling visible. No token requirement yet.
 
 ### Ready-to-paste agent prompt (P1)
+
+Superseded by the user prompt that produced this PR. Kept for history:
 
 ```text
 Repo: https://github.com/hexuria/gpui-agent
 Start from current main (must already include P0 session reuse).
 Do NOT merge PR #4 or PR #5 wholesale.
 
-## STOP — ask the user first
-Recipe format is UNDECIDED. Before any code, ask:
-1. Canonical format: JSON only, .wants only, or JSON canonical + .wants as a thin alias?
-2. Is rpc_pipeline / DAG waves in this PR, or sequential session reuse only?
-3. Sample recipes: todo CRUD only, or also a generic hello/snapshot fixture?
-
-Do not invent a third syntax. Do not add TMP cloud registry or shell data sources.
-
-## Goal
-Experimental `gpui-agent-recipe` + CLI/MCP `recipe validate|plan|run` so an
-agent can run many protocol ops in one process on the existing AgentClient
-session. This does not replace semantic RPC, does not steal OS HID, and
-must not weaken caps/token/loopback.
-
-## Success
-- cargo test includes -p gpui-agent-recipe
-- recipe run on todo-headless prints a receipt with ok + session_reused
-- unknown invoke and shell-like resolve fail closed
-- shutdown in a recipe requires --yes
-- docs/RECIPES.md + a short README pointer (recipes are experimental)
-- No screenshot/recording protocol unless the user added P3 to this PR
-
-## Constraints
-No OS HID. Loopback + 1 MiB / 32 conn / 128 mailbox. Semantic default.
-Ask the user on product forks (syntax freeze, tmp-core path-dep).
-Reference-only: PR #4 gol/recipes-tmp-perf-e79b, PR #5 gol/recipes-measured-perf-762f.
+Canonical format: JSON. `.wants` also accepted.
+rpc_pipeline: skip (sequential session reuse).
+Token: do not require; leave P2 hooks noting “ask user before requiring
+token when recipes/MCP on.”
 ```
 
 ---

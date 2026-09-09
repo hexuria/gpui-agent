@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/gpui-agent",
     "crates/gpui-agent-cli",
+    "crates/gpui-agent-recipe",
     "crates/todo-core",
     "apps/todo",
     "apps/todo-headless",
@@ -18,6 +19,7 @@ homepage = "https://github.com/hexuria/gpui-agent"
 
 [workspace.dependencies]
 gpui-agent = { path = "crates/gpui-agent" }
+gpui-agent-recipe = { path = "crates/gpui-agent-recipe" }
 todo-core = { path = "crates/todo-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

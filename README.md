@@ -4,9 +4,11 @@ An experimental control plane that lets an AI agent **observe and drive any GPUI
 
 GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and CDP have nothing to attach to. This repo is a smaller, in-process alternative: the app publishes a **semantic UI tree** and accepts **scripted actions** over localhost JSON — the same idea as [Vercel Native SDK automation](https://native-sdk.dev/automation), purpose-built for GPUI Kit.
 
-The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `click`, `type`, `set-value`, `key`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
+The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set-value`, `key`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
 
-**Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md). There is no `recipe` CLI on `main` yet — that experiment still lives on PRs [#4](https://github.com/hexuria/gpui-agent/pull/4) and [#5](https://github.com/hexuria/gpui-agent/pull/5). The merge roadmap is [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+**Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md).
+
+**Experimental recipes (P1).** JSON is canonical (`.wants` also accepted). `gpui-agent recipe validate|plan|run|resolve` (and MCP `recipe_*`) batch many protocol ops in one process on that kept session. See [docs/RECIPES.md](docs/RECIPES.md). Merge roadmap: [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
 
 ```mermaid
 flowchart LR
@@ -28,6 +30,7 @@ flowchart LR
 gpui-agent wait
 gpui-agent hello
 gpui-agent snapshot --pretty
+gpui-agent screenshot --out artifacts/steps/mid.png
 gpui-agent click nav-settings
 gpui-agent click --delivery virtual nav-settings
 gpui-agent assert --id page-settings
@@ -66,6 +69,26 @@ cargo run -p gpui-agent-cli -- assert --id todo-item-1 --absent
 cargo run -p gpui-agent-cli -- shutdown
 ```
 
+**Experimental — one invocation, many ops.** Prefer a JSON recipe over
+spawning `gpui-agent` per click (each spawn is a process + TCP
+handshake). `AgentClient` reuses one loopback session; each step is
+still a normal token-bearing request. Semantic delivery stays the
+default. Token is still optional (P2: ask before requiring one when
+recipes/MCP are on).
+
+```bash
+GPUI_AGENT=1 cargo run -p todo-headless
+cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set title="Buy milk"
+```
+
+`recipe validate` / `recipe plan` / `recipe resolve` need no host.
+`recipe resolve "add a todo titled Buy milk"` maps prose through a
+local schema (fail closed). Shutdown inside a recipe needs `--yes`.
+Design, threat model, schema allow-list: [docs/RECIPES.md](docs/RECIPES.md).
+Caps recipes must not bypass: [docs/SECURITY.md](docs/SECURITY.md#recipes-experimental).
+Laptop copy-paste: [docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md). Headless is
+enough; desktop `todo` is optional and needs a display.
+
 The demo host also registers `todo.add` / `todo.toggle` / `todo.delete` / `todo.list` as **`invoke` names** (not CLI subcommands):
 
 ```bash
@@ -79,26 +102,31 @@ Thin wrappers for that demo live in [`examples/todo.sh`](examples/todo.sh). Do n
 
 A scripted agent (or `gpui-agent` CLI) can, without a human mouse or keyboard:
 
-1. Read a **structured snapshot** (ids, roles, names, checked state) — not just a screenshot
+1. Read a **structured snapshot** (ids, roles, names, checked state) — pixels are optional
 2. **Act** with `click` / `type` / `set-value` / `key` / `invoke`
-3. **Assert** the resulting tree
+3. **Assert** the resulting tree (and optionally inspect a step PNG)
 
 The desktop app is a real `gpui-kit = "0.6"` window. The same protocol runs against a headless host so CI and display-less VMs can still prove the loop.
 
 ## Layout
 
 ```
-apps/todo             GPUI Kit 0.6 desktop demo
-apps/todo-headless    Same domain + protocol, no window
-crates/gpui-agent     Protocol, server, client, security, mailbox, ndjson
-crates/gpui-agent-cli gpui-agent CLI + tiny MCP stdio shim
-crates/todo-core      Demo store and semantic ids
-docs/PROTOCOL.md      Wire format
-docs/INTEGRATING.md   How to embed AgentHost in another app
-docs/NO_BRAINER_PLAN.md  P0–P5 roadmap (session reuse now; recipes later)
-docs/PERF.md          P0 Criterion numbers (session vs reconnect)
-examples/todo.sh      Demo-only invoke wrappers
-scripts/smoke.sh      Full CRUD against the headless host
+apps/todo                  GPUI Kit 0.6 desktop demo
+apps/todo-headless         Same domain + protocol, no window
+crates/gpui-agent          Protocol, server, client, security, mailbox, ndjson
+crates/gpui-agent-cli      gpui-agent CLI + tiny MCP stdio shim
+crates/gpui-agent-recipe   Experimental recipes + TMP-inspired mapping
+crates/todo-core           Demo store and semantic ids
+docs/PROTOCOL.md           Wire format
+docs/INTEGRATING.md        How to embed AgentHost in another app
+docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P0 done; P1 recipes in this tree)
+docs/PERF.md               P0 Criterion numbers (session vs reconnect)
+docs/RECIPES.md            Experimental recipes (JSON canonical)
+docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
+docs/SECURITY.md           Trust model, caps, recipe threat model
+examples/todo.sh           Demo-only invoke wrappers
+examples/recipes/          Sample todo CRUD recipe (JSON + wants)
+scripts/smoke.sh           Full CRUD against the headless host
 ```
 
 ## How to run
@@ -112,6 +140,15 @@ chmod +x scripts/smoke.sh
 ./scripts/smoke.sh
 ```
 
+Experimental recipes (one CLI invocation, one TCP session): see
+[docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md) for copy-paste laptop steps, or:
+
+```bash
+GPUI_AGENT=1 cargo run -p todo-headless
+# other terminal
+cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set title="Buy milk"
+```
+
 ### Desktop app (needs a real display)
 
 ```bash
@@ -123,7 +160,7 @@ Then the same generic CLI commands. Without `GPUI_AGENT=1` the window is a norma
 A cloud VM with Xvfb/`DISPLAY` may still fail if Vulkan/GPU is missing. That is a **display/GPU** limit, not a protocol limit. Use `todo-headless` and `cargo test` there.
 
 ```bash
-cargo test -p gpui-agent -p todo-core -p gpui-agent-cli
+cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 ```
 
 ## Agent loop (perceive → act → verify)
@@ -133,7 +170,7 @@ This is the Flutter `ai_flutter_agent` / semantics-tree loop, adapted to GPUI Ki
 1. **Perceive.** `gpui-agent snapshot` (or MCP tool `snapshot`). You get widgets with **stable ids the app assigned**, plus roles, names, and state. Do **not** scrape pixels to decide what to click.
 2. **Plan.** Choose an action against those ids. Prefer `invoke` when the host exposes a named command; use `set-value` + `click` (`delivery=semantic`, the default) for CI. Use `--delivery virtual` only when you need the real GPUI pointer/key path (hover, hit-test, focus, IME).
 3. **Act.** `click`, `type`, `set-value`, `key`, or `invoke`. Virtual delivery never shares the host HID — it synthesizes events inside the app window and paints an agent cursor overlay.
-4. **Verify.** `assert --id page-root` (or re-snapshot and inspect JSON). If the node is missing or the field is wrong, the CLI exits non-zero.
+4. **Verify.** `assert --id page-root` (or re-snapshot and inspect JSON). Optionally `screenshot --out FILE.png` between steps so an agent can see the app surface. Headless returns `screenshot_unavailable` instead of a fake image. If the node is missing or the field is wrong, the CLI exits non-zero.
 
 To change screens: click a nav control, then assert the destination root id is present.
 
@@ -141,7 +178,10 @@ To change screens: click a nav control, then assert the destination root id is p
 
 The CLI includes a tiny MCP stdio server with the **same generic tools** (no app-specific `todo_*` tools):
 
-`wait`, `hello`, `snapshot`, `click`, `type`, `set_value`, `key`, `assert`, `invoke`, `shutdown`
+`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`, `key`, `assert`, `invoke`, `shutdown`
+
+plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
+`recipe_resolve` (JSON canonical; see [docs/RECIPES.md](docs/RECIPES.md)).
 
 ```bash
 GPUI_AGENT=1 cargo run -p todo-headless
@@ -252,18 +292,18 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 - **Semantic remains the default.** Virtual is opt-in per op (`delivery: virtual`) and still requires `GPUI_AGENT=1`.
 - **Virtual is a first slice:** pointer move/down/up at node bounds + keystrokes into a focused field. No OS cursor warping APIs.
 - **Bounds are zero** on the headless host. Desktop fills them from the last painted frame when the agent bridge is on.
-- **No screenshot command** yet. Snapshot is structured; add a PNG later via GPUI’s render path if a display exists.
+- **`screenshot` is observe-only.** The host writes a local PNG of the app surface (not the desktop). Headless / no-export GPUI returns `screenshot_unavailable` instead of inventing pixels. Recipe `--screenshot-dir` lists those paths on the receipt. Real desktop PNG is P3.
 - **The desktop window needs a GPU/display.** Cloud agents should use a headless `AgentHost` + `cargo test`.
 - **Not a GPUI patch.** No fork of `gpui-kit`. When GPUI exposes a first-class test-id / a11y export, this crate should consume it instead of a parallel registry.
 - **Single-app, local only.** No multi-window routing, no remote attach.
 
 ## Next steps
 
-Phased plan (P0 session reuse is in this tree; recipes/screenshots/CI are later): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+Phased plan (P0 session reuse is on `main`; P1 experimental recipes are in this tree): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
 
 1. Richer virtual input (scroll, drag, IME composition, multi-click)
-2. `screenshot` on desktop when a GPU is present (P3 — honest unavailable on headless)
-3. Experimental recipes, one canonical format (P1 — **ask before choosing JSON vs `.wants`**)
+2. In-app GPUI offscreen frames so `screenshot` can write real pixels when a GPU is present (P3)
+3. Token required / ephemeral when recipes or MCP is on (P2 — **ask first**)
 4. WASM host implementing `AgentHost` for `platform: web`
 5. Auto-export nodes from AccessKit so apps register fewer ids by hand
 6. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store

@@ -1,8 +1,8 @@
 # Performance notes (P0)
 
 P0 of the [no-brainer plan](NO_BRAINER_PLAN.md): session reuse, NDJSON
-buffer reuse, tree flatten, mailbox `take`. **No recipes, no
-`rpc_pipeline`.**
+buffer reuse, tree flatten, mailbox `take`. P1 recipes reuse that
+session sequentially; there is still **no** `rpc_pipeline`.
 
 Numbers: cloud VM, `x86_64`, `rustc 1.98.1`, Criterion `--quick`,
 `cargo bench -p gpui-agent --bench agent_perf` (release). Median times
@@ -46,11 +46,11 @@ win is session reuse, not serialize.
   Depth cap still 128.
 - **todo `tree()`** pre-sizes the item list.
 
-## Intentionally not in P0
+## Intentionally not in P0 / P1
 
 | Technique | Where it was tried | Why it is not here |
 | --- | --- | --- |
-| `rpc_pipeline` (write N lines, then read) | PR #5 | Recipe DAG waves; keep P0 reviewable. ~4× vs sequential session hellos if wanted later. |
+| `rpc_pipeline` (write N lines, then read) | PR #5 | DAG waves; keep P1 sequential. ~4× vs sequential session hellos if wanted later. Include `4d464c7` fail-fast fixes if porting. |
 | simd-json | PR #5 | Hello parse **slower** than serde_json on tiny lines |
 | tokio | PR #5 | Runtime build already ≈ one hello RTT |
 | Scoped threads on the tree | PR #5 | 100-node count ~55× **worse** than sequential |

@@ -6,13 +6,13 @@ use crate::ndjson::{read_limited_line_into, write_json_line};
 use crate::protocol::{AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response};
 use crate::server::{MAX_LINE_BYTES, default_addr};
 
-/// Blocking NDJSON client used by the CLI, MCP shim, and tests.
+/// Blocking NDJSON client used by the CLI, MCP shim, recipes, and tests.
 ///
 /// After the first successful connect, subsequent [`rpc`](Self::rpc) calls
 /// reuse the same TCP session (one process, one connection, many ops).
 /// Use [`rpc_once`](Self::rpc_once) to force the old per-op reconnect path
 /// (benchmarks / comparison). There is **no** `rpc_pipeline` in this crate:
-/// write-N-then-read stays a later phase so this change stays reviewable.
+/// recipe `run` is sequential ops on the kept session.
 pub struct AgentClient {
     addr: SocketAddr,
     token: Option<String>,
@@ -210,6 +210,13 @@ impl AgentClient {
 
     pub fn snapshot(&mut self) -> Result<Response, String> {
         self.expect_ok(Op::Snapshot)
+    }
+
+    /// Observe-only PNG of the app surface. `path` is on the host machine.
+    pub fn screenshot(&mut self, path: impl Into<String>) -> Result<Response, String> {
+        self.expect_ok(Op::Screenshot {
+            path: Some(path.into()),
+        })
     }
 
     pub fn click(&mut self, target: impl Into<String>) -> Result<Response, String> {
