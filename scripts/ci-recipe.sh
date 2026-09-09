@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CI gate for P4: headless todo-headless + `gpui-agent recipe run`, then assert
-# the receipt JSON is ok (and session_reused when that field is present).
+# the receipt JSON has ok=true and session_reused=true (missing fields fail).
 #
 # No display, no Vulkan, no screenshot files. Uses the same loopback + token
 # policy as P2 (set GPUI_AGENT_TOKEN in the workflow; do not disable it).
@@ -56,27 +56,7 @@ echo "==> recipe run examples/recipes/todo-crud.json"
   --receipt-out "$RECEIPT"
 
 echo "==> assert receipt"
-python3 - "$RECEIPT" <<'PY'
-import json, sys
-
-path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
-    receipt = json.load(f)
-
-problems = []
-if receipt.get("ok") is not True:
-    problems.append(f"ok={receipt.get('ok')!r} (want true)")
-if "session_reused" in receipt and receipt.get("session_reused") is not True:
-    problems.append(f"session_reused={receipt.get('session_reused')!r} (want true)")
-
-if problems:
-    json.dump(receipt, sys.stdout, indent=2)
-    print()
-    print("CI receipt assert failed: " + "; ".join(problems), file=sys.stderr)
-    sys.exit(1)
-
-print("CI receipt assert ok")
-PY
+python3 "$ROOT/scripts/ci_recipe_assert.py" "$RECEIPT"
 
 "$CLI" --addr "$ADDR" shutdown
 wait "$HOST_PID" 2>/dev/null || true
