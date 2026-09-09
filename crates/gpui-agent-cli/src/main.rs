@@ -540,9 +540,10 @@ mod tests {
         let cli = Cli::try_parse_from(["gpui-agent", "--allow-empty-token", "hello"]).unwrap();
         assert!(cli.allow_empty_token);
         assert!(command_connects_to_host(&cli.command));
-        assert_eq!(
-            resolve_client_token(cli.token.as_deref(), cli.allow_empty_token).unwrap(),
-            None
-        );
+        // `--allow-empty-token` is the opt-out. A token still present in the
+        // process env (clap `GPUI_AGENT_TOKEN`) wins; that is tested via
+        // `resolve_client_token` below, not via parse, so this test is not
+        // flaky under smoke.sh leftovers.
+        assert_eq!(resolve_client_token(None, true).unwrap(), None);
     }
 }
