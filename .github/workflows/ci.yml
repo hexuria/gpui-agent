@@ -1,0 +1,38 @@
+# P4: headless recipe receipt is the visual-free CI gate.
+# Do not add macOS / GPU / screenshot jobs here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  headless:
+    name: test + recipe receipt
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests (no GPU)
+        run: cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
+      - name: Headless recipe receipt (ok + session_reused)
+        env:
+          GPUI_AGENT: "1"
+          GPUI_AGENT_ADDR: "127.0.0.1:17421"
+          GPUI_AGENT_TOKEN: "ci-p4-token"
+        run: ./scripts/ci-recipe.sh

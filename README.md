@@ -8,7 +8,7 @@ The CLI and MCP tools are **framework-agnostic**. They speak only the protocol o
 
 **Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md).
 
-**Experimental recipes (P1).** JSON is canonical (`.wants` also accepted). `gpui-agent recipe validate|plan|run|resolve` (and MCP `recipe_*`) batch many protocol ops in one process on that kept session. **P2:** `recipe run` and `mcp` require a non-empty `GPUI_AGENT_TOKEN` or `--token` (same value on the host). See [docs/RECIPES.md](docs/RECIPES.md). Merge roadmap: [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+**Experimental recipes (P1).** JSON is canonical (`.wants` also accepted). `gpui-agent recipe validate|plan|run|resolve` (and MCP `recipe_*`) batch many protocol ops in one process on that kept session. **P2:** `recipe run` and `mcp` require a non-empty `GPUI_AGENT_TOKEN` or `--token` (same value on the host). **P4:** GitHub Actions runs the headless recipe and fails unless the receipt is `"ok": true`. See [docs/RECIPES.md](docs/RECIPES.md#ci-p4). Merge roadmap: [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
 
 ```mermaid
 flowchart LR
@@ -127,7 +127,7 @@ crates/gpui-agent-recipe   Experimental recipes + TMP-inspired mapping
 crates/todo-core           Demo store and semantic ids
 docs/PROTOCOL.md           Wire format
 docs/INTEGRATING.md        How to embed AgentHost in another app
-docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P0–P2 done in this tree)
+docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P0–P2 + P4 in this tree)
 docs/PERF.md               P0 Criterion numbers (session vs reconnect)
 docs/RECIPES.md            Experimental recipes (JSON canonical)
 docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
@@ -135,6 +135,8 @@ docs/SECURITY.md           Trust model, caps, recipe threat model
 examples/todo.sh           Demo-only invoke wrappers
 examples/recipes/          Sample todo CRUD recipe (JSON + wants)
 scripts/smoke.sh           Full CRUD against the headless host
+scripts/ci-recipe.sh       CI recipe receipt assert (ok + session_reused)
+.github/workflows/ci.yml   ubuntu-latest: cargo test + ci-recipe.sh
 ```
 
 ## How to run
@@ -321,13 +323,14 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 
 ## Next steps
 
-Phased plan (P0–P2 are in this tree): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+Phased plan (P0–P2 and P4 are in this tree): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
 
 1. Richer virtual input (scroll, drag, IME composition, multi-click)
-2. In-app GPUI offscreen frames so `screenshot` can write real pixels when a GPU is present (P3)
+2. In-app GPUI offscreen frames so `screenshot` can write real pixels when a GPU is present (P3 — [PR #20](https://github.com/hexuria/gpui-agent/pull/20))
 3. WASM host implementing `AgentHost` for `platform: web`
 4. Auto-export nodes from AccessKit so apps register fewer ids by hand
 5. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store
+6. Close leftover stacked PRs #4/#5 without merging them (P5)
 
 ## License
 

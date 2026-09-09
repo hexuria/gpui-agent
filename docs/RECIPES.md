@@ -12,8 +12,8 @@ TCP session, many ops — instead of a tool round-trip per action.
 thin alias. Laptop (pull + run only): [TRY_ON_MAC.md](TRY_ON_MAC.md).
 Threat model vs PR #3 caps: [SECURITY.md](SECURITY.md#recipes-experimental).
 Wire ops stay one NDJSON request each: [PROTOCOL.md](PROTOCOL.md).
-Roadmap: [NO_BRAINER_PLAN.md](NO_BRAINER_PLAN.md) (P0 session reuse and
-P1 recipes are on `main`; this tree includes **P2** token-for-recipe/MCP).
+Roadmap: [NO_BRAINER_PLAN.md](NO_BRAINER_PLAN.md) (P0–P2 are on
+`main`; this tree includes **P4** CI recipe receipt).
 
 ## What was borrowed
 
@@ -298,7 +298,22 @@ least:
 cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 ```
 
-## Performance (this PR)
+## CI (P4)
+
+GitHub Actions (`.github/workflows/ci.yml`) on `ubuntu-latest` runs
+those tests, then `scripts/ci-recipe.sh`: `todo-headless` +
+`gpui-agent recipe run examples/recipes/todo-crud.json` with
+`GPUI_AGENT=1` on loopback and a **test token** (`ci-p4-token`, same
+value on host and client). The job fails unless the receipt JSON has
+`"ok": true` and `"session_reused": true`. No display, no GPU, no
+screenshot files. A failed recipe is a failed check, not a skipped
+visual.
+
+```bash
+GPUI_AGENT=1 GPUI_AGENT_TOKEN=ci-p4-token ./scripts/ci-recipe.sh
+```
+
+## Performance (this crate)
 
 P0 session reuse is already on `main` ([PERF.md](PERF.md)). This crate
 adds:
@@ -338,7 +353,7 @@ cargo bench -p gpui-agent-recipe --bench recipe_plan -- --quick
 8. **Real desktop PNG (P3)?** Headless stays honest
    (`screenshot_unavailable`). In-app GPUI offscreen frames and Mac
    `screencapture -l` are later.
-9. **CI receipt assert (P4)?** Gate is receipt `ok`, not pixels.
+9. **CI receipt assert (P4 — this PR).** Gate is receipt `ok`, not pixels.
 
 ## Layout
 
@@ -351,4 +366,6 @@ docs/RECIPES.md            This note
 docs/TRY_ON_MAC.md         Pull this branch and run it on a laptop
 docs/SECURITY.md           Caps + recipe threat model
 docs/NO_BRAINER_PLAN.md    P0–P5 roadmap
+.github/workflows/ci.yml   Headless cargo test + recipe receipt
+scripts/ci-recipe.sh       Local/CI recipe receipt assert
 ```
