@@ -1,7 +1,9 @@
 # GPUI Agent Protocol v1
 
 Newline-delimited JSON on a loopback TCP socket. One request object, one
-response object. This is **not** Chrome DevTools Protocol.
+response object **per line**. The client (`AgentClient`) keeps the TCP
+connection open and reuses it for later ops; `rpc_once` reconnects for
+benchmarks. This is **not** Chrome DevTools Protocol.
 
 Default bind: `127.0.0.1:17421` (`GPUI_AGENT_ADDR`). The server and the
 CLI refuse non-loopback addresses. Lines larger than 1 MiB are rejected

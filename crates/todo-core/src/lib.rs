@@ -136,9 +136,9 @@ impl TodoStore {
                 "No todos yet. Add one above.",
             )]
         } else {
-            self.items
-                .iter()
-                .map(|item| {
+            let mut list_children = Vec::with_capacity(self.items.len());
+            for item in &self.items {
+                list_children.push(
                     UiNode::new(ids::item(item.id), "listitem", item.title.clone())
                         .with_checked(item.done)
                         .with_children(vec![
@@ -149,9 +149,10 @@ impl TodoStore {
                                 "button",
                                 format!("Delete {}", item.title),
                             ),
-                        ])
-                })
-                .collect()
+                        ]),
+                );
+            }
+            list_children
         };
 
         let window = UiNode::new(ids::WINDOW, "window", "Agent Todo")

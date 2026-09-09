@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,7 +8,11 @@ use std::time::Duration;
 use crate::dispatch::{authorize_request, handle_request};
 use crate::host::AgentHost;
 use crate::mailbox::AgentMailbox;
+use crate::ndjson::{line_is_blank, read_limited_line_into, write_json_line};
 use crate::protocol::{Op, Request, Response};
+
+/// Re-export so existing `server::read_limited_line` callers keep compiling.
+pub use crate::ndjson::read_limited_line;
 
 pub const DEFAULT_ADDR_STR: &str = "127.0.0.1:17421";
 pub const DEFAULT_PORT: u16 = 17421;
@@ -176,44 +180,8 @@ fn prepare_stream(stream: &TcpStream, idle: Duration) -> bool {
     stream.set_read_timeout(Some(idle)).is_ok() && stream.set_write_timeout(Some(idle)).is_ok()
 }
 
-fn write_resp(writer: &mut TcpStream, resp: &Response) {
-    if let Ok(line) = serde_json::to_string(resp) {
-        let _ = writeln!(writer, "{line}");
-    }
-}
-
-/// Read one NDJSON line, capped at `max_bytes` (excluding the newline).
-///
-/// Returns `Ok(None)` on EOF. Oversized lines are `ErrorKind::InvalidData`
-/// and consume at most `max_bytes + 1` from the reader so the caller can
-/// close rather than resync.
-pub fn read_limited_line<R: BufRead>(
-    reader: &mut R,
-    max_bytes: usize,
-) -> std::io::Result<Option<String>> {
-    let mut buf = Vec::new();
-    let n = reader
-        .by_ref()
-        .take(max_bytes as u64 + 1)
-        .read_until(b'\n', &mut buf)?;
-    if n == 0 {
-        return Ok(None);
-    }
-    if buf.len() > max_bytes {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "line too long",
-        ));
-    }
-    if buf.last() == Some(&b'\n') {
-        buf.pop();
-        if buf.last() == Some(&b'\r') {
-            buf.pop();
-        }
-    }
-    String::from_utf8(buf).map(Some).map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "line is not valid UTF-8")
-    })
+fn write_resp(writer: &mut TcpStream, encode_buf: &mut Vec<u8>, resp: &Response) {
+    let _ = write_json_line(writer, encode_buf, resp);
 }
 
 fn handle_stream_host<H: AgentHost>(
@@ -231,34 +199,38 @@ fn handle_stream_host<H: AgentHost>(
         Err(_) => return,
     };
     let mut reader = BufReader::new(stream);
+    let mut line_buf = Vec::with_capacity(4096);
+    let mut encode_buf = Vec::with_capacity(4096);
     loop {
-        let line = match read_limited_line(&mut reader, limits.max_line_bytes) {
-            Ok(Some(line)) => line,
-            Ok(None) => break,
+        match read_limited_line_into(&mut reader, &mut line_buf, limits.max_line_bytes) {
+            Ok(true) => {}
+            Ok(false) => break,
             Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
                 write_resp(
                     &mut writer,
+                    &mut encode_buf,
                     &Response::err("?", format!("bad request: {err}")),
                 );
                 break;
             }
             Err(_) => break,
-        };
-        if line.trim().is_empty() {
+        }
+        if line_is_blank(&line_buf) {
             continue;
         }
-        let req: Request = match serde_json::from_str(&line) {
+        let req: Request = match serde_json::from_slice(&line_buf) {
             Ok(req) => req,
             Err(err) => {
                 write_resp(
                     &mut writer,
+                    &mut encode_buf,
                     &Response::err("?", format!("bad json: {err}")),
                 );
                 continue;
             }
         };
         if let Err(resp) = authorize_request(&req, token) {
-            write_resp(&mut writer, &resp);
+            write_resp(&mut writer, &mut encode_buf, &resp);
             break;
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
@@ -266,7 +238,7 @@ fn handle_stream_host<H: AgentHost>(
             let mut host = host.lock().expect("host");
             handle_request(&mut *host, req, token)
         };
-        write_resp(&mut writer, &resp);
+        write_resp(&mut writer, &mut encode_buf, &resp);
         if shutdown_op {
             shutdown.store(true, Ordering::SeqCst);
             break;
@@ -290,27 +262,31 @@ fn handle_stream_mailbox(
         Err(_) => return,
     };
     let mut reader = BufReader::new(stream);
+    let mut line_buf = Vec::with_capacity(4096);
+    let mut encode_buf = Vec::with_capacity(4096);
     loop {
-        let line = match read_limited_line(&mut reader, limits.max_line_bytes) {
-            Ok(Some(line)) => line,
-            Ok(None) => break,
+        match read_limited_line_into(&mut reader, &mut line_buf, limits.max_line_bytes) {
+            Ok(true) => {}
+            Ok(false) => break,
             Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
                 write_resp(
                     &mut writer,
+                    &mut encode_buf,
                     &Response::err("?", format!("bad request: {err}")),
                 );
                 break;
             }
             Err(_) => break,
-        };
-        if line.trim().is_empty() {
+        }
+        if line_is_blank(&line_buf) {
             continue;
         }
-        let req: Request = match serde_json::from_str(&line) {
+        let req: Request = match serde_json::from_slice(&line_buf) {
             Ok(req) => req,
             Err(err) => {
                 write_resp(
                     &mut writer,
+                    &mut encode_buf,
                     &Response::err("?", format!("bad json: {err}")),
                 );
                 continue;
@@ -319,14 +295,14 @@ fn handle_stream_mailbox(
         // Authorize here so virtual ops (which skip handle_request on the
         // UI thread) still get version + token checks.
         if let Err(resp) = authorize_request(&req, token) {
-            write_resp(&mut writer, &resp);
+            write_resp(&mut writer, &mut encode_buf, &resp);
             break;
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
         let resp = mailbox
             .wait(req, timeout)
             .unwrap_or_else(|err| Response::err("?", err));
-        write_resp(&mut writer, &resp);
+        write_resp(&mut writer, &mut encode_buf, &resp);
         if shutdown_op {
             shutdown.store(true, Ordering::SeqCst);
             break;
@@ -367,8 +343,8 @@ mod tests {
     use crate::client::AgentClient;
     use crate::protocol::{HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request};
     use crate::tree::UiTree;
-    use crate::{DispatchResult, DeliveryMode};
-    use std::io::Cursor;
+    use crate::{DeliveryMode, DispatchResult};
+    use std::io::{BufRead, Cursor, Read, Write};
 
     struct EmptyHost;
 
@@ -451,10 +427,12 @@ mod tests {
         hello.v = PROTOCOL_VERSION;
         let line = serde_json::to_string(&hello).unwrap();
         let write_ok = writeln!(reader.get_mut(), "{line}");
-        assert!(write_ok.is_err() || {
-            let mut second = String::new();
-            reader.read_line(&mut second).is_err() || second.is_empty()
-        });
+        assert!(
+            write_ok.is_err() || {
+                let mut second = String::new();
+                reader.read_line(&mut second).is_err() || second.is_empty()
+            }
+        );
 
         shutdown.store(true, Ordering::SeqCst);
     }
@@ -525,5 +503,76 @@ mod tests {
         assert!(client.expect_ok(Op::Hello).is_ok());
 
         shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn client_reuses_one_tcp_session_for_many_ops() {
+        let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        assert!(!client.has_session());
+        client.expect_ok(Op::Hello).unwrap();
+        assert!(client.has_session());
+        for _ in 0..16 {
+            client.expect_ok(Op::Hello).unwrap();
+            assert!(client.has_session(), "session should survive hello");
+        }
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn rpc_once_drops_session_then_rpc_reconnects() {
+        let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        client.rpc_once(Op::Hello).expect("rpc_once");
+        assert!(
+            !client.has_session(),
+            "rpc_once is the reconnect/bench path and must drop the socket"
+        );
+        client.expect_ok(Op::Hello).unwrap();
+        assert!(client.has_session(), "rpc should open a reusable session");
+        client.close_session();
+        assert!(!client.has_session());
+        client.expect_ok(Op::Hello).unwrap();
+        assert!(client.has_session());
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    fn spawn_echo_peer(reply: Vec<u8>) -> std::net::SocketAddr {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = Read::read(&mut stream, &mut buf);
+                let _ = stream.write_all(&reply);
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn client_rejects_invalid_json_response() {
+        let addr = spawn_echo_peer(b"not-json\n".to_vec());
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(400));
+        let err = client.rpc(Op::Hello).unwrap_err();
+        assert!(
+            err.contains("bad response") || err.contains("connect"),
+            "{err}"
+        );
+        assert!(!client.has_session());
+    }
+
+    #[test]
+    fn client_rejects_oversized_response_line() {
+        let mut reply = vec![b'x'; crate::MAX_LINE_BYTES + 8];
+        reply.push(b'\n');
+        let addr = spawn_echo_peer(reply);
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(800));
+        let err = client.rpc(Op::Hello).unwrap_err();
+        assert!(
+            err.contains("line too long") || err.contains("connect"),
+            "{err}"
+        );
+        assert!(!client.has_session());
     }
 }
