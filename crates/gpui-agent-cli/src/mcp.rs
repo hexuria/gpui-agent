@@ -5,13 +5,16 @@ use std::time::Duration;
 use anyhow::Result;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
-use gpui_agent::{MAX_LINE_BYTES, read_limited_line};
+use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
 use serde_json::{Value, json};
 
 /// Minimal MCP stdio server: `initialize`, `tools/list`, `tools/call`.
 ///
 /// Tools match the generic protocol ops. App-specific verbs are `invoke`
 /// names the host registered — they are not separate MCP tools.
+///
+/// One [`AgentClient`] lives for the process: protocol `rpc` reuses a single
+/// TCP session across `tools/call` (no per-tool reconnect).
 pub fn run(addr: SocketAddr, token: Option<String>) -> Result<()> {
     let mut client = AgentClient::connect(addr);
     if let Some(token) = token {
@@ -20,15 +23,16 @@ pub fn run(addr: SocketAddr, token: Option<String>) -> Result<()> {
 
     let mut stdin = BufReader::new(std::io::stdin());
     let mut stdout = std::io::stdout();
+    let mut line_buf = Vec::with_capacity(4096);
     loop {
-        let line = match read_limited_line(&mut stdin, MAX_LINE_BYTES)? {
-            Some(line) => line,
-            None => break,
-        };
-        if line.trim().is_empty() {
+        match read_limited_line_into(&mut stdin, &mut line_buf, MAX_LINE_BYTES)? {
+            true => {}
+            false => break,
+        }
+        if line_is_blank(&line_buf) {
             continue;
         }
-        let msg: Value = match serde_json::from_str(&line) {
+        let msg: Value = match serde_json::from_slice(&line_buf) {
             Ok(v) => v,
             Err(err) => {
                 write_msg(

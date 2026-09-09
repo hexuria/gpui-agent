@@ -6,6 +6,8 @@ GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and 
 
 The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `click`, `type`, `set-value`, `key`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
 
+**Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md). There is no `recipe` CLI on `main` yet — that experiment still lives on PRs [#4](https://github.com/hexuria/gpui-agent/pull/4) and [#5](https://github.com/hexuria/gpui-agent/pull/5). The merge roadmap is [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+
 ```mermaid
 flowchart LR
   agent["AI agent / CLI / MCP"]
@@ -88,11 +90,13 @@ The desktop app is a real `gpui-kit = "0.6"` window. The same protocol runs agai
 ```
 apps/todo             GPUI Kit 0.6 desktop demo
 apps/todo-headless    Same domain + protocol, no window
-crates/gpui-agent     Protocol, server, client, security, mailbox
+crates/gpui-agent     Protocol, server, client, security, mailbox, ndjson
 crates/gpui-agent-cli gpui-agent CLI + tiny MCP stdio shim
 crates/todo-core      Demo store and semantic ids
 docs/PROTOCOL.md      Wire format
 docs/INTEGRATING.md   How to embed AgentHost in another app
+docs/NO_BRAINER_PLAN.md  P0–P5 roadmap (session reuse now; recipes later)
+docs/PERF.md          P0 Criterion numbers (session vs reconnect)
 examples/todo.sh      Demo-only invoke wrappers
 scripts/smoke.sh      Full CRUD against the headless host
 ```
@@ -185,8 +189,8 @@ What shipped instead (closer to Flutter semantics + Native SDK):
 
 1. **The app owns the semantic tree.** Widgets and the agent call the same methods. Ids are assigned by the app (`submit`, `row-3`), not inferred.
 2. **`AgentHost` is the platform seam.** Desktop GPUI, headless, and later web/mobile implement the trait. The wire format does not change.
-3. **Desktop bridge is a mailbox.** The TCP thread never touches GPUI objects. The UI thread drains the mailbox so InputState and the store stay in sync.
-4. **Protocol is small and versioned.** See [docs/PROTOCOL.md](docs/PROTOCOL.md). Embedding steps: [docs/INTEGRATING.md](docs/INTEGRATING.md).
+3. **Desktop bridge is a mailbox.** The TCP thread never touches GPUI objects. The UI thread drains the mailbox so InputState and the store stay in sync. `take` swaps the queue out in one `mem::take`.
+4. **Protocol is small and versioned.** See [docs/PROTOCOL.md](docs/PROTOCOL.md). Embedding steps: [docs/INTEGRATING.md](docs/INTEGRATING.md). One TCP session carries many request/response lines.
 
 ## Security / trust model
 
@@ -255,11 +259,14 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 
 ## Next steps
 
+Phased plan (P0 session reuse is in this tree; recipes/screenshots/CI are later): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+
 1. Richer virtual input (scroll, drag, IME composition, multi-click)
-2. `screenshot` on desktop when a GPU is present
-3. WASM host implementing `AgentHost` for `platform: web`
-4. Auto-export nodes from AccessKit so apps register fewer ids by hand
-5. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store
+2. `screenshot` on desktop when a GPU is present (P3 — honest unavailable on headless)
+3. Experimental recipes, one canonical format (P1 — **ask before choosing JSON vs `.wants`**)
+4. WASM host implementing `AgentHost` for `platform: web`
+5. Auto-export nodes from AccessKit so apps register fewer ids by hand
+6. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store
 
 ## License
 
