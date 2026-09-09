@@ -547,6 +547,40 @@ mod tests {
     }
 
     #[test]
+    fn rpc_pipeline_eof_after_first_reply_does_not_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                drop(listener);
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .ok();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let _ = writeln!(stream, r#"{{"v":1,"id":"1","ok":true}}"#);
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+
+        let hello = Op::Hello;
+        let ops: Vec<&Op> = vec![&hello, &hello, &hello];
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        let started = std::time::Instant::now();
+        let err = client.rpc_pipeline(&ops);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "EOF after the first pipelined reply must not retry until timeout: {elapsed:?} {err:?}"
+        );
+        assert!(
+            err.is_err(),
+            "partial wave must be Fatal, not Ok: {err:?}"
+        );
+    }
+
+    #[test]
     fn rpc_pipeline_reuses_session_for_hello_wave() {
         let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
         let hello = Op::Hello;

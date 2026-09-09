@@ -308,6 +308,10 @@ fn screenshot_dir_records_a_receipt_entry_per_step() {
         "screenshot-dir must stay sequential and turn after each step: {receipt:?}"
     );
     assert_eq!(receipt.steps.len(), 4);
+    assert!(
+        receipt.steps.iter().all(|step| step.screenshot.is_some()),
+        "pipeline path sets screenshot: None; screenshot-dir must capture after each step: {receipt:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
