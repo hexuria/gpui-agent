@@ -86,17 +86,20 @@ echo "==> final list via invoke"
 
 echo "==> shutdown"
 "$CLI" --addr "$ADDR" shutdown
+wait "$HOST_PID" 2>/dev/null || true
 HOST_PID=""
 
 echo "==> recipe run with matching host + client token"
 export GPUI_AGENT_TOKEN=smoke-p2-token
 "$HOST" &
 HOST_PID=$!
+"$CLI" --addr "$ADDR" wait
 receipt="$("$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --set title="Buy milk")"
 echo "$receipt"
 echo "$receipt" | grep -F '"ok": true' >/dev/null
 echo "$receipt" | grep -F '"session_reused": true' >/dev/null
 "$CLI" --addr "$ADDR" shutdown
+wait "$HOST_PID" 2>/dev/null || true
 HOST_PID=""
 
 echo
