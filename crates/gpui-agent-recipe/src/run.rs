@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::plan::{Plan, PlannedStep};
 use crate::receipt::{Receipt, ScreenshotReceipt, StepReceipt};
+use crate::schema::Effect;
 
 #[derive(Debug, Error)]
 pub enum RunError {
@@ -44,9 +45,12 @@ impl ScreenshotCapture {
 /// Execute a compiled plan on one reused TCP session.
 ///
 /// Each step is still a normal protocol request (token, version, caps).
-/// Waves are scheduled for documentation; P1 runs them **sequentially**
-/// and stops on the first failed step (no next sibling, no next wave).
-/// The recipe layer never talks to a shell and never skips `authorize_request`.
+/// All-Read waves (no `Write`/`Exit`, no `--screenshot-dir`) use
+/// [`AgentClient::rpc_pipeline`](gpui_agent::client::AgentClient::rpc_pipeline)
+/// to hide localhost RTT. Write, Exit, mixed, and screenshot-dir waves stay
+/// sequential fail-fast (no later sibling). A failed wave does not start the
+/// next one. The recipe layer never talks to a shell and never skips
+/// `authorize_request`.
 pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Receipt, RunError> {
     run_plan_with_screenshots(client, plan, yes, None)
 }
@@ -82,12 +86,77 @@ pub fn run_plan_with_screenshots(
 
     let mut shot_index = 0u32;
     for wave in &plan.waves {
-        for id in wave {
-            let step = plan
-                .steps
-                .iter()
-                .find(|step| step.id == *id)
-                .expect("wave id is a planned step");
+        let wave_steps: Vec<&PlannedStep> = wave
+            .iter()
+            .map(|id| {
+                plan.steps
+                    .iter()
+                    .find(|step| step.id == *id)
+                    .expect("wave id is a planned step")
+            })
+            .collect();
+        if wave_can_pipeline(&wave_steps, screenshots) {
+            let ops: Vec<&Op> = wave_steps.iter().map(|step| &step.op).collect();
+            let step_started = Instant::now();
+            match client.rpc_pipeline(&ops) {
+                Ok(resps) => {
+                    receipt.session_reused = client.has_session();
+                    let elapsed = step_started.elapsed().as_millis() as u64;
+                    let mut failed: Option<(String, String)> = None;
+                    for (step, resp) in wave_steps.iter().zip(resps) {
+                        shot_index += 1;
+                        let ok = resp.ok;
+                        let error = resp.error.clone();
+                        if !ok && failed.is_none() {
+                            failed = Some((
+                                step.id.clone(),
+                                error.clone().unwrap_or_else(|| "request failed".into()),
+                            ));
+                        }
+                        receipt.steps.push(StepReceipt {
+                            id: step.id.clone(),
+                            ok,
+                            error,
+                            elapsed_ms: elapsed,
+                            result: resp.result,
+                            screenshot: None,
+                        });
+                    }
+                    if let Some((id, error)) = failed {
+                        receipt.ok = false;
+                        receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                        return Err(RunError::Step {
+                            id,
+                            error,
+                            receipt: Box::new(receipt),
+                        });
+                    }
+                }
+                Err(error) => {
+                    receipt.ok = false;
+                    receipt.session_reused = client.has_session();
+                    let first = wave_steps[0];
+                    shot_index += 1;
+                    receipt.steps.push(StepReceipt {
+                        id: first.id.clone(),
+                        ok: false,
+                        error: Some(error.clone()),
+                        elapsed_ms: step_started.elapsed().as_millis() as u64,
+                        result: None,
+                        screenshot: None,
+                    });
+                    receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                    return Err(RunError::Step {
+                        id: first.id.clone(),
+                        error,
+                        receipt: Box::new(receipt),
+                    });
+                }
+            }
+            continue;
+        }
+
+        for step in wave_steps {
             let step_started = Instant::now();
             shot_index += 1;
             match client.rpc_op(&step.op) {
@@ -181,6 +250,20 @@ fn capture_screenshot(
     }
 }
 
+/// Pipeline only wide, all-Read waves when no per-step PNG capture is on.
+/// Empty or unknown effects are treated as Write (fail closed).
+fn wave_can_pipeline(steps: &[&PlannedStep], screenshots: Option<&ScreenshotCapture>) -> bool {
+    screenshots.is_none() && steps.len() > 1 && steps.iter().all(|step| step_is_read_only(step))
+}
+
+fn step_is_read_only(step: &PlannedStep) -> bool {
+    !step.effects.is_empty()
+        && step
+            .effects
+            .iter()
+            .all(|effect| matches!(effect, Effect::Read))
+}
+
 fn sanitize_step_id(id: &str) -> String {
     let mut out = String::with_capacity(id.len());
     for ch in id.chars() {
@@ -203,5 +286,54 @@ mod tests {
         assert_eq!(sanitize_step_id("add-1"), "add-1");
         assert_eq!(sanitize_step_id("weird/id"), "weird_id");
         assert_eq!(sanitize_step_id(""), "step");
+    }
+
+    fn read_step(id: &str) -> PlannedStep {
+        PlannedStep {
+            id: id.into(),
+            op: Op::Hello,
+            needs: Vec::new(),
+            screenshot: false,
+            effects: vec![Effect::Read],
+            schema: Some("hello".into()),
+            idempotent: true,
+        }
+    }
+
+    fn write_step(id: &str) -> PlannedStep {
+        PlannedStep {
+            id: id.into(),
+            op: Op::click("todo-add"),
+            needs: Vec::new(),
+            screenshot: false,
+            effects: vec![Effect::Write],
+            schema: Some("click".into()),
+            idempotent: false,
+        }
+    }
+
+    #[test]
+    fn pipeline_only_wide_read_waves_without_screenshots() {
+        let a = read_step("a");
+        let b = read_step("b");
+        let click = write_step("click");
+        let unknown = PlannedStep {
+            id: "unk".into(),
+            op: Op::Hello,
+            needs: Vec::new(),
+            screenshot: false,
+            effects: Vec::new(),
+            schema: None,
+            idempotent: false,
+        };
+        let capture = ScreenshotCapture {
+            dir: PathBuf::from("/tmp"),
+            flagged_only: false,
+        };
+        assert!(wave_can_pipeline(&[&a, &b], None));
+        assert!(!wave_can_pipeline(&[&a], None));
+        assert!(!wave_can_pipeline(&[&a, &click], None));
+        assert!(!wave_can_pipeline(&[&a, &unknown], None));
+        assert!(!wave_can_pipeline(&[&a, &b], Some(&capture)));
     }
 }

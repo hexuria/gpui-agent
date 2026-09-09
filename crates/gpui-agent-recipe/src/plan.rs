@@ -27,10 +27,10 @@ pub struct Plan {
     pub name: String,
     pub app: Option<String>,
     pub steps: Vec<PlannedStep>,
-    /// Waves of independent step ids. P1 executes them sequentially on
-    /// one TCP session and stops on the first failed step (no later
-    /// sibling, no later wave). `rpc_pipeline` for independent waves is
-    /// a later phase.
+    /// Waves of independent step ids. All-Read waves may
+    /// [`rpc_pipeline`](gpui_agent::client::AgentClient::rpc_pipeline);
+    /// Write / Exit / mixed waves stay sequential fail-fast. A failed
+    /// wave does not start the next one.
     pub waves: Vec<Vec<String>>,
     pub effects: Vec<Effect>,
     pub requires_yes: bool,

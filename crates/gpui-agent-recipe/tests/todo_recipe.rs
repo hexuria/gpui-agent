@@ -107,7 +107,7 @@ fn json_recipe_params_and_widget_ops() {
 }
 
 #[test]
-fn independent_wave_runs_sequentially_on_one_session() {
+fn independent_read_wave_is_pipelined_on_one_session() {
     let recipe = gpui_agent_recipe::Recipe::from_json(
         r#"{
         "name": "wide",
@@ -123,6 +123,15 @@ fn independent_wave_runs_sequentially_on_one_session() {
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
     assert_eq!(plan.waves.len(), 2);
     assert_eq!(plan.waves[1].len(), 3);
+    assert!(
+        plan.waves[1]
+            .iter()
+            .all(|id| plan.steps.iter().any(|s| s.id == *id
+                && s.effects
+                    .iter()
+                    .all(|e| matches!(e, gpui_agent_recipe::Effect::Read)))),
+        "hello wave must be all-Read so the runner pipelines it"
+    );
 
     let (mut client, shutdown) = spawn_todo();
     let receipt = run_plan(&mut client, &plan, false).expect("run");
@@ -133,7 +142,7 @@ fn independent_wave_runs_sequentially_on_one_session() {
 }
 
 #[test]
-fn independent_wave_stops_on_first_failed_sibling() {
+fn independent_read_wave_records_siblings_when_one_fails() {
     let recipe = gpui_agent_recipe::Recipe::from_json(
         r#"{
         "name": "wide-fail",
@@ -141,13 +150,14 @@ fn independent_wave_stops_on_first_failed_sibling() {
             {"id": "root", "op": "wait"},
             {"id": "a", "op": "hello", "needs": ["root"]},
             {"id": "b", "op": "assert", "target": "no-such-node", "needs": ["root"]},
-            {"id": "c", "op": "hello", "needs": ["root"]}
+            {"id": "c", "op": "hello", "needs": ["root"]},
+            {"id": "later", "op": "hello", "needs": ["a"]}
         ]
     }"#,
     )
     .unwrap();
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
-    assert_eq!(plan.waves.len(), 2);
+    assert_eq!(plan.waves.len(), 3);
     assert_eq!(plan.waves[1].len(), 3);
 
     let (mut client, shutdown) = spawn_todo();
@@ -158,17 +168,107 @@ fn independent_wave_stops_on_first_failed_sibling() {
             assert!(!receipt.ok);
             assert_eq!(
                 receipt.steps.len(),
-                3,
-                "sequential fail-fast must not run later siblings: {receipt:?}"
+                4,
+                "pipelined read siblings already ran: {receipt:?}"
             );
             assert!(receipt.steps[0].ok, "{receipt:?}");
-            assert_eq!(receipt.steps[1].id, "a");
-            assert!(receipt.steps[1].ok, "{receipt:?}");
-            assert_eq!(receipt.steps[2].id, "b");
-            assert!(!receipt.steps[2].ok, "{receipt:?}");
+            let wave: Vec<_> = receipt.steps.iter().skip(1).collect();
+            assert_eq!(wave.len(), 3);
+            let by_id: std::collections::BTreeMap<_, _> =
+                wave.iter().map(|s| (s.id.as_str(), s.ok)).collect();
+            assert_eq!(by_id.get("a"), Some(&true), "{receipt:?}");
+            assert_eq!(by_id.get("b"), Some(&false), "{receipt:?}");
+            assert_eq!(
+                by_id.get("c"),
+                Some(&true),
+                "hello sibling still ran after assert fail: {receipt:?}"
+            );
             assert!(
-                !receipt.steps.iter().any(|s| s.id == "c"),
-                "hello sibling must not run after assert fail: {receipt:?}"
+                !receipt.steps.iter().any(|s| s.id == "later"),
+                "failed read wave must not start the next wave: {receipt:?}"
+            );
+        }
+        other => panic!("unexpected {other}"),
+    }
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn independent_write_wave_stops_before_later_sibling() {
+    let recipe = gpui_agent_recipe::Recipe::from_json(
+        r#"{
+        "name": "wide-writes",
+        "steps": [
+            {"id": "root", "op": "wait"},
+            {"id": "a", "op": "click", "target": "no-such-a", "needs": ["root"]},
+            {"id": "b", "op": "click", "target": "todo-add", "needs": ["root"]}
+        ]
+    }"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    assert_eq!(plan.waves.len(), 2);
+    assert_eq!(plan.waves[1], vec!["a".to_string(), "b".to_string()]);
+
+    let (mut client, shutdown) = spawn_todo();
+    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    match err {
+        RunError::Step { id, receipt, .. } => {
+            assert_eq!(id, "a");
+            assert!(!receipt.ok);
+            assert_eq!(
+                receipt.steps.len(),
+                2,
+                "write-wave fail-fast must not run later siblings: {receipt:?}"
+            );
+            assert_eq!(receipt.steps[0].id, "root");
+            assert!(receipt.steps[0].ok, "{receipt:?}");
+            assert_eq!(receipt.steps[1].id, "a");
+            assert!(!receipt.steps[1].ok, "{receipt:?}");
+            assert!(
+                !receipt.steps.iter().any(|s| s.id == "b"),
+                "later click must not run: {receipt:?}"
+            );
+        }
+        other => panic!("unexpected {other}"),
+    }
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn mixed_write_and_read_wave_stays_sequential_fail_fast() {
+    let recipe = gpui_agent_recipe::Recipe::from_json(
+        r#"{
+        "name": "mixed-wave",
+        "steps": [
+            {"id": "root", "op": "wait"},
+            {"id": "click", "op": "click", "target": "no-such-click", "needs": ["root"]},
+            {"id": "hello", "op": "hello", "needs": ["root"]}
+        ]
+    }"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    assert_eq!(plan.waves.len(), 2);
+    assert_eq!(
+        plan.waves[1],
+        vec!["click".to_string(), "hello".to_string()]
+    );
+
+    let (mut client, shutdown) = spawn_todo();
+    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    match err {
+        RunError::Step { id, receipt, .. } => {
+            assert_eq!(id, "click");
+            assert!(!receipt.ok);
+            assert_eq!(
+                receipt.steps.len(),
+                2,
+                "mixed wave must not pipeline the hello sibling: {receipt:?}"
+            );
+            assert!(
+                !receipt.steps.iter().any(|s| s.id == "hello"),
+                "hello sibling must not run after click fail: {receipt:?}"
             );
         }
         other => panic!("unexpected {other}"),
@@ -205,7 +305,7 @@ fn screenshot_dir_records_a_receipt_entry_per_step() {
     assert_eq!(
         receipt.screenshots.len(),
         4,
-        "screenshot path must turn after each step: {receipt:?}"
+        "screenshot-dir must stay sequential and turn after each step: {receipt:?}"
     );
     assert_eq!(receipt.steps.len(), 4);
     let _ = std::fs::remove_dir_all(&dir);

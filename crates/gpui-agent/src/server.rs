@@ -511,6 +511,56 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn rpc_pipeline_wrong_token_fails_fast() {
+        let (addr, shutdown) = spawn_test_host(
+            Some("correct-token".into()),
+            ServerLimits {
+                idle_timeout: Duration::from_secs(2),
+                ..ServerLimits::default()
+            },
+        );
+        let hello = Op::Hello;
+        let ops: Vec<&Op> = vec![&hello, &hello, &hello];
+        let mut bad = AgentClient::connect(addr)
+            .with_token("wrong")
+            .with_timeout(Duration::from_secs(2));
+        let started = std::time::Instant::now();
+        let err = bad.rpc_pipeline(&ops);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "auth close must not retry the wave until timeout: {elapsed:?} {err:?}"
+        );
+        match err {
+            Ok(resps) => assert!(
+                resps
+                    .iter()
+                    .any(|r| !r.ok && r.error.as_deref().is_some_and(|e| e.contains("token"))),
+                "wrong token must not run the wave: {resps:?}"
+            ),
+            Err(msg) => assert!(
+                msg.contains("token") || msg.contains("connection closed"),
+                "wrong token must not run the wave: {msg}"
+            ),
+        }
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn rpc_pipeline_reuses_session_for_hello_wave() {
+        let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
+        let hello = Op::Hello;
+        let ops: Vec<&Op> = vec![&hello, &hello, &hello];
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        let resps = client.rpc_pipeline(&ops).expect("pipeline hellos");
+        assert_eq!(resps.len(), 3);
+        assert!(resps.iter().all(|r| r.ok), "{resps:?}");
+        assert!(client.has_session());
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
     fn client_reuses_one_tcp_session_for_many_ops() {
         let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
         let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));

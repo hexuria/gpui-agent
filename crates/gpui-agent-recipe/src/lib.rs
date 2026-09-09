@@ -3,9 +3,10 @@
 //! This crate is **client-side**. It does not add a wire `batch` op and it
 //! cannot bypass token / loopback / line-connection-mailbox caps. A recipe
 //! is a compiled list of ordinary protocol [`Op`](gpui_agent::Op)s run
-//! sequentially on one reused TCP session (`AgentClient` from P0).
-//! Independent DAG waves are documented on the plan; execution is still
-//! one request at a time so a failed step never continues the wave.
+//! on one reused TCP session (`AgentClient` from P0). All-Read DAG waves
+//! may pipeline (write N lines, then read). Write, Exit, mixed, and
+//! `--screenshot-dir` waves stay one request at a time so a failed write
+//! never continues the wave.
 
 pub mod plan;
 pub mod receipt;

@@ -22,9 +22,10 @@ picks them. Do not implement P3–P5 on a P2 branch.
 
 Recipes, TMP-style registry, and an honest `screenshot` protocol op
 land in **P1**. Recording / real desktop PNG stay **P3**. NDJSON
-**pipeline** (`rpc_pipeline` / DAG waves) stays **out of P1**: sequential
-ops on the P0 session are enough. If pipeline lands later, include the
-retry-after-write + sibling-receipt fail-fast fixes from `4d464c7`.
+**pipeline** for **all-Read** DAG waves lives in this follow-on (`rpc_pipeline`
+write-N-then-read, plus the `4d464c7` retry-after-write / sibling-receipt
+rules). Write / Exit / mixed waves stay sequential fail-fast. Do not merge
+leftover #4/#5.
 
 Reference-only branches (do not merge as-is):
 
@@ -71,7 +72,7 @@ Landed on `main` via PR #6. Numbers: [PERF.md](PERF.md).
 
 - `gpui-agent-recipe`, CLI `recipe`, MCP `recipe_*`
 - Protocol `screenshot`, recording, TMP registry
-- `AgentClient::rpc_pipeline`
+- `AgentClient::rpc_pipeline` (landed later: all-Read waves only)
 
 **Success.** Tests green for `gpui-agent`, `todo-core`, `gpui-agent-cli`.
 `rpc_session_reuse_32_hellos` is hundreds of times faster than
@@ -121,7 +122,7 @@ optional `--screenshot-dir` plumbing. Full visual/Mac PNG is P3.
 - Real desktop PNG / OS capture (P3)
 - CI Action (P4)
 - Merging leftover #4/#5 branches (P5)
-- `rpc_pipeline` / mimalloc / simd
+- Write-wave `rpc_pipeline` / mimalloc / simd (read-only waves landed later)
 
 **Success.** `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli
 -p gpui-agent-recipe` green. Headless
