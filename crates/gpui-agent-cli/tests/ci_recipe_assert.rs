@@ -19,9 +19,16 @@ fn ci_recipe_sh() -> PathBuf {
 
 fn run_assert(json: &str) -> std::process::Output {
     let dir = std::env::temp_dir().join(format!(
-        "gpui-agent-ci-assert-{}-{}",
+        "gpui-agent-ci-assert-{}-{:x}",
         std::process::id(),
-        json.len()
+        {
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in json.as_bytes() {
+                h ^= u64::from(*b);
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        }
     ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
