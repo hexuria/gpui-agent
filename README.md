@@ -8,7 +8,7 @@ The CLI and MCP tools are **framework-agnostic**. They speak only the protocol o
 
 **Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md).
 
-**Experimental recipes (P1).** JSON is canonical (`.wants` also accepted). `gpui-agent recipe validate|plan|run|resolve` (and MCP `recipe_*`) batch many protocol ops in one process on that kept session. **P2:** `recipe run` and `mcp` require a non-empty `GPUI_AGENT_TOKEN` or `--token` (same value on the host). **P4:** GitHub Actions runs the headless recipe and fails unless the receipt is `"ok": true`. See [docs/RECIPES.md](docs/RECIPES.md#ci-p4). Merge roadmap: [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+**Experimental recipes (P1).** JSON is canonical (`.wants` also accepted). `gpui-agent recipe validate|plan|run|resolve` (and MCP `recipe_*`) batch many protocol ops in one process on that kept session. **P2:** `recipe run` and `mcp` require a non-empty `GPUI_AGENT_TOKEN` or `--token` (same value on the host). **P4:** GitHub Actions runs the headless recipe and fails unless the receipt is `"ok": true`. See [docs/RECIPES.md](docs/RECIPES.md#ci-p4). Merge roadmap: [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md). Leftover experimental PRs: [docs/STACK_HYGIENE.md](docs/STACK_HYGIENE.md).
 
 ```mermaid
 flowchart LR
@@ -127,7 +127,8 @@ crates/gpui-agent-recipe   Experimental recipes + TMP-inspired mapping
 crates/todo-core           Demo store and semantic ids
 docs/PROTOCOL.md           Wire format
 docs/INTEGRATING.md        How to embed AgentHost in another app
-docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P0–P2 + P4 in this tree)
+docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P0–P2 + P4 + pipeline + MCP hardenings in this tree; P3 Mac PNG still open as #20)
+docs/STACK_HYGIENE.md      P5: leftover #4/#5 closed without merge (museum branches)
 docs/PERF.md               P0 Criterion numbers (session vs reconnect)
 docs/RECIPES.md            Experimental recipes (JSON canonical)
 docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
@@ -323,7 +324,7 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 
 ## Next steps
 
-Phased plan (P0–P2 and P4 are in this tree): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+Phased plan (P0–P2, P4, pipeline, and MCP hardenings are in this tree; P3 Mac PNG is still [#20](https://github.com/hexuria/gpui-agent/pull/20); P5 hygiene): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md), [docs/STACK_HYGIENE.md](docs/STACK_HYGIENE.md).
 
 1. Richer virtual input (scroll, drag, IME composition, multi-click)
 2. In-app GPUI offscreen frames so `screenshot` can write real pixels when a GPU is present (P3 — [PR #20](https://github.com/hexuria/gpui-agent/pull/20))

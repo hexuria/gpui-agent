@@ -360,9 +360,10 @@ cargo bench -p gpui-agent-recipe --bench recipe_plan -- --quick
 7. **Fingerprint stability?** Today it is `DefaultHasher` of the
    compiled ops — fine for one process, not a cross-version lock.
 8. **Real desktop PNG (P3)?** Headless stays honest
-   (`screenshot_unavailable`). In-app GPUI offscreen frames and Mac
-   `screencapture -l` are later.
-9. **CI receipt assert (P4 — this PR).** Gate is receipt `ok`, not pixels.
+   (`screenshot_unavailable`). Mac `screencapture -l` is in flight as
+   [PR #20](https://github.com/hexuria/gpui-agent/pull/20).
+9. **CI receipt assert (P4).** Gate is receipt `ok` (+ `session_reused`), not pixels.
+   Landed as [PR #21](https://github.com/hexuria/gpui-agent/pull/21).
 
 ## Layout
 
@@ -377,4 +378,5 @@ docs/SECURITY.md           Caps + recipe threat model
 docs/NO_BRAINER_PLAN.md    P0–P5 roadmap
 .github/workflows/ci.yml   Headless cargo test + recipe receipt
 scripts/ci-recipe.sh       Local/CI recipe receipt assert
+docs/STACK_HYGIENE.md      Leftover #4/#5 closed without merge
 ```
