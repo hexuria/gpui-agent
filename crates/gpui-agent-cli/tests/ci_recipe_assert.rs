@@ -43,11 +43,7 @@ fn stderr_of(output: &std::process::Output) -> String {
 #[test]
 fn receipt_ok_and_session_reused_passes() {
     let output = run_assert(r#"{"ok": true, "session_reused": true}"#);
-    assert!(
-        output.status.success(),
-        "{}",
-        stderr_of(&output)
-    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
 }
 
 #[test]
