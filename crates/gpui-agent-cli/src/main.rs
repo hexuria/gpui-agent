@@ -5,11 +5,11 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use gpui_agent::DEFAULT_ADDR_STR;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
+use gpui_agent::DEFAULT_ADDR_STR;
 use recipe_cmd::RecipeCommand;
 
 /// Drive any GPUI Kit app over the opt-in agent protocol (not CDP).
@@ -23,9 +23,13 @@ struct Cli {
     /// Host:port of the automation server (loopback only on the app side).
     #[arg(long, default_value = DEFAULT_ADDR_STR, env = "GPUI_AGENT_ADDR")]
     addr: SocketAddr,
-    /// Shared secret; must match GPUI_AGENT_TOKEN in the app when set.
+    /// Shared secret; must match the host. Required unless `--allow-empty-token`.
     #[arg(long, env = "GPUI_AGENT_TOKEN")]
     token: Option<String>,
+    /// Connect with no token (loopback labs only). Also `GPUI_AGENT_ALLOW_EMPTY_TOKEN=1`.
+    /// The host must be started the same way, or requests fail auth.
+    #[arg(long)]
+    allow_empty_token: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -123,31 +127,64 @@ fn main() -> ExitCode {
     }
 }
 
+const TOKEN_REQUIRED: &str = "\
+refusing to connect without a token. Pass --token / GPUI_AGENT_TOKEN \
+(must match the host), or --allow-empty-token / GPUI_AGENT_ALLOW_EMPTY_TOKEN=1 \
+for loopback-only labs. Hosts mint an ephemeral token at bind when \
+GPUI_AGENT_TOKEN is unset.";
+
+fn command_connects_to_host(command: &Command) -> bool {
+    match command {
+        Command::Recipe { action } => matches!(action, RecipeCommand::Run { .. }),
+        _ => true,
+    }
+}
+
+fn resolve_client_token(explicit: Option<&str>, allow_empty: bool) -> Result<Option<String>> {
+    if let Some(t) = explicit.filter(|s| !s.is_empty()) {
+        return Ok(Some(t.to_string()));
+    }
+    if allow_empty {
+        return Ok(None);
+    }
+    Err(anyhow!(TOKEN_REQUIRED))
+}
+
+fn allow_empty_token(flag: bool) -> bool {
+    flag || gpui_agent::truthy_env("GPUI_AGENT_ALLOW_EMPTY_TOKEN")
+}
+
+fn make_client(addr: SocketAddr, token: Option<String>) -> AgentClient {
+    let mut client = AgentClient::connect(addr);
+    if let Some(token) = token {
+        client = client.with_token(token);
+    }
+    client
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     gpui_agent::ensure_loopback(cli.addr)
         .with_context(|| format!("refusing non-loopback agent address {}", cli.addr))?;
+    let allow_empty = allow_empty_token(cli.allow_empty_token);
+    let token = if command_connects_to_host(&cli.command) {
+        resolve_client_token(cli.token.as_deref(), allow_empty)?
+    } else {
+        None
+    };
     if matches!(cli.command, Command::Mcp) {
-        return mcp::run(cli.addr, cli.token);
+        return mcp::run(cli.addr, token);
     }
     if let Command::Recipe { action } = cli.command {
-        let needs_client = matches!(action, RecipeCommand::Run { .. });
-        let client = if needs_client {
-            let mut client = AgentClient::connect(cli.addr);
-            if let Some(token) = cli.token {
-                client = client.with_token(token);
-            }
-            Some(client)
+        let client = if matches!(action, RecipeCommand::Run { .. }) {
+            Some(make_client(cli.addr, token))
         } else {
             None
         };
         return recipe_cmd::run(client, action);
     }
 
-    let mut client = AgentClient::connect(cli.addr);
-    if let Some(token) = cli.token {
-        client = client.with_token(token);
-    }
+    let mut client = make_client(cli.addr, token);
 
     match cli.command {
         Command::Wait { timeout_ms } => {
@@ -453,5 +490,59 @@ mod tests {
 
         let local = Cli::try_parse_from(["gpui-agent", "hello"]).unwrap();
         assert!(gpui_agent::ensure_loopback(local.addr).is_ok());
+    }
+
+    #[test]
+    fn connecting_commands_require_a_token() {
+        let err = resolve_client_token(None, false).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("refusing to connect without a token"));
+        assert!(resolve_client_token(Some(""), false).is_err());
+        assert_eq!(
+            resolve_client_token(Some("secret"), false)
+                .unwrap()
+                .as_deref(),
+            Some("secret")
+        );
+        assert_eq!(resolve_client_token(None, true).unwrap(), None);
+        assert_eq!(
+            resolve_client_token(Some("secret"), true)
+                .unwrap()
+                .as_deref(),
+            Some("secret")
+        );
+    }
+
+    #[test]
+    fn recipe_validate_plan_resolve_do_not_connect() {
+        let validate = Cli::try_parse_from(["gpui-agent", "recipe", "validate", "x.json"]).unwrap();
+        assert!(!command_connects_to_host(&validate.command));
+
+        let plan = Cli::try_parse_from(["gpui-agent", "recipe", "plan", "x.json"]).unwrap();
+        assert!(!command_connects_to_host(&plan.command));
+
+        let resolve = Cli::try_parse_from(["gpui-agent", "recipe", "resolve", "add milk"]).unwrap();
+        assert!(!command_connects_to_host(&resolve.command));
+
+        let run = Cli::try_parse_from(["gpui-agent", "recipe", "run", "x.json"]).unwrap();
+        assert!(command_connects_to_host(&run.command));
+
+        let hello = Cli::try_parse_from(["gpui-agent", "hello"]).unwrap();
+        assert!(command_connects_to_host(&hello.command));
+
+        let mcp = Cli::try_parse_from(["gpui-agent", "mcp"]).unwrap();
+        assert!(command_connects_to_host(&mcp.command));
+    }
+
+    #[test]
+    fn allow_empty_token_flag_parses() {
+        let cli = Cli::try_parse_from(["gpui-agent", "--allow-empty-token", "hello"]).unwrap();
+        assert!(cli.allow_empty_token);
+        assert!(command_connects_to_host(&cli.command));
+        assert_eq!(
+            resolve_client_token(cli.token.as_deref(), cli.allow_empty_token).unwrap(),
+            None
+        );
     }
 }

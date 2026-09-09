@@ -19,7 +19,7 @@ impl DispatchResult {
     }
 }
 
-/// Version + optional shared-secret gate. Call this before dispatching,
+/// Version + shared-secret gate. Call this before dispatching,
 /// including on the mailbox path where virtual ops skip [`handle_request`].
 pub fn authorize_request(req: &Request, expected_token: Option<&str>) -> Result<(), Response> {
     if req.v != PROTOCOL_VERSION {

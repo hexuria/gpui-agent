@@ -5,17 +5,19 @@ Roadmap for landing the experimental work from
 [PR #5](https://github.com/hexuria/gpui-agent/pull/5) **without** merging
 those branches wholesale.
 
-P0 is [PR #6](https://github.com/hexuria/gpui-agent/pull/6). P1 is the
-stacked recipe crate. Later phases stay **documented here** until a
-human picks them. Do not implement P2–P5 on a P1 branch.
+P0 is [PR #6](https://github.com/hexuria/gpui-agent/pull/6). P1 is
+[PR #7](https://github.com/hexuria/gpui-agent/pull/7) (recipes). P2 is
+this stacked PR (token required / ephemeral). Later phases stay
+**documented here** until a human picks them. Do not implement P3–P5
+on a P2 branch.
 
 ## Status
 
 | Phase | What | Status |
 | --- | --- | --- |
 | **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | [PR #6](https://github.com/hexuria/gpui-agent/pull/6) |
-| **P1** | Recipes, experimental; JSON canonical (`.wants` thin alias) | **This stacked PR** |
-| **P2** | Token required / ephemeral when recipes or MCP is on | Not started. Details **UNDECIDED — ask the user** |
+| **P1** | Recipes, experimental; JSON canonical (`.wants` thin alias) | [PR #7](https://github.com/hexuria/gpui-agent/pull/7) stacked on #6 |
+| **P2** | Token required / ephemeral mint + `--allow-empty-token` (policy D) | **This stacked PR** |
 | **P3** | Real desktop PNG, or honest Mac-only visuals | Not started |
 | **P4** | CI: headless recipe run + receipt assert | Not started (needs P1) |
 | **P5** | Squash / stack hygiene vs leftover #4/#5 | Not started |
@@ -36,9 +38,11 @@ These never change unless the user explicitly forks the product:
 
 - **No OS HID.** Virtual delivery is in-process GPUI events only. No
   warp, no PostMessage, no XTEST, no stealing the real cursor/keyboard.
-- **Loopback + caps.** `GPUI_AGENT=1`, loopback bind, optional token
-  (until P2), `MAX_LINE_BYTES` 1 MiB, `MAX_CONNECTIONS` 32,
-  `MAX_MAILBOX_DEPTH` 128, 30s idle. Do not weaken them.
+- **Loopback + caps.** `GPUI_AGENT=1`, loopback bind, required token
+  (P2: mint ephemeral if unset; `GPUI_AGENT_ALLOW_EMPTY_TOKEN=1` /
+  `--allow-empty-token` is the lab opt-out). `MAX_LINE_BYTES` 1 MiB,
+  `MAX_CONNECTIONS` 32, `MAX_MAILBOX_DEPTH` 128, 30s idle. Do not
+  weaken them. `AgentServer::bind(..., None)` stays allowed for tests.
 - **Semantic default.** `delivery=virtual` stays opt-in per op.
 - **Ask the user** before product forks: recipe syntax freeze, required
   tokens, screenshot/recording backends, CI gates, merging experimental
@@ -86,7 +90,7 @@ Numbers: [PERF.md](PERF.md).
 
 ## P1 — recipes (experimental), one canonical format
 
-**This stacked PR.** JSON is canonical. `.wants` is a **thin alias**
+**[PR #7](https://github.com/hexuria/gpui-agent/pull/7), stacked on P0.** JSON is canonical. `.wants` is a **thin alias**
 that compiles to the same `Recipe` (not a second product). Execution is
 sequential `rpc` on the P0 session — **no** `rpc_pipeline`. Local schema
 registry only (no `tmp-core`, no shell data sources). Unknown `invoke`
@@ -131,48 +135,50 @@ Reference-only: PR #4 gol/recipes-tmp-perf-e79b, PR #5 gol/recipes-measured-perf
 
 ---
 
-## P2 — token required / ephemeral when recipes or MCP is on
+## P2 — token required / ephemeral (policy D)
 
-**UNDECIDED details — ask the user.** Security audit H1: token is
-optional. Recipes/MCP make an open loopback socket cheaper to drive.
+**This stacked PR.** Security audit H1: an open loopback socket plus
+recipes/MCP is cheap to drive. Policy **D**:
 
-Options to present (do not pick silently):
+1. Host `from_env`: if `GPUI_AGENT_TOKEN` is unset, **mint** a 32-byte
+   hex token and print it once after bind (`eprint_token_banner`).
+2. CLI connecting commands (`hello` / `mcp` / `recipe run` / …) **refuse**
+   without a token. `recipe validate|plan|resolve` do not connect.
+3. Opt-out: `--allow-empty-token` or `GPUI_AGENT_ALLOW_EMPTY_TOKEN=1`
+   on **both** host and client. Empty `GPUI_AGENT_TOKEN=` is **not** an
+   opt-out (treated as unset → mint).
+4. `AgentServer::bind(..., None)` stays allowed so in-process tests do
+   not all need a secret.
+5. `./scripts/smoke.sh` sets a shared `GPUI_AGENT_TOKEN` (does not parse
+   minted stderr).
 
-1. Document-only (status quo) + louder README
-2. Require `GPUI_AGENT_TOKEN` when MCP or `recipe run` starts (CLI-side)
-3. Server generates an ephemeral token at bind, prints once (Jupyter model)
-4. Both 2 and 3, with an explicit `--allow-empty-token` for local smoke
-
-Do not break `./scripts/smoke.sh` without a documented env example.
+Not in P2: Unix sockets, TLS, `SO_PEERCRED`.
 
 ### Ready-to-paste agent prompt (P2)
 
 ```text
 Repo: https://github.com/hexuria/gpui-agent
-Start from main. P0 session reuse is already merged.
-
-## STOP — ask the user first
-Token policy is UNDECIDED (security H1). Ask which of:
-(A) docs only
-(B) CLI/MCP refuse to talk if GPUI_AGENT_TOKEN is unset
-(C) server mints ephemeral token at bind and prints it once
-(D) B+C with --allow-empty-token for smoke scripts
-Also ask: does recipe run (if present) follow the same rule?
+Start from the P1 recipes branch (stacked). P0+P1 must already exist.
 
 ## Goal
-Implement only the chosen policy. Update docs/SECURITY.md H1, README,
-smoke scripts, and tests. Do not add Unix sockets, TLS, or SO_PEERCRED
-unless the user asked (those are larger than P2).
+Policy D for security H1:
+- from_env mints a 32-byte ephemeral token when GPUI_AGENT_TOKEN is unset
+  and GPUI_AGENT_ALLOW_EMPTY_TOKEN is not set; print once after bind.
+- CLI/MCP/recipe run refuse to connect without a token unless
+  --allow-empty-token / GPUI_AGENT_ALLOW_EMPTY_TOKEN=1.
+- smoke.sh exports a shared GPUI_AGENT_TOKEN.
+- Tests: refuse / mint / allow-empty / env wins over allow-empty.
+- AgentServer::bind(..., None) remains valid for unit tests.
+- Update docs/SECURITY.md H1, README, INTEGRATING, NO_BRAINER_PLAN.
 
 ## Success
-- Chosen policy has tests (refuse / mint / allow-empty)
-- smoke.sh still documented and green under that policy
+- cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
+- ./scripts/smoke.sh green with GPUI_AGENT_TOKEN set by the script
 - Caps, loopback, no OS HID unchanged
-- No recipe/screenshot work unless already on main
+- No Unix socket / TLS / screenshot work
 
 ## Constraints
 No OS HID. Do not weaken line/conn/mailbox caps. Semantic default.
-Ask before product forks (required vs optional token in shipping apps).
 ```
 
 ---

@@ -5,7 +5,9 @@
 # (`todo.add`, `todo.toggle`, …). Other apps should register their own
 # names — or skip invoke and drive the UI with click / set-value / assert.
 #
-# Usage (with the headless host already running):
+# Usage (with the headless host already running). The CLI inherits
+# GPUI_AGENT_TOKEN from the environment (required unless the host was
+# started with GPUI_AGENT_ALLOW_EMPTY_TOKEN=1):
 #   examples/todo.sh add "Buy milk"
 #   examples/todo.sh toggle 1
 #   examples/todo.sh delete 1

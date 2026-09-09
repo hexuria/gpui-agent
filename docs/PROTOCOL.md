@@ -6,7 +6,10 @@ connection open and reuses it for later ops; `rpc_once` reconnects for
 benchmarks. This is **not** Chrome DevTools Protocol.
 
 Default bind: `127.0.0.1:17421` (`GPUI_AGENT_ADDR`). The server and the
-CLI refuse non-loopback addresses. Lines larger than 1 MiB are rejected
+CLI refuse non-loopback addresses. A token is **required** by default
+(`GPUI_AGENT_TOKEN`, or an ephemeral secret the host prints at bind).
+`--allow-empty-token` / `GPUI_AGENT_ALLOW_EMPTY_TOKEN=1` is a lab opt-out.
+Lines larger than 1 MiB are rejected
 and the connection is closed. Trust model and audit: [SECURITY.md](SECURITY.md).
 
 The protocol is **app-agnostic**. Any GPUI Kit app that implements
@@ -20,7 +23,7 @@ See [INTEGRATING.md](INTEGRATING.md).
 {
   "v": 1,
   "id": "1",
-  "token": "optional-shared-secret",
+  "token": "shared-secret",
   "op": "snapshot"
 }
 ```
@@ -158,8 +161,9 @@ Reuse `gpui-agent-cli` unchanged. Details: [INTEGRATING.md](INTEGRATING.md).
 `wait`, `hello`, `snapshot`, `click`, `type`, `set_value`, `key`,
 `assert`, `invoke`, `shutdown`
 
-Point Claude Code at the binary (`args: ["mcp"]`, optional
-`GPUI_AGENT_ADDR` / `GPUI_AGENT_TOKEN`). Document your app’s ids and
+Point Claude Code at the binary (`args: ["mcp"]`,
+`GPUI_AGENT_ADDR` / `GPUI_AGENT_TOKEN`). MCP refuses to start without a
+token unless `--allow-empty-token`. Document your app’s ids and
 `invoke` names in the project prompt — do not add per-app MCP tools to
 this repo.
 

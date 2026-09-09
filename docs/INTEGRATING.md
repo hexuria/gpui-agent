@@ -11,12 +11,13 @@ semantic tree and action handlers; the CLI/MCP never learn your domain.
 | Runtime | Start the server only when `GPUI_AGENT=1` (`true`/`yes`/`on`). |
 | Release | Also require `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | Loopback only. `gpui_agent::security::from_env` enforces this. |
-| Token | Optional `GPUI_AGENT_TOKEN` on both app and CLI. **Set it** unless you are on a single-user box and accept that any local process can drive the UI. |
+| Token | Required by default. Set `GPUI_AGENT_TOKEN` on both app and CLI, or copy the ephemeral token printed at bind. `GPUI_AGENT_ALLOW_EMPTY_TOKEN=1` is a lab opt-out. |
 | DoS caps | The server caps line size (1 MiB), concurrent connections (32), mailbox depth (128), and idle sockets (30s). See [SECURITY.md](SECURITY.md). |
 
 ```rust
 if let Ok(Some(config)) = gpui_agent::from_env() {
-    // bind config.addr, remember config.token
+    // bind config.addr, remember config.token, then:
+    config.eprint_token_banner();
 }
 ```
 
@@ -98,7 +99,7 @@ script without polluting `gpui-agent`.
     "gpui-agent": {
       "command": "gpui-agent",
       "args": ["mcp"],
-      "env": { "GPUI_AGENT_ADDR": "127.0.0.1:17421" }
+      "env": { "GPUI_AGENT_ADDR": "127.0.0.1:17421", "GPUI_AGENT_TOKEN": "dev-secret" }
     }
   }
 }
@@ -112,7 +113,8 @@ single TCP session across `tools/call`.
 ## 7. Checklist
 
 - [ ] `AgentHost` + stable ids on every actionable widget
-- [ ] Server starts only with `GPUI_AGENT=1`, loopback bind
+- [ ] Server starts only with `GPUI_AGENT=1`, loopback bind, token from env or minted ephemeral
+- [ ] Call `config.eprint_token_banner()` after bind (or set `GPUI_AGENT_TOKEN` before start)
 - [ ] Desktop mailbox drain on the UI thread
 - [ ] Page roots assertable after nav clicks
 - [ ] Optional `invoke` map documented for agents

@@ -53,10 +53,12 @@ gpui-agent assert --id page-settings --role window
 `apps/todo` is a demo that assigns ids such as `todo-input` and `todo-add`. Drive it with the **same generic commands**:
 
 ```bash
-# terminal 1
-GPUI_AGENT=1 cargo run -p todo-headless
+# terminal 1 — set a token *before* starting the host (scripts should)
+export GPUI_AGENT=1
+export GPUI_AGENT_TOKEN=dev-secret
+cargo run -p todo-headless
 
-# terminal 2
+# terminal 2 — CLI reads GPUI_AGENT_TOKEN from the env
 cargo run -p gpui-agent-cli -- wait
 cargo run -p gpui-agent-cli -- set-value todo-input "Buy milk"
 cargo run -p gpui-agent-cli -- click todo-add
@@ -67,6 +69,12 @@ cargo run -p gpui-agent-cli -- click todo-delete-1
 cargo run -p gpui-agent-cli -- assert --id todo-item-1 --absent
 cargo run -p gpui-agent-cli -- shutdown
 ```
+
+If you start the host **without** `GPUI_AGENT_TOKEN`, it mints an ephemeral
+secret and prints `GPUI_AGENT_TOKEN=…` once on stderr. Copy that into the
+CLI env, or pass `--token`. Labs that want the old open loopback socket:
+`GPUI_AGENT_ALLOW_EMPTY_TOKEN=1` on the host and `--allow-empty-token` on
+the CLI.
 
 The demo host also registers `todo.add` / `todo.toggle` / `todo.delete` / `todo.list` as **`invoke` names** (not CLI subcommands):
 
@@ -80,6 +88,8 @@ Thin wrappers for that demo live in [`examples/todo.sh`](examples/todo.sh). Do n
 Same loop, one process (experimental recipe; host must be a **fresh** empty list):
 
 ```bash
+export GPUI_AGENT=1
+export GPUI_AGENT_TOKEN=dev-secret
 cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set title="Buy milk"
 ```
 
@@ -126,7 +136,9 @@ chmod +x scripts/smoke.sh
 ### Desktop app (needs a real display)
 
 ```bash
-GPUI_AGENT=1 cargo run -p todo
+export GPUI_AGENT=1
+export GPUI_AGENT_TOKEN=dev-secret
+cargo run -p todo
 ```
 
 Then the same generic CLI commands. Without `GPUI_AGENT=1` the window is a normal app and no socket is opened.
@@ -134,7 +146,7 @@ Then the same generic CLI commands. Without `GPUI_AGENT=1` the window is a norma
 A cloud VM with Xvfb/`DISPLAY` may still fail if Vulkan/GPU is missing. That is a **display/GPU** limit, not a protocol limit. Use `todo-headless` and `cargo test` there.
 
 ```bash
-cargo test -p gpui-agent -p todo-core -p gpui-agent-cli
+cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 ```
 
 ## Agent loop (perceive → act → verify)
@@ -155,7 +167,9 @@ The CLI includes a tiny MCP stdio server with the **same generic tools** (no app
 `wait`, `hello`, `snapshot`, `click`, `type`, `set_value`, `key`, `assert`, `invoke`, `shutdown`
 
 ```bash
-GPUI_AGENT=1 cargo run -p todo-headless
+export GPUI_AGENT=1
+export GPUI_AGENT_TOKEN=dev-secret
+cargo run -p todo-headless
 cargo run -p gpui-agent-cli -- mcp
 ```
 
@@ -168,14 +182,17 @@ Claude Code (`~/.claude/settings.json` or a project `.mcp.json`):
       "command": "gpui-agent",
       "args": ["mcp"],
       "env": {
-        "GPUI_AGENT_ADDR": "127.0.0.1:17421"
+        "GPUI_AGENT_ADDR": "127.0.0.1:17421",
+        "GPUI_AGENT_TOKEN": "dev-secret"
       }
     }
   }
 }
 ```
 
-Start the target app with `GPUI_AGENT=1` first. Teach the agent your app’s ids and `invoke` names in a prompt or CLAUDE.md — do not add them as CLI subcommands.
+Start the target app with `GPUI_AGENT=1` and a matching
+`GPUI_AGENT_TOKEN` first. Teach the agent your app’s ids and `invoke`
+names in a prompt or CLAUDE.md — do not add them as CLI subcommands.
 
 ## Why not CDP?
 
@@ -213,10 +230,14 @@ Automation is **opt-in and off by default**. Full audit: [docs/SECURITY.md](docs
 | Runtime | `GPUI_AGENT=1` (`true`/`yes`/`on` also work) |
 | Release binaries | Also require `GPUI_AGENT_ALLOW_RELEASE=1` |
 | Bind address | Loopback only (`127.0.0.1:17421`). Non-loopback `GPUI_AGENT_ADDR` is refused. The CLI also refuses a non-loopback `--addr`. |
-| Optional token | `GPUI_AGENT_TOKEN` — every request must repeat it. **Set this on shared machines.** Without it, any local process can drive the UI. |
+| Token | Required by default. Set `GPUI_AGENT_TOKEN` on app and CLI, or copy the ephemeral token the host prints at bind. `--allow-empty-token` / `GPUI_AGENT_ALLOW_EMPTY_TOKEN=1` is a lab opt-out. |
 | DoS caps | 1 MiB NDJSON line, 32 concurrent connections, 128 mailbox depth, 30s idle timeout |
 
-Anyone who can connect to that loopback socket can drive the UI as the user. Treat this as a **developer/agent tool**, not a remote API. Do not enable it in shipping product builds. There is no sandbox, no origin check, and no encryption beyond “it never leaves the machine.”
+Anyone who can connect to that loopback socket **and** present the token
+can drive the UI as the user. Treat this as a **developer/agent tool**,
+not a remote API. Do not enable it in shipping product builds. There is
+no sandbox, no origin check, and no encryption beyond “it never leaves
+the machine.”
 
 ## Extensibility (desktop now, web/mobile later)
 

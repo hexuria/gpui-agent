@@ -14,6 +14,7 @@ cd "$ROOT"
 ADDR="${GPUI_AGENT_ADDR:-127.0.0.1:17421}"
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR="$ADDR"
+export GPUI_AGENT_TOKEN="${GPUI_AGENT_TOKEN:-gpui-agent-smoke}"
 
 echo "==> building CLI + GPUI todo"
 cargo build -p gpui-agent-cli -p todo

@@ -243,7 +243,7 @@ do the same things the CLI already can. They do not add privilege.
 | --- | --- |
 | Opt-in | Host still needs `GPUI_AGENT=1` (release: `GPUI_AGENT_ALLOW_RELEASE=1`) |
 | Bind | CLI still `ensure_loopback` before connect |
-| Token | Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. |
+| Token | Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. CLI `recipe run` also refuses to start without `--token` / `GPUI_AGENT_TOKEN` unless `--allow-empty-token`. |
 | Line / conn / idle / mailbox | Unchanged. Recipe cap 256 is extra, not a replacement. |
 | No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. |
 | No shell | Resolve/plan/run never call `Command`. `invoke` is still an in-process host callback. Unknown invoke names are rejected. |
@@ -305,8 +305,8 @@ cargo bench -p gpui-agent-recipe --bench recipe_plan
    adopt rwmcp predicates (`invoice(…).exists`) if a world model lands.
 2. **Path-dep `tmp-core`?** Only if we can take schema/resolve without
    shell resolvers. Default remains local schemas.
-3. **Required token?** H1 in SECURITY.md. Recipes make an open socket
-   more dangerous; an ephemeral printed token pairs well with this.
+3. **Token policy** landed in P2 (required / ephemeral / `--allow-empty-token`).
+   Product forks that want optional tokens forever should say so explicitly.
 4. **Wire `batch` op?** Would cut per-op authorize + serialize cost
    further, but is a protocol bump. Client-side session reuse is enough
    for this experiment.

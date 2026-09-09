@@ -341,7 +341,7 @@ pub fn spawn_mailbox(
 mod tests {
     use super::*;
     use crate::client::AgentClient;
-    use crate::protocol::{HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request};
+    use crate::protocol::{HelloInfo, Op, PlatformKind, Request, PROTOCOL_VERSION};
     use crate::tree::UiTree;
     use crate::{DeliveryMode, DispatchResult};
     use std::io::{BufRead, Cursor, Read, Write};
@@ -462,6 +462,35 @@ mod tests {
         // with the right token still works.
         let mut ok = AgentClient::connect(addr)
             .with_token("correct-token")
+            .with_timeout(Duration::from_secs(2));
+        assert!(ok.expect_ok(Op::Hello).is_ok());
+
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn minted_ephemeral_token_is_required_on_the_wire() {
+        let minted = crate::resolve_token(None, false)
+            .unwrap()
+            .token()
+            .unwrap()
+            .to_string();
+        let (addr, shutdown) = spawn_test_host(
+            Some(minted.clone()),
+            ServerLimits {
+                max_line_bytes: 4096,
+                max_connections: 4,
+                idle_timeout: Duration::from_secs(2),
+            },
+        );
+
+        let mut missing = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        let resp = missing.rpc(Op::Hello).expect("got a response");
+        assert!(!resp.ok);
+        assert_eq!(resp.error.as_deref(), Some("automation token required"));
+
+        let mut ok = AgentClient::connect(addr)
+            .with_token(minted)
             .with_timeout(Duration::from_secs(2));
         assert!(ok.expect_ok(Op::Hello).is_ok());
 

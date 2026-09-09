@@ -29,7 +29,8 @@ pub use protocol::{
     AssertSpec, DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response,
 };
 pub use security::{
-    AgentConfig, SecurityError, ensure_loopback, from_env, is_loopback_addr, tokens_match,
+    AgentConfig, ResolvedToken, SecurityError, TokenPolicy, ensure_loopback, from_env,
+    is_loopback_addr, resolve_token, tokens_match, truthy_env,
 };
 pub use server::{
     AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, MAX_CONNECTIONS, MAX_LINE_BYTES, ServerLimits,

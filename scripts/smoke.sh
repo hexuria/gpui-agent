@@ -12,6 +12,10 @@ cd "$ROOT"
 ADDR="${GPUI_AGENT_ADDR:-127.0.0.1:17421}"
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR="$ADDR"
+# Shared secret for host + CLI. Do not rely on parsing a minted stderr token.
+# Override with GPUI_AGENT_TOKEN=… ; labs can instead export
+# GPUI_AGENT_ALLOW_EMPTY_TOKEN=1 (and pass --allow-empty-token to the CLI).
+export GPUI_AGENT_TOKEN="${GPUI_AGENT_TOKEN:-gpui-agent-smoke}"
 
 echo "==> building CLI + headless host"
 cargo build -p gpui-agent-cli -p todo-headless

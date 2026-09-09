@@ -22,7 +22,7 @@ pub fn maybe_start() -> Option<AgentMailbox> {
             let mailbox = AgentMailbox::new();
             match spawn_mailbox(
                 config.addr,
-                config.token,
+                config.token.clone(),
                 mailbox.clone(),
                 Duration::from_secs(8),
             ) {
@@ -32,6 +32,7 @@ pub fn maybe_start() -> Option<AgentMailbox> {
                     eprintln!(
                         "delivery: semantic (default) or virtual (in-window GPUI events, no OS HID)"
                     );
+                    config.eprint_token_banner();
                     Some(mailbox)
                 }
                 Err(err) => {
