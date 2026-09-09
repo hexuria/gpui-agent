@@ -4,7 +4,9 @@ use std::hash::{Hash, Hasher};
 use gpui_agent::protocol::Op;
 use serde::Serialize;
 
-use crate::recipe::{Recipe, RecipeStep, apply_params, validate_recipe};
+use crate::recipe::{
+    apply_params, coerce_invoke_args, validate_bound_recipe, validate_recipe, Recipe, RecipeStep,
+};
 use crate::registry::Registry;
 use crate::schema::{Effect, SchemaKind};
 
@@ -45,7 +47,9 @@ pub fn compile_plan(
     registry: &Registry,
 ) -> Result<Plan, String> {
     validate_recipe(recipe, registry)?;
-    let bound = apply_params(recipe, set)?;
+    let mut bound = apply_params(recipe, set)?;
+    coerce_invoke_args(&mut bound, registry)?;
+    validate_bound_recipe(&bound, registry)?;
     let (ordered, waves) = schedule(&bound.steps)?;
     let mut planned = Vec::with_capacity(ordered.len());
     let mut effects = BTreeSet::new();
@@ -305,5 +309,46 @@ mod tests {
         .unwrap();
         let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap_err();
         assert!(err.contains("unknown invoke"), "{err}");
+    }
+
+    #[test]
+    fn compile_plan_rejects_param_rewrite_of_ids() {
+        let recipe = crate::recipe::Recipe::from_json(
+            r#"{
+            "name": "rewrite",
+            "params": [],
+            "steps": [
+                {"id": "$who", "op": "hello"},
+                {"id": "b", "op": "snapshot", "needs": ["$who"]}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let mut set = BTreeMap::new();
+        set.insert("who".into(), "b".into());
+        let err = compile_plan(&recipe, &set, &todo_registry()).unwrap_err();
+        assert!(
+            err.contains("$params") || err.contains("unknown --set") || err.contains("$who"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn compile_plan_coerces_toggle_id_from_set() {
+        let recipe = crate::recipe::Recipe::from_json(
+            r#"{
+            "name": "toggle",
+            "params": ["id"],
+            "steps": [{"id": "t", "op": "invoke", "name": "todo.toggle", "args": {"id": "$id"}}]
+        }"#,
+        )
+        .unwrap();
+        let mut set = BTreeMap::new();
+        set.insert("id".into(), "1".into());
+        let plan = compile_plan(&recipe, &set, &todo_registry()).unwrap();
+        match &plan.steps[0].op {
+            Op::Invoke { args, .. } => assert_eq!(args["id"], serde_json::json!(1)),
+            other => panic!("{other:?}"),
+        }
     }
 }

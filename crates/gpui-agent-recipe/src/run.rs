@@ -50,6 +50,8 @@ pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Rece
                     error: error.clone(),
                     elapsed_ms: step_started.elapsed().as_millis() as u64,
                     result: resp.result,
+                    hello: resp.hello,
+                    tree: resp.tree,
                 });
                 if !ok {
                     receipt.ok = false;
@@ -70,6 +72,8 @@ pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Rece
                     error: Some(error.clone()),
                     elapsed_ms: step_started.elapsed().as_millis() as u64,
                     result: None,
+                    hello: None,
+                    tree: None,
                 });
                 receipt.elapsed_ms = started.elapsed().as_millis() as u64;
                 return Err(RunError::Step {

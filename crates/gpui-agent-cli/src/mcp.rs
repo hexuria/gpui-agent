@@ -5,12 +5,12 @@ use std::time::Duration;
 use anyhow::Result;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
-use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
+use gpui_agent::{line_is_blank, read_limited_line_into, MAX_LINE_BYTES};
 use gpui_agent_recipe::{
-    RunError, compile_plan, parse_recipe_source, resolve_intent, run_plan, todo_registry,
-    validate_recipe,
+    compile_plan, parse_recipe_source, resolve_intent, run_plan, todo_registry, validate_recipe,
+    Receipt, RunError,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Minimal MCP stdio server: `initialize`, `tools/list`, `tools/call`.
 ///
@@ -357,12 +357,20 @@ fn recipe_run_tool(client: &mut AgentClient, args: &Value) -> Result<Value, Stri
     let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
     let plan = compile_plan(&recipe, &recipe_set(args), &todo_registry())?;
     let yes = args.get("yes").and_then(Value::as_bool).unwrap_or(false);
-    match run_plan(client, &plan, yes) {
+    encode_run_outcome(run_plan(client, &plan, yes))
+}
+
+/// MCP `tools/call` only sets `isError` when this returns `Err`. A failed
+/// recipe step must not look like a successful tool call.
+fn encode_run_outcome(result: Result<Receipt, RunError>) -> Result<Value, String> {
+    match result {
         Ok(receipt) => serde_json::to_value(receipt).map_err(|err| err.to_string()),
         Err(RunError::Step { receipt, error, .. }) => {
-            let mut value = serde_json::to_value(receipt).map_err(|err| err.to_string())?;
-            value["error"] = json!(error);
-            Ok(value)
+            let mut value = serde_json::to_value(*receipt).map_err(|err| err.to_string())?;
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("error".into(), json!(error));
+            }
+            Err(serde_json::to_string(&value).unwrap_or(error))
         }
         Err(err) => Err(err.to_string()),
     }
@@ -475,6 +483,57 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("yes"), "{err}");
+    }
+
+    #[test]
+    fn recipe_run_step_failure_is_an_error() {
+        let err = encode_run_outcome(Err(RunError::Step {
+            id: "seen".into(),
+            error: "assert failed".into(),
+            receipt: Box::new(Receipt {
+                ok: false,
+                recipe: "partial".into(),
+                fingerprint: "x".into(),
+                session_reused: false,
+                steps: vec![],
+                elapsed_ms: 0,
+            }),
+        }))
+        .unwrap_err();
+        assert!(err.contains("assert failed"), "{err}");
+        assert!(
+            err.contains("\"ok\":false") || err.contains("\"ok\": false"),
+            "MCP agents key off isError; the payload must still say the run failed: {err}"
+        );
+    }
+
+    #[test]
+    fn recipe_run_tool_failed_assert_is_err() {
+        use std::sync::{Arc, Mutex};
+
+        use gpui_agent::protocol::PlatformKind;
+        use gpui_agent::server::spawn_host;
+        use todo_core::TodoStore;
+
+        let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+        let (addr, shutdown) =
+            spawn_host("127.0.0.1:0".parse().unwrap(), None, store).expect("bind");
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
+        let err = recipe_run_tool(
+            &mut client,
+            &json!({
+                "recipe": "wait\ninvoke todo.add title=\"Buy milk\"\nassert todo-item-1 name=NOPE\ninvoke todo.toggle id=1"
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("NOPE")
+                || err.contains("assert")
+                || err.contains("\"ok\":false")
+                || err.contains("\"ok\": false"),
+            "{err}"
+        );
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[test]

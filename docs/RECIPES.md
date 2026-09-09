@@ -146,11 +146,21 @@ pattern). That pays process + TCP handshake every time.
 ## `$params`
 
 - Declare names in JSON `params` (wants files collect `$name` / `${name}`
-  automatically).
-- An undeclared `$placeholder` fails **validate**.
+  automatically from **ops**, not from `id` / `needs`).
+- An undeclared `$placeholder` in an op fails **validate**.
 - A declared param without `--set name=…` fails **plan/run**.
-- Substitution runs after validate, before compile (`$title` and
-  `${title}`).
+- Unknown `--set` keys (not in `recipe.params`) fail **plan/run**.
+- Substitution binds **op fields only**. Step `id` and `needs` are graph
+  structure and are **not** rewritten (a `$` in either fails validate).
+- After bind, invoke args are coerced from the registry (`number` /
+  `boolean` / `string`) so `--set id=1` is a JSON number for
+  `todo.toggle`.
+- A title of `$other` after bind is literal, not recursive.
+
+`skip_if`, `foreach`, `on_fail continue`, and `last_json` are **not**
+in this slice. The first failing step aborts. The sample todo recipe
+hardcodes `todo.toggle` `id: 1` because there is no result threading
+yet; run it against a **fresh** empty list.
 
 ## DAG / `needs`
 
@@ -173,17 +183,21 @@ pattern). That pays process + TCP handshake every time.
 | `recipe` | Recipe name |
 | `fingerprint` | Hash of the compiled plan (`DefaultHasher` — fine in one process, not a cross-version lock) |
 | `session_reused` | `AgentClient` still held a live TCP session after the last step |
-| `steps[]` | Per-step `id` / `ok` / `error` / `elapsed_ms` / `result` |
+| `steps[]` | Per-step `id` / `ok` / `error` / `elapsed_ms` / `result` / `hello` / `tree` |
 | `elapsed_ms` | Wall time for the run |
 
 A mid-recipe failure (assert miss, host down, bad token) stops the run
 and returns a **partial** receipt: earlier steps stay, later steps do
-not run. Plans with `Effect::Exit` never start unless `--yes` is set.
+not run. The CLI exits non-zero. MCP `recipe_run` sets `isError: true`
+(the receipt JSON is in the error text). Plans with `Effect::Exit`
+never start unless `--yes` is set.
 
 ## Schema allow-list + resolve
 
 The demo registry is baked into `gpui-agent-recipe` (`todo_registry()`):
 protocol ops, `todo.add|toggle|delete|list`, and a few stable ids.
+**P1 invoke allow-list is this demo todo schema, not the live host.**
+`invoke prefs.set` fails validate even if another app registered it.
 Other apps should ship their own schemas later; there is no registry
 cloud and no `tmp-core` path-dep.
 
@@ -261,11 +275,13 @@ least:
 - Resolve: shell-like intents, unknown verbs, ambiguous titles,
   missing required args
 - Run: assert fail mid-recipe (partial receipt), host down, wrong
-  token, shutdown without `--yes`
-- Session: second recipe on one `AgentClient` stays connected;
-  `rpc_once` reconnects
+  token, shutdown without `--yes`, advertised `examples/recipes/todo-crud`
+  JSON + `.wants`, hello/snapshot receipts keep `hello`/`tree`, `$id`
+  coerce to number
+- Session: second recipe on one `AgentClient` stays connected
 - Security: unknown invoke, non-allowlisted schema name, MCP
-  validate/resolve/run-without-yes
+  validate/resolve/run-without-yes, MCP `recipe_run` step failure is
+  `isError`, unknown `--set`, `$` in step id/needs
 
 ```bash
 cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe

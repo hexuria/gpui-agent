@@ -16,7 +16,8 @@ pub mod schema;
 pub use plan::{OrderCheck, Plan, PlannedStep, compile_plan, order_check};
 pub use receipt::{Receipt, StepReceipt};
 pub use recipe::{
-    MAX_RECIPE_STEPS, RECIPE_FORMAT_VERSION, Recipe, RecipeStep, apply_params, parse_recipe,
+    MAX_RECIPE_STEPS, RECIPE_FORMAT_VERSION, Recipe, RecipeStep, apply_params, coerce_invoke_args,
+    parse_recipe,
     parse_recipe_source, parse_wants, validate_recipe,
 };
 pub use registry::{Registry, todo_registry};

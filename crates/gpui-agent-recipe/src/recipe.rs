@@ -120,18 +120,109 @@ pub fn apply_params(recipe: &Recipe, set: &BTreeMap<String, String>) -> Result<R
             return Err(format!("missing --set {name}=…"));
         }
     }
+    for key in set.keys() {
+        if !recipe.params.iter().any(|p| p == key) {
+            return Err(format!(
+                "unknown --set {key}=… (not declared in recipe.params)"
+            ));
+        }
+    }
     let mut out = recipe.clone();
     for step in &mut out.steps {
+        // Ids and needs are graph structure, not bindable values. Substituting
+        // them lets `--set` duplicate ids or rewrite the DAG after validate.
         step.op = substitute_op(&step.op, set)?;
-        for need in &mut step.needs {
-            *need = substitute_string(need, set)?;
-        }
-        step.id = substitute_string(&step.id, set)?;
     }
     Ok(out)
 }
 
+/// After `$params` bind, coerce invoke args to the types in the registry.
+///
+/// `--set id=1` and wants `id=$id` stay strings until this step; the host
+/// `todo.toggle` / `todo.delete` require a JSON number.
+pub fn coerce_invoke_args(recipe: &mut Recipe, registry: &Registry) -> Result<(), String> {
+    for step in &mut recipe.steps {
+        let Op::Invoke { name, args } = &mut step.op else {
+            continue;
+        };
+        let Some(schema) = registry.get(name) else {
+            continue;
+        };
+        if !matches!(schema.kind, SchemaKind::Invoke) {
+            continue;
+        }
+        let Value::Object(map) = args else {
+            return Err(format!("invoke `{name}` args must be a JSON object"));
+        };
+        for req in &schema.required {
+            if !map.contains_key(req) {
+                return Err(format!("invoke `{name}` missing required arg `{req}`"));
+            }
+        }
+        for (key, value) in map.iter_mut() {
+            if let Some(arg_schema) = schema.args.get(key) {
+                *value = coerce_arg(name, key, value, &arg_schema.ty)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn coerce_arg(invoke: &str, key: &str, value: &Value, ty: &str) -> Result<Value, String> {
+    match ty {
+        "string" => match value {
+            Value::String(_) => Ok(value.clone()),
+            other => Err(format!(
+                "invoke `{invoke}` arg `{key}` must be a string, got {other}"
+            )),
+        },
+        "number" => match value {
+            Value::Number(_) => Ok(value.clone()),
+            Value::String(s) => parse_number_arg(invoke, key, s),
+            other => Err(format!(
+                "invoke `{invoke}` arg `{key}` must be a number, got {other}"
+            )),
+        },
+        "boolean" | "bool" => match value {
+            Value::Bool(_) => Ok(value.clone()),
+            Value::String(s) if s == "true" => Ok(Value::Bool(true)),
+            Value::String(s) if s == "false" => Ok(Value::Bool(false)),
+            other => Err(format!(
+                "invoke `{invoke}` arg `{key}` must be a boolean, got {other}"
+            )),
+        },
+        _ => Ok(value.clone()),
+    }
+}
+
+fn parse_number_arg(invoke: &str, key: &str, raw: &str) -> Result<Value, String> {
+    if let Ok(n) = raw.parse::<u64>() {
+        return Ok(Value::Number(n.into()));
+    }
+    if let Ok(n) = raw.parse::<i64>() {
+        return Ok(Value::Number(n.into()));
+    }
+    Err(format!(
+        "invoke `{invoke}` arg `{key}` must be a number, got {raw}"
+    ))
+}
+
 pub fn validate_recipe(recipe: &Recipe, registry: &Registry) -> Result<(), String> {
+    validate_recipe_inner(recipe, registry, true)
+}
+
+/// After `$params` bind, skip placeholder lint so a title like `Price $5`
+/// is not treated as an undeclared param. Ids, needs, and invoke names
+/// still fail closed.
+pub(crate) fn validate_bound_recipe(recipe: &Recipe, registry: &Registry) -> Result<(), String> {
+    validate_recipe_inner(recipe, registry, false)
+}
+
+fn validate_recipe_inner(
+    recipe: &Recipe,
+    registry: &Registry,
+    check_placeholders: bool,
+) -> Result<(), String> {
     if recipe.v != RECIPE_FORMAT_VERSION {
         return Err(format!(
             "unsupported recipe version {} (want {RECIPE_FORMAT_VERSION})",
@@ -156,12 +247,24 @@ pub fn validate_recipe(recipe: &Recipe, registry: &Registry) -> Result<(), Strin
         if step.id.trim().is_empty() {
             return Err("step id cannot be empty".into());
         }
+        if step.id.contains('$') {
+            return Err(format!(
+                "step id `{}` cannot contain $params (ids and needs are not substituted)",
+                step.id
+            ));
+        }
         if !ids.insert(step.id.clone()) {
             return Err(format!("duplicate step id `{}`", step.id));
         }
     }
     for step in &recipe.steps {
         for need in &step.needs {
+            if need.contains('$') {
+                return Err(format!(
+                    "step `{}` needs `{need}` cannot contain $params",
+                    step.id
+                ));
+            }
             if !ids.contains(need) {
                 return Err(format!("step `{}` needs unknown `{need}`", step.id));
             }
@@ -169,7 +272,9 @@ pub fn validate_recipe(recipe: &Recipe, registry: &Registry) -> Result<(), Strin
                 return Err(format!("step `{}` cannot need itself", step.id));
             }
         }
-        validate_placeholders_declared(&step.op, &recipe.params)?;
+        if check_placeholders {
+            validate_placeholders_declared(&step.op, &recipe.params)?;
+        }
         if let Op::Invoke { name, .. } = &step.op {
             match registry.get(name) {
                 Some(schema) if matches!(schema.kind, SchemaKind::Invoke) => {}
@@ -675,6 +780,85 @@ assert todo-item-1 name=$title checked=false
         validate_recipe(&recipe, &todo_registry()).unwrap();
         let err = apply_params(&recipe, &BTreeMap::new()).unwrap_err();
         assert!(err.contains("missing --set title"), "{err}");
+    }
+
+    #[test]
+    fn unknown_set_keys_are_rejected() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"p","params":["title"],"steps":[{"id":"a","op":"hello"}]}"#,
+        )
+        .unwrap();
+        let mut set = BTreeMap::new();
+        set.insert("title".into(), "x".into());
+        set.insert("who".into(), "b".into());
+        let err = apply_params(&recipe, &set).unwrap_err();
+        assert!(err.contains("unknown --set who"), "{err}");
+    }
+
+    #[test]
+    fn params_do_not_rewrite_ids_or_needs() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "rewrite",
+            "params": [],
+            "steps": [
+                {"id": "$who", "op": "hello"},
+                {"id": "b", "op": "snapshot", "needs": ["$who"]}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(
+            err.contains("$params") || err.contains("$who"),
+            "{err}"
+        );
+        let mut set = BTreeMap::new();
+        set.insert("who".into(), "b".into());
+        let err = apply_params(&recipe, &set).unwrap_err();
+        assert!(err.contains("unknown --set who"), "{err}");
+    }
+
+    #[test]
+    fn invoke_number_params_are_coerced() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "toggle",
+            "params": ["id"],
+            "steps": [{"id": "t", "op": "invoke", "name": "todo.toggle", "args": {"id": "$id"}}]
+        }"#,
+        )
+        .unwrap();
+        validate_recipe(&recipe, &todo_registry()).unwrap();
+        let mut set = BTreeMap::new();
+        set.insert("id".into(), "1".into());
+        let mut bound = apply_params(&recipe, &set).unwrap();
+        match &bound.steps[0].op {
+            Op::Invoke { args, .. } => assert_eq!(args["id"], "1"),
+            other => panic!("{other:?}"),
+        }
+        coerce_invoke_args(&mut bound, &todo_registry()).unwrap();
+        match &bound.steps[0].op {
+            Op::Invoke { args, .. } => {
+                assert_eq!(args["id"], serde_json::json!(1));
+                assert!(args["id"].is_number());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn invoke_literal_number_id_stays_a_number() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"t","steps":[{"id":"t","op":"invoke","name":"todo.toggle","args":{"id":1}}]}"#,
+        )
+        .unwrap();
+        let mut bound = recipe.clone();
+        coerce_invoke_args(&mut bound, &todo_registry()).unwrap();
+        match &bound.steps[0].op {
+            Op::Invoke { args, .. } => assert_eq!(args["id"], serde_json::json!(1)),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

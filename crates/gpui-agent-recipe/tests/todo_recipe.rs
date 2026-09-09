@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_agent::client::AgentClient;
-use gpui_agent::protocol::PlatformKind;
+use gpui_agent::protocol::{Op, PlatformKind};
 use gpui_agent::server::spawn_host;
 use gpui_agent_recipe::{
-    RunError, compile_plan, parse_wants, run_plan, todo_registry, validate_recipe,
+    compile_plan, parse_recipe, parse_wants, run_plan, todo_registry, validate_recipe, RunError,
 };
 use todo_core::TodoStore;
 
@@ -217,5 +218,83 @@ fn second_recipe_reuses_same_client_session() {
         "second recipe on the same AgentClient must reuse the connection"
     );
 
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn sample(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/recipes")
+        .join(name)
+}
+
+#[test]
+fn advertised_sample_files_run_on_headless() {
+    for name in ["todo-crud.json", "todo-crud.wants"] {
+        let recipe = parse_recipe(&sample(name)).expect(name);
+        validate_recipe(&recipe, &todo_registry()).expect(name);
+        let mut set = BTreeMap::new();
+        set.insert("title".into(), "Buy milk".into());
+        let plan = compile_plan(&recipe, &set, &todo_registry()).expect(name);
+        assert_eq!(plan.steps.len(), 5, "{name}");
+        assert!(!plan.requires_yes, "{name}");
+
+        let (mut client, shutdown) = spawn_todo();
+        let receipt = run_plan(&mut client, &plan, false).expect(name);
+        assert!(receipt.ok, "{name} {receipt:?}");
+        assert_eq!(receipt.steps.len(), 5, "{name}");
+        assert!(receipt.session_reused, "{name}");
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn hello_and_snapshot_receipts_keep_payloads() {
+    let recipe = parse_wants("hello\nsnapshot", "perceive").unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let (mut client, shutdown) = spawn_todo();
+    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(receipt.steps.len(), 2);
+    let hello = receipt.steps[0]
+        .hello
+        .as_ref()
+        .expect("hello payload on first step");
+    assert_eq!(hello.protocol, 1);
+    assert_eq!(hello.app, "todo");
+    let tree = receipt.steps[1]
+        .tree
+        .as_ref()
+        .expect("snapshot tree on second step");
+    assert_eq!(tree.app, "todo");
+    assert!(
+        !tree.nodes.is_empty(),
+        "snapshot must not be an empty perceive: {tree:?}"
+    );
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn toggle_id_param_binds_as_a_number() {
+    let json = r#"{
+        "name": "toggle-param",
+        "params": ["title", "id"],
+        "steps": [
+            {"id": "wait", "op": "wait"},
+            {"id": "add", "op": "invoke", "name": "todo.add", "args": {"title": "$title"}, "needs": ["wait"]},
+            {"id": "toggle", "op": "invoke", "name": "todo.toggle", "args": {"id": "$id"}, "needs": ["add"]}
+        ]
+    }"#;
+    let recipe = gpui_agent_recipe::Recipe::from_json(json).unwrap();
+    let mut set = BTreeMap::new();
+    set.insert("title".into(), "Buy milk".into());
+    set.insert("id".into(), "1".into());
+    let plan = compile_plan(&recipe, &set, &todo_registry()).unwrap();
+    match &plan.steps[2].op {
+        Op::Invoke { args, .. } => assert!(args["id"].is_number(), "{args}"),
+        other => panic!("{other:?}"),
+    }
+    let (mut client, shutdown) = spawn_todo();
+    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    assert!(receipt.ok, "{receipt:?}");
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }

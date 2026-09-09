@@ -19,4 +19,8 @@ pub struct StepReceipt {
     pub elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hello: Option<gpui_agent::HelloInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree: Option<gpui_agent::UiTree>,
 }
