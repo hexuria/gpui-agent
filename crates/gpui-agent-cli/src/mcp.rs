@@ -56,15 +56,7 @@ pub fn run(addr: SocketAddr, token: String) -> Result<()> {
                 continue;
             }
             "tools/list" => json!({ "tools": tools() }),
-            "tools/call" => match call_tool(&mut client, &params) {
-                Ok(value) => json!({
-                    "content": [{ "type": "text", "text": serde_json::to_string_pretty(&value)? }]
-                }),
-                Err(err) => json!({
-                    "isError": true,
-                    "content": [{ "type": "text", "text": err }]
-                }),
-            },
+            "tools/call" => tools_call_result(&mut client, &params),
             "ping" => json!({}),
             other => {
                 write_msg(
@@ -383,11 +375,28 @@ fn recipe_run_tool(client: &mut AgentClient, args: &Value) -> Result<Value, Stri
     match run_plan_with_screenshots(client, &plan, yes, capture.as_ref()) {
         Ok(receipt) => serde_json::to_value(receipt).map_err(|err| err.to_string()),
         Err(RunError::Step { receipt, error, .. }) => {
-            let mut value = serde_json::to_value(receipt).map_err(|err| err.to_string())?;
+            let mut value = serde_json::to_value(*receipt).map_err(|err| err.to_string())?;
             value["error"] = json!(error);
-            Ok(value)
+            Err(serde_json::to_string(&value).unwrap_or(error))
         }
         Err(err) => Err(err.to_string()),
+    }
+}
+
+/// MCP `tools/call` result. Failed recipe steps must be `isError` so a
+/// host does not treat `"ok": false` inside a successful tool payload as OK.
+fn tools_call_result(client: &mut AgentClient, params: &Value) -> Value {
+    match call_tool(client, params) {
+        Ok(value) => json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string_pretty(&value).unwrap_or_else(|err| err.to_string())
+            }]
+        }),
+        Err(err) => json!({
+            "isError": true,
+            "content": [{ "type": "text", "text": err }]
+        }),
     }
 }
 
@@ -531,5 +540,82 @@ mod tests {
         let err =
             call_tool(&mut client, &json!({ "name": "todo.add", "arguments": {} })).unwrap_err();
         assert!(err.contains("unknown tool"), "{err}");
+    }
+
+    #[test]
+    fn recipe_run_failed_assert_is_error() {
+        use std::sync::{Arc, Mutex};
+
+        use gpui_agent::protocol::PlatformKind;
+        use gpui_agent::server::spawn_host;
+        use todo_core::TodoStore;
+
+        let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+        let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).unwrap();
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
+        let result = tools_call_result(
+            &mut client,
+            &json!({
+                "name": "recipe_run",
+                "arguments": {
+                    "recipe": {
+                        "name": "fail-assert",
+                        "steps": [
+                            {"id": "wait", "op": "wait"},
+                            {"id": "seen", "op": "assert", "target": "no-such-node"}
+                        ]
+                    }
+                }
+            }),
+        );
+        assert_eq!(
+            result.get("isError"),
+            Some(&json!(true)),
+            "failed assert must not look like a successful tools/call: {result}"
+        );
+        let text = result["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("\"ok\":false") || text.contains("\"ok\": false"),
+            "error payload should still carry the receipt: {text}"
+        );
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn recipe_run_success_is_not_error() {
+        use std::sync::{Arc, Mutex};
+
+        use gpui_agent::protocol::PlatformKind;
+        use gpui_agent::server::spawn_host;
+        use todo_core::TodoStore;
+
+        let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+        let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).unwrap();
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
+        let result = tools_call_result(
+            &mut client,
+            &json!({
+                "name": "recipe_run",
+                "arguments": {
+                    "recipe": {
+                        "name": "ok-hello",
+                        "steps": [
+                            {"id": "wait", "op": "wait"},
+                            {"id": "hello", "op": "hello"}
+                        ]
+                    }
+                }
+            }),
+        );
+        assert!(
+            result.get("isError").is_none(),
+            "successful recipe_run must not set isError: {result}"
+        );
+        let text = result["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("\"ok\": true") || text.contains("\"ok\":true"),
+            "success payload should carry the receipt: {text}"
+        );
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

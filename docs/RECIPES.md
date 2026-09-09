@@ -173,6 +173,10 @@ pattern). That pays process + TCP handshake every time.
 - A declared param without `--set name=…` fails **plan/run**.
 - Substitution runs after validate, before compile (`$title` and
   `${title}`). Direct in-place subst (no serde round-trip).
+- `$params` substitute **op payloads only** (targets, text, invoke args,
+  assert names). Step `id` and `needs` are graph identity and are not
+  rewritten — even if a param is named `id`. A `$placeholder` in `id`
+  or `needs` fails **validate**.
 
 ## DAG / `needs`
 
@@ -280,7 +284,7 @@ least:
 
 - Parse: empty file / comments-only, empty `steps`, bad JSON, unknown
   op, missing `$params`, cyclic / unknown / self `needs`, duplicate
-  ids, version ≠ 1, 257 steps
+  ids, `$params` in step `id`/`needs`, version ≠ 1, 257 steps
 - `.wants` tokenizer: quotes, comments, blanks, invalid lines
 - Resolve: shell-like intents, unknown verbs, ambiguous titles,
   missing required args
@@ -292,7 +296,8 @@ least:
 - Session: second recipe on one `AgentClient` stays connected;
   `rpc_once` reconnects
 - Security: unknown invoke, non-allowlisted schema name, MCP
-  validate/resolve/run-without-yes
+  validate/resolve/run-without-yes; MCP `recipe_run` failed assert is
+  `tools/call` `isError` (receipt still in the error text)
 
 ```bash
 cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
