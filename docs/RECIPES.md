@@ -36,9 +36,8 @@ Left out on purpose (non-goals):
 - Full intent-graph / OpenAPI world-model compiler
 - LLM planner / `--goal` / `--answer-with-model`
 - Event-bus scheduler, idempotency keys, resume-from-ledger
-- Parallel multi-connection execution (waves are *documented*, then
-  run sequentially on one socket — the measurable win is session reuse
-  vs N CLI processes, not a thread pool)
+- Parallel multi-connection execution (one socket; all-Read waves may
+  pipeline lines, writes stay sequential — not a thread pool)
 - Surfaces, effectors, CDP driver
 
 ### From [tmp](https://github.com/codeitlikemiley/tmp) (Tool Mapping Protocol)
@@ -124,7 +123,7 @@ token to start; `recipe_run` then sends it on every step.
 | --- | --- | --- | --- |
 | `recipe validate <path>` | No | No | Parse + lint (version, ids, `needs`, declared `$params`, invoke allow-list) |
 | `recipe plan <path> [--set k=v] [--order-check]` | No | No | Bind params, schedule waves, print effects / fingerprint / `requires_yes` |
-| `recipe run <path> [--set k=v] [--yes] [--receipt-out FILE] [--screenshot-dir DIR]` | Yes | **Yes** (`GPUI_AGENT_TOKEN` or `--token`, same as host) | Compile, then execute each `Op` **sequentially** on one reused TCP session |
+| `recipe run <path> [--set k=v] [--yes] [--receipt-out FILE] [--screenshot-dir DIR]` | Yes | **Yes** (`GPUI_AGENT_TOKEN` or `--token`, same as host) | Compile, then run ops on one reused TCP session (all-Read waves may pipeline) |
 | `recipe resolve '…'` | No | No | Map prose through the local schema registry (fail closed) |
 
 MCP tools with the same jobs: `recipe_validate`, `recipe_plan`,
@@ -186,9 +185,14 @@ pattern). That pays process + TCP handshake every time.
   a cycle is an error). Wave order is sorted by step id (deterministic).
 - Unknown `needs`, a step that needs itself, duplicate ids, empty ids /
   name, empty `steps`, `v` ≠ 1, or more than **256** steps fail validate.
-- Waves are **documentation**. P1 execution is sequential on one socket
-  and **fail-fast**: a failed step does not run later siblings or later
-  waves. `rpc_pipeline` for independent DAG waves is a later phase.
+- All-Read waves (len > 1, every step is only `Effect::Read`) use
+  `rpc_pipeline`: write N request lines, then read N replies. A failed
+  observe still records siblings that already ran; the **next wave**
+  does not start. Extra reads are wasted work, not app mutations.
+- Write, Exit, mixed waves, and `--screenshot-dir` stay **sequential
+  fail-fast** on one socket: a failed step does not run later siblings
+  or later waves. Empty / unknown effects are treated as Write.
+- No wire `batch` op. Each line is still a normal tokened request.
 
 ## Receipts
 
@@ -327,8 +331,8 @@ adds:
 - Index-only `compile_plan` (no `RecipeStep` clones in Kahn; skip
   `apply_params` when `params` is empty)
 
-`rpc_pipeline` (write-N-then-read for independent DAG waves) is **not**
-in P1. Sequential ops on the kept `AgentClient` session are enough.
+All-Read DAG waves use `rpc_pipeline` (write N lines, then read). Write /
+Exit / mixed waves and `--screenshot-dir` stay sequential fail-fast.
 
 Criterion benches:
 
@@ -345,10 +349,10 @@ cargo bench -p gpui-agent-recipe --bench recipe_plan -- --quick
    shell resolvers. Default remains local schemas.
 3. **Ephemeral Jupyter mint?** Not in P2. Host token stays optional.
    Recipe/MCP already require a client token. Ask before minting at bind.
-4. **Wire `batch` / `rpc_pipeline`?** Measured on PR #5 (~4× vs
-   sequential session RPCs) but left out of P1 to keep review scope
-   small. Include the retry-after-write + sibling-receipt fail-fast
-   fixes from `4d464c7` if that lands later.
+4. **Wire `batch` / pipeline writes?** Read-only waves already pipeline.
+   A wire `batch` op is still rejected (ordinary lines are enough).
+   Independent **Write** siblings stay sequential so a failed click does
+   not run the next one.
 5. **Parallel waves on multiple connections?** Rejected: mutex / UI
    thread / `MAX_CONNECTIONS`.
 6. **App-specific registries on disk?** Today the demo todo schema is

@@ -102,7 +102,7 @@ The parent process is trusted.
 
 `gpui-agent recipe run` and MCP `recipe_run` compile a local **JSON**
 recipe (`.wants` also accepted) into ordinary protocol ops and send
-them **sequentially** on one reused TCP session. Design:
+them on one reused TCP session (all-Read waves may pipeline). Design:
 [RECIPES.md](RECIPES.md). Laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md).
 
 They do **not** add privilege and do **not** bypass PR #3 caps:
@@ -118,9 +118,14 @@ They do **not** add privilege and do **not** bypass PR #3 caps:
 | Delivery | Default `semantic`. `virtual` is still in-process GPUI (never OS HID). |
 
 Session reuse is a client convenience (`AgentClient::rpc` keeps the
-socket; `rpc_once` reconnects for benches). None of these skip auth.
-A mid-recipe failure returns a partial receipt and stops; later
-siblings in the same DAG wave do **not** run (P1 is sequential).
+socket; `rpc_once` reconnects for benches). `rpc_pipeline` writes
+several ordinary lines then reads; each line still runs
+`authorize_request`. None of these skip auth.
+A mid-recipe failure returns a partial receipt and stops the **next
+wave**. Write / Exit / mixed waves stay sequential: later siblings do
+**not** run. All-Read waves may already have run their siblings (extra
+observes only); those appear on the receipt. `--screenshot-dir` stays
+sequential so a PNG RPC can land after each step.
 
 Treat `recipe run` / `recipe_run` as equivalent to holding the token
 (same class as M4). Tests for the fail-closed cases live in

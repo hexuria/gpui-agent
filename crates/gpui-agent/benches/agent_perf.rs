@@ -157,6 +157,16 @@ fn session_vs_reconnect(c: &mut Criterion) {
             black_box(client.has_session());
         });
     });
+    c.bench_function("rpc_pipeline_32_hellos", |b| {
+        let hello = Op::Hello;
+        let ops: Vec<&Op> = (0..32).map(|_| &hello).collect();
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        b.iter(|| {
+            let resps = client.rpc_pipeline(&ops).unwrap();
+            black_box(resps.len());
+            black_box(client.has_session());
+        });
+    });
     c.bench_function("rpc_once_reconnect_32_hellos", |b| {
         let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
         b.iter(|| {

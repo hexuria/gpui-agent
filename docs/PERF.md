@@ -1,8 +1,9 @@
 # Performance notes (P0)
 
 P0 of the [no-brainer plan](NO_BRAINER_PLAN.md): session reuse, NDJSON
-buffer reuse, tree flatten, mailbox `take`. P1 recipes reuse that
-session sequentially; there is still **no** `rpc_pipeline`.
+buffer reuse, tree flatten, mailbox `take`. Recipes reuse that session;
+all-Read DAG waves may `rpc_pipeline` (write N lines, then read). Write /
+Exit / mixed waves stay sequential.
 
 Numbers: cloud VM, `x86_64`, `rustc 1.98.1`, Criterion `--quick`,
 `cargo bench -p gpui-agent --bench agent_perf` (release). Median times
@@ -22,6 +23,7 @@ cargo bench -p gpui-agent --bench agent_perf
 | --- | --- | --- |
 | `rpc_once_reconnect_32_hellos` | **324 ms** | Historical per-op TCP connect |
 | `rpc_session_reuse_32_hellos` | **536 µs** | **~605×** vs reconnect |
+| `rpc_pipeline_32_hellos` | **145 µs** | **~3.7×** vs sequential session hellos |
 | `handle_request_inprocess_32_hellos` | **1.88 µs** | CPU floor, no socket |
 | `tree_flatten_naive_intermediate_vecs` | **5.29 µs** | Old per-child `Vec` (100-row tree) |
 | `tree_flatten_capacity` | **1.06 µs** | **~5.0×** vs naive |
@@ -50,7 +52,7 @@ win is session reuse, not serialize.
 
 | Technique | Where it was tried | Why it is not here |
 | --- | --- | --- |
-| `rpc_pipeline` (write N lines, then read) | PR #5 | DAG waves; keep P1 sequential. ~4× vs sequential session hellos if wanted later. Include `4d464c7` fail-fast fixes if porting. |
+| `rpc_pipeline` writes | this branch / PR #5 | All-Read waves only. Write siblings stay fail-fast. Retry-after-write is Fatal (`4d464c7`). |
 | simd-json | PR #5 | Hello parse **slower** than serde_json on tiny lines |
 | tokio | PR #5 | Runtime build already ≈ one hello RTT |
 | Scoped threads on the tree | PR #5 | 100-node count ~55× **worse** than sequential |
