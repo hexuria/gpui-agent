@@ -5,9 +5,10 @@ Roadmap for landing the experimental work from
 [PR #5](https://github.com/hexuria/gpui-agent/pull/5) **without** merging
 those branches wholesale.
 
-P0 and P1 are on `main`. P2 is the code in the PR that updates this
-document. Later phases are **documented here only** until a human
-picks them. Do not implement P3–P5 on a P2 branch.
+P0–P2 are on `main`. P4 is the code in the PR that updates this
+document. P3 (Mac window PNG) is a separate PR
+([#20](https://github.com/hexuria/gpui-agent/pull/20)) and is **not**
+this branch. Do not implement P3 or P5 on a P4 branch.
 
 ## Status
 
@@ -15,9 +16,9 @@ picks them. Do not implement P3–P5 on a P2 branch.
 | --- | --- | --- |
 | **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | **Done** (PR #6 / `c4069d9`) |
 | **P1** | Recipes, experimental, JSON canonical (`.wants` alias) | **Done** (PR #9) |
-| **P2** | Token required for CLI `recipe run` and `mcp` (same token on host) | **This PR**. No ephemeral Jupyter mint. One-off `click`/`snapshot` stay optional. |
-| **P3** | Real desktop PNG, or honest Mac-only visuals | Not started (headless stays `screenshot_unavailable`) |
-| **P4** | CI: headless recipe run + receipt assert | Not started (set a test token in the workflow; do not disable P2) |
+| **P2** | Token required for CLI `recipe run` and `mcp` (same token on host) | **Done** (PR #19) |
+| **P3** | Real desktop PNG, or honest Mac-only visuals | In flight ([PR #20](https://github.com/hexuria/gpui-agent/pull/20)); not this branch |
+| **P4** | CI: headless recipe run + receipt assert | **This PR**. `ubuntu-latest`; test token in the workflow. Gate is receipt `ok`, not pixels. |
 | **P5** | Squash / stack hygiene vs leftover #4/#5 | Not started |
 
 Recipes, TMP-style registry, and an honest `screenshot` protocol op
@@ -147,10 +148,11 @@ token when recipes/MCP on.”
 
 ---
 
-## P2 — token required when recipes or MCP is on (this PR)
+## P2 — token required when recipes or MCP is on (done)
 
 **Decided:** require a token for **recipes or MCP**, not for every CLI
-op. Do **not** mint an ephemeral Jupyter token.
+op. Do **not** mint an ephemeral Jupyter token. Landed on `main` via
+PR #19.
 
 | Surface | Token |
 | --- | --- |
@@ -235,12 +237,36 @@ Reference-only screenshot work lives on PR #4; re-implement cleanly if it fights
 
 ---
 
-## P4 — CI headless recipe run + receipt assert
+## P4 — CI headless recipe run + receipt assert (this PR)
 
-Needs P1. CI gate is **receipt `ok`**, not pixels. Optional semantic
-SVG/PPM frames must not be the required check.
+Needs P1 (recipes) and P2 (token). CI gate is **receipt `ok`**, not
+pixels. No display, no Vulkan, no screenshot files, no macOS runner.
+
+**Decided:** GitHub Actions `ubuntu-latest` (free public runner; no
+paid macOS). Workflow env sets `GPUI_AGENT_TOKEN=ci-p4-token` on the
+recipe step only so unit tests that unset the token do not flake.
+`cargo test` of the protocol crates runs in the same job (no GPU).
+`cargo audit` / a committed lockfile stay later (SECURITY item 9).
+
+**In scope**
+
+- `.github/workflows/ci.yml` on `push` to `main` and `pull_request`
+- `scripts/ci-recipe.sh`: `todo-headless` + `recipe run` + JSON assert
+  `ok: true` and `session_reused: true` when present
+- Docs: this file, RECIPES.md, README
+
+**Out of scope**
+
+- macOS / GPU / `--screenshot-dir` as a required check
+- `cargo audit`, extra crates, paid runners
+- Merging leftover #4/#5 (P5)
+
+**Success.** A red X is a failed job (test or receipt), not a skipped
+visual. `GPUI_AGENT=1` on loopback. Token policy stays on.
 
 ### Ready-to-paste agent prompt (P4)
+
+Superseded by this PR. Kept for history:
 
 ```text
 Repo: https://github.com/hexuria/gpui-agent

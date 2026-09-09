@@ -208,9 +208,11 @@ intentionally **not** half-implemented in this patch.
 8. **MCP `Content-Length` framing.** The shim is newline JSON. Spec
    hosts (Claude Code, etc.) usually speak MCP-over-stdio with headers.
    Dual-read or migrate; don’t break the current line parser overnight.
-9. **CI: `cargo test` + `cargo audit`.** Generate or commit a lockfile
-   so audits are reproducible. Fail on vulnerability advisories; warn
-   on unmaintained.
+9. **CI: `cargo test` + recipe receipt (P4 — done).**
+   `.github/workflows/ci.yml` runs protocol-crate tests and
+   `scripts/ci-recipe.sh` (receipt `ok` + `session_reused`). **Still
+   later:** generate or commit a lockfile and `cargo audit` (fail on
+   vulnerability advisories; warn on unmaintained).
 10. **Default `agent` feature off in app templates (I3).** Keep it on
     for `apps/todo` (this is a lab) but say so in INTEGRATING.md as a
     copy-paste trap.
@@ -229,7 +231,7 @@ intentionally **not** half-implemented in this patch.
 
 ## Recommended (not implemented here)
 
-Unix sockets (M2), snapshot redaction, and CI audit remain the next
-security follow-ups. P2 does not mint ephemeral tokens. Do not enable
+Unix sockets (M2), snapshot redaction, and `cargo audit` remain the next
+security follow-ups. P4 does not mint ephemeral tokens. Do not enable
 the bridge in shipping product builds; do not add HTTP without an
 Origin allow-list.
