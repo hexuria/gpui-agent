@@ -125,11 +125,9 @@ pub fn apply_params(recipe: &Recipe, set: &BTreeMap<String, String>) -> Result<R
     }
     let mut out = recipe.clone();
     for step in &mut out.steps {
+        // Graph identity (`id` / `needs`) is not a `$param`. Only op
+        // payloads (targets, args, assert names, …) substitute.
         substitute_op_in_place(&mut step.op, set)?;
-        for need in &mut step.needs {
-            substitute_string_in_place(need, set)?;
-        }
-        substitute_string_in_place(&mut step.id, set)?;
     }
     Ok(out)
 }
@@ -159,12 +157,24 @@ pub fn validate_recipe(recipe: &Recipe, registry: &Registry) -> Result<(), Strin
         if step.id.trim().is_empty() {
             return Err("step id cannot be empty".into());
         }
+        if string_has_placeholder(&step.id) {
+            return Err(format!(
+                "step id `{}` cannot contain $params (graph identity is not substitutable)",
+                step.id
+            ));
+        }
         if !ids.insert(step.id.clone()) {
             return Err(format!("duplicate step id `{}`", step.id));
         }
     }
     for step in &recipe.steps {
         for need in &step.needs {
+            if string_has_placeholder(need) {
+                return Err(format!(
+                    "step `{}` needs `{need}` cannot contain $params (graph identity is not substitutable)",
+                    step.id
+                ));
+            }
             if !ids.contains(need) {
                 return Err(format!("step `{}` needs unknown `{need}`", step.id));
             }
@@ -262,6 +272,12 @@ fn collect_placeholders_in_value(value: &Value, out: &mut BTreeSet<String>) {
         }
         _ => {}
     }
+}
+
+fn string_has_placeholder(s: &str) -> bool {
+    let mut found = BTreeSet::new();
+    collect_placeholders(s, &mut found);
+    !found.is_empty()
 }
 
 fn collect_placeholders(s: &str, out: &mut BTreeSet<String>) {
@@ -989,6 +1005,68 @@ assert todo-item-1 name=$title checked=false
             Op::SetValue { value, .. } => assert_eq!(value, "Hi Buy milk"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn params_named_id_do_not_rewrite_graph_identity() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "p",
+            "params": ["id"],
+            "steps": [
+                {"id": "wait", "op": "wait"},
+                {"id": "add", "op": "invoke", "name": "todo.add", "args": {"title": "$id"}, "needs": ["wait"]}
+            ]
+        }"#,
+        )
+        .unwrap();
+        validate_recipe(&recipe, &todo_registry()).unwrap();
+        let mut set = BTreeMap::new();
+        set.insert("id".into(), "Buy milk".into());
+        let bound = apply_params(&recipe, &set).unwrap();
+        assert_eq!(bound.steps[0].id, "wait");
+        assert_eq!(bound.steps[1].id, "add");
+        assert_eq!(bound.steps[1].needs, vec!["wait"]);
+        match &bound.steps[1].op {
+            Op::Invoke { args, .. } => assert_eq!(args["title"], "Buy milk"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn placeholder_in_step_id_or_needs_fails_validate() {
+        let in_id = Recipe::from_json(
+            r#"{
+            "name": "p",
+            "params": ["id"],
+            "steps": [{"id": "$id", "op": "hello"}]
+        }"#,
+        )
+        .unwrap();
+        let err = validate_recipe(&in_id, &todo_registry()).unwrap_err();
+        assert!(err.contains("step id"), "{err}");
+        assert!(
+            err.contains("$params") || err.contains("graph identity"),
+            "{err}"
+        );
+
+        let in_needs = Recipe::from_json(
+            r#"{
+            "name": "p",
+            "params": ["id"],
+            "steps": [
+                {"id": "a", "op": "hello"},
+                {"id": "b", "op": "hello", "needs": ["$id"]}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let err = validate_recipe(&in_needs, &todo_registry()).unwrap_err();
+        assert!(err.contains("needs"), "{err}");
+        assert!(
+            err.contains("$params") || err.contains("graph identity"),
+            "{err}"
+        );
     }
 
     #[test]
