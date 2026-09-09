@@ -5,16 +5,16 @@ Roadmap for landing the experimental work from
 [PR #5](https://github.com/hexuria/gpui-agent/pull/5) **without** merging
 those branches wholesale.
 
-P0 is the only code in the PR that adds this document. Later phases are
-**documented here only** until a human picks them. Do not implement P1–P5
-on a P0 branch.
+P0 is [PR #6](https://github.com/hexuria/gpui-agent/pull/6). P1 is the
+stacked recipe crate. Later phases stay **documented here** until a
+human picks them. Do not implement P2–P5 on a P1 branch.
 
 ## Status
 
 | Phase | What | Status |
 | --- | --- | --- |
-| **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | **This PR** (merge independently) |
-| **P1** | Recipes, experimental, **one** canonical format | Not started. JSON vs `.wants` is **UNDECIDED — ask the user** |
+| **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | [PR #6](https://github.com/hexuria/gpui-agent/pull/6) |
+| **P1** | Recipes, experimental; JSON canonical (`.wants` thin alias) | **This stacked PR** |
 | **P2** | Token required / ephemeral when recipes or MCP is on | Not started. Details **UNDECIDED — ask the user** |
 | **P3** | Real desktop PNG, or honest Mac-only visuals | Not started |
 | **P4** | CI: headless recipe run + receipt assert | Not started (needs P1) |
@@ -86,14 +86,13 @@ Numbers: [PERF.md](PERF.md).
 
 ## P1 — recipes (experimental), one canonical format
 
-**UNDECIDED:** JSON recipe vs line-based `.wants` (or both, with one
-canonical). **Ask the user before writing a crate.** Do not land two
-syntaxes “for now” unless they say so.
+**This stacked PR.** JSON is canonical. `.wants` is a **thin alias**
+that compiles to the same `Recipe` (not a second product). Execution is
+sequential `rpc` on the P0 session — **no** `rpc_pipeline`. Local schema
+registry only (no `tmp-core`, no shell data sources). Unknown `invoke`
+fails closed. `shutdown` needs `--yes`.
 
-Port from PR #4 only after that answer. Fail closed on unknown `invoke`
-names. `shutdown` still needs `--yes`. Do not path-dep `tmp-core` unless
-the user asks. Do not add `rpc_pipeline` unless the user wants DAG waves
-in the same PR — default is sequential ops on the **P0 session**.
+If you want `.wants` deleted, say so; it is sugar, not a freeze.
 
 ### Ready-to-paste agent prompt (P1)
 

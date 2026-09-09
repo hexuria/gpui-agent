@@ -1,21 +1,23 @@
 [package]
-name = "gpui-agent-cli"
+name = "gpui-agent-recipe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "CLI and tiny MCP stdio shim for the GPUI agent protocol."
-
-[[bin]]
-name = "gpui-agent"
-path = "src/main.rs"
+description = "Experimental recipes, TMP-inspired schema mapping, and receipts for gpui-agent."
 
 [dependencies]
 gpui-agent.workspace = true
-gpui-agent-recipe.workspace = true
-anyhow.workspace = true
-clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+todo-core.workspace = true
+criterion = "0.5"
+
+[[bench]]
+name = "recipe_plan"
+harness = false

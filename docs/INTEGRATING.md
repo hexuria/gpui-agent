@@ -104,9 +104,10 @@ script without polluting `gpui-agent`.
 }
 ```
 
-MCP tools are the protocol ops only. List your ids and invoke names in
-the project instructions. The MCP process holds one `AgentClient` and
-reuses a single TCP session across `tools/call`.
+MCP tools are the protocol ops only, plus experimental `recipe_*`
+batching helpers. List your ids and invoke names in the project
+instructions. The MCP process holds one `AgentClient` and reuses a
+single TCP session across `tools/call`.
 
 ## 7. Checklist
 

@@ -6,6 +6,10 @@ use anyhow::Result;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
 use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
+use gpui_agent_recipe::{
+    RunError, compile_plan, parse_recipe_source, resolve_intent, run_plan, todo_registry,
+    validate_recipe,
+};
 use serde_json::{Value, json};
 
 /// Minimal MCP stdio server: `initialize`, `tools/list`, `tools/call`.
@@ -163,6 +167,53 @@ pub(crate) fn tools() -> Vec<Value> {
             "Ask the host to exit.",
             json!({ "type": "object", "properties": {} }),
         ),
+        tool(
+            "recipe_validate",
+            "Lint a JSON or line-based recipe of protocol ops. Does not contact the host.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "recipe": { "description": "Recipe JSON object or wants text." }
+                },
+                "required": ["recipe"]
+            }),
+        ),
+        tool(
+            "recipe_plan",
+            "Compile a recipe to a wave plan (effects, fingerprint). Does not run it.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "recipe": { "description": "Recipe JSON object or wants text." },
+                    "set": { "type": "object", "description": "Parameter bindings." }
+                },
+                "required": ["recipe"]
+            }),
+        ),
+        tool(
+            "recipe_run",
+            "Validate, plan, and execute a recipe on one reused TCP session. Still requires token/caps. Pass yes=true if the plan includes shutdown.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "recipe": { "description": "Recipe JSON object or wants text." },
+                    "set": { "type": "object", "description": "Parameter bindings." },
+                    "yes": { "type": "boolean" }
+                },
+                "required": ["recipe"]
+            }),
+        ),
+        tool(
+            "recipe_resolve",
+            "Map a natural-language intent through the local schema registry (fail closed).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "intent": { "type": "string" }
+                },
+                "required": ["intent"]
+            }),
+        ),
     ]
 }
 
@@ -252,9 +303,78 @@ fn call_tool(client: &mut AgentClient, params: &Value) -> Result<Value, String> 
             client.invoke(invoke_name, invoke_args)?
         }
         "shutdown" => client.expect_ok(Op::Shutdown)?,
+        "recipe_validate" => return recipe_validate(&args),
+        "recipe_plan" => return recipe_plan(&args),
+        "recipe_run" => return recipe_run_tool(client, &args),
+        "recipe_resolve" => return recipe_resolve_tool(&args),
         other => return Err(format!("unknown tool {other}")),
     };
     serde_json::to_value(resp).map_err(|err| err.to_string())
+}
+
+fn recipe_text(args: &Value) -> Result<String, String> {
+    match args.get("recipe") {
+        Some(Value::String(s)) => Ok(s.clone()),
+        Some(other) => serde_json::to_string(other).map_err(|err| err.to_string()),
+        None => Err("missing `recipe`".into()),
+    }
+}
+
+fn recipe_set(args: &Value) -> std::collections::BTreeMap<String, String> {
+    let mut map = std::collections::BTreeMap::new();
+    if let Some(Value::Object(obj)) = args.get("set") {
+        for (k, v) in obj {
+            map.insert(
+                k.clone(),
+                match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                },
+            );
+        }
+    }
+    map
+}
+
+fn recipe_validate(args: &Value) -> Result<Value, String> {
+    let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
+    validate_recipe(&recipe, &todo_registry())?;
+    serde_json::to_value(serde_json::json!({
+        "ok": true,
+        "name": recipe.name,
+        "steps": recipe.steps.len(),
+    }))
+    .map_err(|err| err.to_string())
+}
+
+fn recipe_plan(args: &Value) -> Result<Value, String> {
+    let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
+    let plan = compile_plan(&recipe, &recipe_set(args), &todo_registry())?;
+    serde_json::to_value(plan).map_err(|err| err.to_string())
+}
+
+fn recipe_run_tool(client: &mut AgentClient, args: &Value) -> Result<Value, String> {
+    let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
+    let plan = compile_plan(&recipe, &recipe_set(args), &todo_registry())?;
+    let yes = args.get("yes").and_then(Value::as_bool).unwrap_or(false);
+    match run_plan(client, &plan, yes) {
+        Ok(receipt) => serde_json::to_value(receipt).map_err(|err| err.to_string()),
+        Err(RunError::Step { receipt, error, .. }) => {
+            let mut value = serde_json::to_value(receipt).map_err(|err| err.to_string())?;
+            value["error"] = json!(error);
+            Ok(value)
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn recipe_resolve_tool(args: &Value) -> Result<Value, String> {
+    let intent = args
+        .get("intent")
+        .and_then(Value::as_str)
+        .ok_or("missing string `intent`")?;
+    let result = resolve_intent(intent, &todo_registry())?;
+    serde_json::to_value(result).map_err(|err| err.to_string())
 }
 
 trait ArgsExt {
@@ -299,9 +419,13 @@ mod tests {
                 "assert",
                 "invoke",
                 "shutdown",
+                "recipe_validate",
+                "recipe_plan",
+                "recipe_run",
+                "recipe_resolve",
             ]
         );
-        assert!(names.iter().all(|n| !n.starts_with("todo")));
+        assert!(names.iter().all(|n| !n.starts_with("todo_")));
     }
 
     #[test]
@@ -311,5 +435,53 @@ mod tests {
             click["inputSchema"]["properties"]["delivery"]["enum"],
             json!(["semantic", "virtual"])
         );
+    }
+
+    #[test]
+    fn recipe_validate_unknown_invoke_fails_closed() {
+        let err = recipe_validate(&json!({
+            "recipe": {
+                "name": "bad",
+                "steps": [{"id": "x", "op": "invoke", "name": "shell.run"}]
+            }
+        }))
+        .unwrap_err();
+        assert!(err.contains("unknown invoke"), "{err}");
+    }
+
+    #[test]
+    fn recipe_validate_empty_and_bad_json_fail_closed() {
+        let err = recipe_validate(&json!({ "recipe": "" })).unwrap_err();
+        assert!(err.contains("no steps"), "{err}");
+        let err = recipe_validate(&json!({ "recipe": "{" })).unwrap_err();
+        assert!(err.contains("recipe json"), "{err}");
+    }
+
+    #[test]
+    fn recipe_resolve_shell_like_fails_closed() {
+        let err = recipe_resolve_tool(&json!({ "intent": "rm -rf /" })).unwrap_err();
+        assert!(err.contains("fail closed"), "{err}");
+    }
+
+    #[test]
+    fn recipe_run_shutdown_requires_yes() {
+        let mut client = AgentClient::connect("127.0.0.1:1".parse().unwrap());
+        let err = recipe_run_tool(
+            &mut client,
+            &json!({
+                "recipe": "hello\nshutdown",
+                "yes": false
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("yes"), "{err}");
+    }
+
+    #[test]
+    fn unknown_mcp_tool_fails_closed() {
+        let mut client = AgentClient::connect("127.0.0.1:1".parse().unwrap());
+        let err =
+            call_tool(&mut client, &json!({ "name": "todo.add", "arguments": {} })).unwrap_err();
+        assert!(err.contains("unknown tool"), "{err}");
     }
 }

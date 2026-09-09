@@ -6,7 +6,9 @@ GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and 
 
 The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `click`, `type`, `set-value`, `key`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
 
-**Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md). There is no `recipe` CLI on `main` yet — that experiment still lives on PRs [#4](https://github.com/hexuria/gpui-agent/pull/4) and [#5](https://github.com/hexuria/gpui-agent/pull/5). The merge roadmap is [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+**Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md).
+
+**Recipes (experimental, this stack).** `gpui-agent recipe validate|plan|run` batches many protocol ops in one process on that session. JSON is canonical; `.wants` is a thin alias. See [docs/RECIPES.md](docs/RECIPES.md). Screenshots, TMP cloud, and `rpc_pipeline` are **not** in this phase ([docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md)).
 
 ```mermaid
 flowchart LR
@@ -75,6 +77,12 @@ gpui-agent invoke todo.list
 
 Thin wrappers for that demo live in [`examples/todo.sh`](examples/todo.sh). Do not treat them as the public API.
 
+Same loop, one process (experimental recipe; host must be a **fresh** empty list):
+
+```bash
+cargo run -p gpui-agent-cli -- recipe run examples/recipes/todo-crud.json --set title="Buy milk"
+```
+
 ## What this proves
 
 A scripted agent (or `gpui-agent` CLI) can, without a human mouse or keyboard:
@@ -92,12 +100,15 @@ apps/todo             GPUI Kit 0.6 desktop demo
 apps/todo-headless    Same domain + protocol, no window
 crates/gpui-agent     Protocol, server, client, security, mailbox, ndjson
 crates/gpui-agent-cli gpui-agent CLI + tiny MCP stdio shim
+crates/gpui-agent-recipe Experimental JSON recipes (validate/plan/run)
 crates/todo-core      Demo store and semantic ids
 docs/PROTOCOL.md      Wire format
 docs/INTEGRATING.md   How to embed AgentHost in another app
-docs/NO_BRAINER_PLAN.md  P0–P5 roadmap (session reuse now; recipes later)
+docs/NO_BRAINER_PLAN.md  P0–P5 roadmap
 docs/PERF.md          P0 Criterion numbers (session vs reconnect)
+docs/RECIPES.md       Experimental recipe CLI (stacked P1)
 examples/todo.sh      Demo-only invoke wrappers
+examples/recipes/     Sample todo CRUD recipe
 scripts/smoke.sh      Full CRUD against the headless host
 ```
 
@@ -259,11 +270,11 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 
 ## Next steps
 
-Phased plan (P0 session reuse is in this tree; recipes/screenshots/CI are later): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
+Phased plan (P0 session reuse + P1 experimental recipes): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md).
 
 1. Richer virtual input (scroll, drag, IME composition, multi-click)
 2. `screenshot` on desktop when a GPU is present (P3 — honest unavailable on headless)
-3. Experimental recipes, one canonical format (P1 — **ask before choosing JSON vs `.wants`**)
+3. Token required / ephemeral when MCP or recipes are on (P2 — **ask first**)
 4. WASM host implementing `AgentHost` for `platform: web`
 5. Auto-export nodes from AccessKit so apps register fewer ids by hand
 6. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store

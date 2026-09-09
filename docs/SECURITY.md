@@ -96,6 +96,27 @@ Same generic ops as the CLI. Stdio lines are now capped at `MAX_LINE_BYTES`.
 Framing is still newline JSON, not MCP `Content-Length` (product gap).
 The parent process is trusted.
 
+### Recipes (experimental)
+
+`gpui-agent recipe run` and MCP `recipe_run` compile a local JSON
+recipe (`.wants` is a thin alias) into ordinary protocol ops and send
+them on **one reused TCP session**. Design: [RECIPES.md](RECIPES.md).
+
+They do **not** add privilege and do **not** bypass existing caps:
+
+| Gate | Recipe path |
+| --- | --- |
+| Opt-in / loopback | Host still needs `GPUI_AGENT=1`. CLI still `ensure_loopback`. |
+| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. |
+| Line / conn / mailbox | Unchanged. Extra recipe cap: 256 steps. |
+| `invoke` | Names must be `SchemaKind::Invoke` on the local registry. Unknown names fail closed. |
+| Resolve | Keyword score, fail closed. Shell-like / unknown / ambiguous intents do nothing. Never `Command`. |
+| Shutdown | `Effect::Exit` requires CLI `--yes` or MCP `yes: true`. |
+| Delivery | Default `semantic`. `virtual` is still in-process GPUI (never OS HID). |
+
+Treat `recipe run` / `recipe_run` as equivalent to holding the token
+(same class as M4).
+
 ### Logging of secrets
 
 Startup logs print the bind address, not the token. Responses do not

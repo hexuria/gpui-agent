@@ -41,8 +41,10 @@ See [INTEGRATING.md](INTEGRATING.md).
 | `shutdown` | | Ask the host to exit |
 
 These are also the **only** first-class `gpui-agent` CLI commands (plus
-`mcp`). App-specific verbs are `invoke` names or click targets — not new
-subcommands.
+`mcp`, and experimental `recipe`). App-specific verbs are `invoke`
+names or click targets — not new subcommands. `recipe run` still sends
+one ordinary request line per step on a reused TCP session; there is
+no wire `batch` op.
 
 ## Response
 
