@@ -34,7 +34,8 @@ pub use screenshot::{
     SCREENSHOT_UNAVAILABLE, TEST_PNG, is_screenshot_unavailable, screenshot_unavailable, write_png,
 };
 pub use security::{
-    AgentConfig, SecurityError, ensure_loopback, from_env, is_loopback_addr, tokens_match,
+    AgentConfig, SecurityError, authorize_bind, authorize_client, ensure_loopback, from_env,
+    is_loopback_addr, tokens_match,
 };
 pub use server::{
     AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, MAX_CONNECTIONS, MAX_LINE_BYTES, ServerLimits,
