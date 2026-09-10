@@ -1,6 +1,6 @@
 # Docs
 
-Epic [#10](https://github.com/hexuria/gpui-agent/issues/10) (SDK, daemon, GUI-as-client, remote bind, packaging) landed on `main` in [#30](https://github.com/hexuria/gpui-agent/pull/30).
+Epic [#10](https://github.com/hexuria/gpui-agent/issues/10) (SDK, daemon, GUI-as-client, remote bind, packaging) landed on `main` in [#30](https://github.com/hexuria/gpui-agent/pull/30). Children: #12 daemon, #13 ADR, #14 remote, #15 packaging, #17 tree, #18 leftover-PR hygiene (#16 / #11 already closed by #30).
 
 | Doc | What |
 | --- | --- |
