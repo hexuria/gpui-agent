@@ -1,6 +1,6 @@
 # ADR-001: Daemon is source of truth; GUI is a client
 
-- **Status:** Accepted
+- **Status:** Accepted (implemented on `main` in [#30](https://github.com/hexuria/gpui-agent/pull/30))
 - **Date:** 2026-09-09
 - **Issue:** [#13](https://github.com/hexuria/gpui-agent/issues/13)
 - **Related:** [#10](https://github.com/hexuria/gpui-agent/issues/10) (epic), [#12](https://github.com/hexuria/gpui-agent/issues/12) (daemon), [#14](https://github.com/hexuria/gpui-agent/issues/14) (remote bind)
