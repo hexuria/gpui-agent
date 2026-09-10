@@ -6,9 +6,8 @@ Roadmap for landing the experimental work from
 those branches wholesale. Inventory of what closed, what duplicated P0,
 and what stayed museum: [STACK_HYGIENE.md](STACK_HYGIENE.md).
 
-P0–P2, P4, the all-Read pipeline, MCP `isError`/`$params` hardenings,
-and P5 hygiene are on `main`. P3 (Mac window PNG via `screencapture -l`)
-is this PR.
+P0–P5 (including P3 Mac window PNG via `screencapture -l`) are on
+`main`. P3 landed as [#20](https://github.com/hexuria/gpui-agent/pull/20).
 
 ## Status
 
@@ -17,16 +16,17 @@ is this PR.
 | **P0** | Session reuse + NDJSON buffer reuse + flatten / mailbox | **Done** ([#6](https://github.com/hexuria/gpui-agent/pull/6) / `c4069d9`) |
 | **P1** | Recipes, experimental, JSON canonical (`.wants` alias) | **Done** ([#9](https://github.com/hexuria/gpui-agent/pull/9)) |
 | **P2** | Token required for CLI `recipe run` and `mcp` (same token on host) | **Done** ([#19](https://github.com/hexuria/gpui-agent/pull/19)). No ephemeral Jupyter mint. One-off `click`/`snapshot` stay optional. |
-| **P3** | Real desktop PNG, or honest Mac-only visuals | **This PR**. Headless stays `screenshot_unavailable`. macOS desktop uses `screencapture -l` of this window. |
+| **P3** | Real desktop PNG, or honest Mac-only visuals | **Done** ([#20](https://github.com/hexuria/gpui-agent/pull/20)). Headless, the daemon, and the default GUI-as-daemon-client stay `screenshot_unavailable`. macOS **embedded-host** uses `screencapture -l` of this window. |
 | **P4** | CI: headless recipe run + receipt assert | **Done** ([#21](https://github.com/hexuria/gpui-agent/pull/21)). `ubuntu-latest`; token only on the recipe CI step. Gate is receipt `ok` + `session_reused`. |
 | **P5** | Squash / stack hygiene vs leftover #4/#5 | **Done** ([#22](https://github.com/hexuria/gpui-agent/pull/22)). Close #4/#5 without merge; keep remote branches as museum. |
 
 Recipes, TMP-style registry, and an honest `screenshot` protocol op
 landed in **P1**. Token-for-recipe/MCP landed in **P2**. Real Mac PNG
-of this window lands in **P3**. NDJSON **pipeline** for **all-Read** DAG
-waves is on `main` (`rpc_pipeline` write-N-then-read, plus the `4d464c7`
-retry-after-write / sibling-receipt rules). Write / Exit / mixed waves
-stay sequential fail-fast. Do not merge leftover #4/#5.
+of this window landed in **P3** (#20) on the in-process desktop host.
+NDJSON **pipeline** for **all-Read** DAG waves is on `main`
+(`rpc_pipeline` write-N-then-read, plus the `4d464c7` retry-after-write /
+sibling-receipt rules). Write / Exit / mixed waves stay sequential
+fail-fast. Do not merge leftover #4/#5.
 
 Museum branches (closed PRs; do not merge, do not delete unless asked):
 

@@ -37,7 +37,7 @@ pub fn maybe_start() -> Option<AgentMailbox> {
             ) {
                 Ok((addr, _)) => {
                     eprintln!("gpui-agent listening on {addr} (platform=desktop, app=todo)");
-                    eprintln!("opt-in: GPUI_AGENT=1 · loopback only · protocol v1");
+                    eprintln!("opt-in: GPUI_AGENT=1 · bind via from_env · protocol v1");
                     eprintln!("{auth}");
                     eprintln!(
                         "delivery: semantic (default) or virtual (in-window GPUI events, no OS HID)"

@@ -6,12 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "GPUI Kit 0.6 todo desktop app with an opt-in agent control plane."
+description = "GPUI Kit 0.6 todo desktop client of the headless daemon (ADR-001)."
 
 [features]
-default = ["agent"]
-# Compile the automation bridge. Still requires GPUI_AGENT=1 at runtime.
-agent = []
+default = []
+# In-process AgentHost + mailbox for widget E2E. Product mutations go through
+# the daemon; this flag must not become a second store for agent-machine writes.
+embedded-host = []
 
 [dependencies]
 gpui-kit.workspace = true

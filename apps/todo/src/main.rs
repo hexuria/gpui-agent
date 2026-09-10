@@ -3,24 +3,30 @@ use gpui_kit::*;
 
 mod app;
 
-#[cfg(feature = "agent")]
+#[cfg(feature = "embedded-host")]
 mod agent_bridge;
 
-#[cfg(all(feature = "agent", target_os = "macos"))]
+#[cfg(not(feature = "embedded-host"))]
+mod daemon_bridge;
+
+#[cfg(all(feature = "embedded-host", target_os = "macos"))]
 mod macos_window;
 
 use app::TodoApp;
 
 fn main() {
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     let mailbox = agent_bridge::maybe_start();
+
+    #[cfg(not(feature = "embedded-host"))]
+    daemon_bridge::banner();
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
 
-            #[cfg(feature = "agent")]
+            #[cfg(feature = "embedded-host")]
             let mailbox = mailbox.clone();
 
             cx.spawn(async move |cx| {
@@ -39,11 +45,11 @@ fn main() {
 
                 cx.open_window(options, |window, cx| {
                     let view = cx.new(|cx| {
-                        #[cfg(feature = "agent")]
+                        #[cfg(feature = "embedded-host")]
                         {
                             TodoApp::new(window, cx, mailbox.clone())
                         }
-                        #[cfg(not(feature = "agent"))]
+                        #[cfg(not(feature = "embedded-host"))]
                         {
                             TodoApp::new(window, cx)
                         }

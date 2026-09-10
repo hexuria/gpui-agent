@@ -2,15 +2,16 @@
 
 `gpui-agent` is a **generic** control plane. Your app supplies the
 semantic tree and action handlers; the CLI/MCP never learn your domain.
+Cookbook and `TestHost`: [SDK.md](SDK.md). Sync model: [ADR-001](ADR-001-daemon-sot.md).
 
 ## 1. Opt in
 
 | Gate | What you do |
 | --- | --- |
-| Compile | Feature-gate the bridge (`agent`). Default it **off** in product builds. |
+| Compile | Feature-gate the in-process bridge. This repo’s sample uses `embedded-host` (default **off**). Other apps often name the flag `agent`. Default it **off** in product builds. |
 | Runtime | Start the server only when `GPUI_AGENT=1` (`true`/`yes`/`on`). |
 | Release | Also require `GPUI_AGENT_ALLOW_RELEASE=1`. |
-| Bind | Loopback only. `gpui_agent::security::from_env` enforces this. |
+| Bind | Loopback default. `from_env` / `authorize_bind`. Non-loopback needs `GPUI_AGENT_REMOTE=1` and a token. See [SECURITY.md](SECURITY.md). |
 | Token | Optional on the host (`GPUI_AGENT_TOKEN`). When set, every request must carry it. CLI **`recipe run` and `mcp` require** a non-empty client token (`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on host and client for those workflows. One-off `click`/`snapshot` do not. `hello.auth` is `"required"` or `"none"`. |
 | DoS caps | The server caps line size (1 MiB), concurrent connections (32), mailbox depth (128), and idle sockets (30s). See [SECURITY.md](SECURITY.md). |
 
@@ -131,8 +132,8 @@ reuses a single TCP session across `tools/call`.
       `invoke` names in the recipe must match the host allow-list;
       shutdown recipes need `--yes`. Optional `--screenshot-dir` is
       observe-only; headless / Linux / Windows stay
-      `screenshot_unavailable`. macOS desktop writes this window
-      (`screencapture -l`). Recipes still cannot bypass
+      `screenshot_unavailable`. macOS **embedded-host** writes this
+      window (`screencapture -l`). Recipes still cannot bypass
       [SECURITY.md](SECURITY.md#recipes-experimental). Visual note:
       [RECORDING.md](RECORDING.md).
 - [ ] Product builds leave the feature off
@@ -143,4 +144,5 @@ reuses a single TCP session across `tools/call`.
 - [ ] Headless returns `virtual_unavailable` / `screenshot_unavailable`
       instead of pretending
 - [ ] Desktop screenshot runs on the UI thread with a real `Window`
-      (macOS: `screencapture -l` of that window only)
+      (macOS **embedded-host**: `screencapture -l` of that window only).
+      A GUI that is only a daemon client cannot serve a window PNG.

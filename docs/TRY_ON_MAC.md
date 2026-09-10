@@ -4,27 +4,28 @@ Coding stays on the cloud agent. Local is **pull + run only**.
 
 Typical checkout: `/Volumes/goldcoders/OSS/gpui-agent`.
 
-This verifies **P3** (macOS window PNG via `screencapture -l`; headless
-stays honest) on current `main` plus this PR. P0–P2 (session reuse,
-recipes, token-for-recipe/MCP) are already on `main`. **Headless is
-enough** to check recipes and unavailable screenshots. The desktop
-`todo` window needs a display **and Screen Recording** if you want a
-real PNG.
+This verifies recipes on current `main` (P0–P5, including **P3** Mac
+window PNG via [#20](https://github.com/hexuria/gpui-agent/pull/20)).
+**Headless is enough** to check recipes and unavailable screenshots.
+A real PNG needs a display, Screen Recording, and the in-process host
+(`cargo run -p todo --features embedded-host`). The default GUI is a
+daemon client and does **not** host the agent port.
 
 Format, threat model, and `--yes` / session-reuse notes:
 [RECIPES.md](RECIPES.md). Caps that recipes must not bypass:
 [SECURITY.md](SECURITY.md#recipes-experimental).
 
-## 1. Fetch the PR branch (do not merge)
+## 1. Fetch current `main`
 
 ```bash
 cd /Volumes/goldcoders/OSS/gpui-agent
 git fetch origin
-git checkout gol/no-brainer-p3-screenshot-b20f
-git pull origin gol/no-brainer-p3-screenshot-b20f
+git checkout main
+git pull origin main
 ```
 
-`rust-toolchain.toml` pins **1.98.1**. First `cargo` on this branch may
+P3 is already on `main` (`gol/no-brainer-p3-screenshot-b20f` is
+historical). `rust-toolchain.toml` pins **1.98.1**. First `cargo` may
 download that toolchain. You do not need to install GPUI system libs on
 macOS for **headless** (no window).
 
@@ -32,14 +33,19 @@ macOS for **headless** (no window).
 
 ```bash
 cd /Volumes/goldcoders/OSS/gpui-agent
-cargo build -p gpui-agent-cli -p todo -p todo-headless
+cargo build -p gpui-agent-cli -p todo-headless
+# optional: default GUI client (needs a display + a running daemon)
+cargo build -p todo
+# optional: in-process host + Mac window PNG
+cargo build -p todo --features embedded-host
 ```
 
 Binaries:
 
 - `target/debug/gpui-agent` — CLI
-- `target/debug/todo-headless` — no window (use this)
-- `target/debug/todo` — GPUI window (display required)
+- `target/debug/todo-headless` — daemon, no window (use this for recipes)
+- `target/debug/todo` — GPUI **client** of the daemon (display required; does not listen)
+- `todo --features embedded-host` — in-process `AgentHost` (widget E2E / Mac PNG)
 
 Confirm experimental labeling and the token note:
 
@@ -64,24 +70,32 @@ cd /Volumes/goldcoders/OSS/gpui-agent
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR=127.0.0.1:17421
 export GPUI_AGENT_TOKEN=dev-secret
-./target/debug/todo-headless
+./target/debug/todo-headless serve
 ```
 
 You should see:
 
 ```text
 gpui-agent listening on 127.0.0.1:17421 (platform=headless, app=todo)
-opt-in: GPUI_AGENT=1 · loopback only · protocol v1
+opt-in: GPUI_AGENT=1 · bind via from_env · protocol v1
 auth: required (GPUI_AGENT_TOKEN set; recipe/MCP clients must send the same token)
 ```
 
-**Desktop instead** (needs a real display; not required to verify recipes):
+**Default desktop** (needs a real display; **client of the daemon**,
+not required to verify recipes). Start `todo-headless serve` first:
+
+```bash
+./target/debug/todo
+```
+
+**In-process host / Mac PNG** (needs a display; do **not** also run the
+daemon on the same port):
 
 ```bash
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR=127.0.0.1:17421
 export GPUI_AGENT_TOKEN=dev-secret
-./target/debug/todo
+cargo run -p todo --features embedded-host
 ```
 
 If the port is already taken (`Address already in use`):
@@ -233,7 +247,7 @@ env -u GPUI_AGENT_TOKEN $CLI mcp </dev/null
 | `node \`todo-item-1\` exists` / name mismatch | Host still has todos from a previous run — `shutdown` and start a fresh host |
 | `unknown invoke` | Recipe used a name not in the local schema (only demo `todo.*` + protocol ops) |
 | Desktop window won't start | Expected on a display-less session — use `todo-headless` |
-| `screenshot_unavailable` … Screen Recording | Grant Screen Recording to the terminal/`todo`, then retry. Linux/Windows desktop is Mac-only for real PNG. |
+| `screenshot_unavailable` … Screen Recording | Grant Screen Recording to the terminal/`todo`, then retry. Real PNG is macOS **embedded-host** only. Default GUI client and Linux/Windows stay unavailable. |
 | Recipe syntax questions | [RECIPES.md](RECIPES.md) |
 
 ## Tests (optional on the laptop)
@@ -269,20 +283,22 @@ $CLI screenshot --out artifacts/steps/mid.png
 # headless: error screenshot_unavailable (no fake file)
 ```
 
-### macOS desktop (real PNG of this window)
+### macOS embedded-host (real PNG of this window)
 
-Needs a display. Grant **Screen Recording** to the terminal (or the
+Needs a display **and** `--features embedded-host`. The default GUI
+client does not host the agent port, so `screenshot` against it cannot
+write a window PNG. Grant **Screen Recording** to the terminal (or the
 `todo` binary) in System Settings → Privacy & Security. First capture
 can show a permission dialog; grant it, then retry. This is
 observe-only (`screencapture -l` of the Agent Todo window). It does
 not warp the cursor and does not grab the full desktop.
 
 ```bash
-# terminal 1
+# terminal 1 — in-process host (not the default daemon client)
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR=127.0.0.1:17421
 export GPUI_AGENT_TOKEN=dev-secret
-./target/debug/todo
+cargo run -p todo --features embedded-host
 
 # terminal 2 (same exports)
 mkdir -p artifacts/steps
@@ -293,5 +309,5 @@ $CLI screenshot --out artifacts/steps/mid.png
 
 If you see `screenshot_unavailable` mentioning Screen Recording, the
 grant did not stick — that is still correct (no invented pixels).
-Linux/Windows desktop is Mac-only for real PNG in P3; same unavailable
-error. See [RECORDING.md](RECORDING.md). `--record` is not in this PR.
+Linux/Windows desktop is Mac-only for real PNG; same unavailable
+error. See [RECORDING.md](RECORDING.md). `--record` is later, not here.

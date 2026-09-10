@@ -2,12 +2,13 @@
 //!
 //! This is not OS HID. Headless hosts return [`screenshot_unavailable`] —
 //! same honesty as [`virtual_unavailable`](crate::virtual_unavailable).
-//! Desktop GPUI on macOS writes a PNG of **this window** via
-//! `screencapture -l` (needs Screen Recording). Linux/Windows desktop
-//! stays unavailable: GPUI's `Window::render_to_image` is
-//! `test-support` only on this pin, and this crate does not capture the
-//! full desktop. The host writes the PNG to a local `path` so the image
-//! does not ride the 1 MiB NDJSON line.
+//! A painted GPUI window on macOS may write a PNG of **this window** via
+//! `screencapture -l` (needs Screen Recording). Headless hosts, a GUI
+//! that is only a daemon client, and Linux/Windows desktop stay
+//! unavailable: GPUI's `Window::render_to_image` is `test-support` only
+//! on this pin, and this crate does not capture the full desktop. The
+//! host writes the PNG to a local `path` so the image does not ride the
+//! 1 MiB NDJSON line.
 
 use std::path::Path;
 #[cfg(target_os = "macos")]
@@ -33,7 +34,7 @@ pub fn is_screenshot_unavailable(error: &str) -> bool {
 
 /// Client-supplied destination. Empty is a request error, not
 /// [`screenshot_unavailable`] (the host never invents a path).
-pub fn require_screenshot_path<'a>(path: Option<&'a str>) -> Result<&'a str, String> {
+pub fn require_screenshot_path(path: Option<&str>) -> Result<&str, String> {
     match path.map(str::trim).filter(|p| !p.is_empty()) {
         Some(path) => Ok(path),
         None => Err("screenshot requires path".into()),

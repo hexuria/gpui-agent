@@ -36,3 +36,30 @@ jobs:
           GPUI_AGENT_ADDR: "127.0.0.1:17421"
           GPUI_AGENT_TOKEN: "ci-p4-token"
         run: ./scripts/ci-recipe.sh
+
+  packages:
+    name: cli + daemon artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Release CLI + daemon (no GPUI)
+        run: cargo build --release -p gpui-agent-cli -p todo-headless
+      - name: Daemon must not depend on gpui-kit
+        run: |
+          if cargo tree -p todo-headless -i gpui-kit >/tmp/gpui-kit-why.txt 2>&1; then
+            echo "todo-headless must not depend on gpui-kit" >&2
+            cat /tmp/gpui-kit-why.txt >&2
+            exit 1
+          fi
+      - name: Upload linux-x64 binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-agent-linux-x64
+          path: |
+            target/release/gpui-agent
+            target/release/todo-headless

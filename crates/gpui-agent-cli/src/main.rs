@@ -20,13 +20,18 @@ use recipe_cmd::RecipeCommand;
 #[derive(Parser)]
 #[command(name = "gpui-agent", after_help = AFTER_HELP)]
 struct Cli {
-    /// Host:port of the automation server (loopback only on the app side).
+    /// Host:port of the automation server. Loopback by default; non-loopback
+    /// needs `--allow-remote` and a non-empty token.
     #[arg(long, default_value = DEFAULT_ADDR_STR, env = "GPUI_AGENT_ADDR")]
     addr: SocketAddr,
     /// Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host
     /// has one. Required (non-empty) for `recipe run` and `mcp`.
     #[arg(long, env = "GPUI_AGENT_TOKEN")]
     token: Option<String>,
+    /// Connect to a non-loopback host. Requires a non-empty token. Plaintext
+    /// TCP — lab / trusted network only. Prefer SSH or Tailscale until TLS.
+    #[arg(long, env = "GPUI_AGENT_ALLOW_REMOTE")]
+    allow_remote: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -37,7 +42,9 @@ not in this CLI. Navigate pages with click + assert on stable ids, or invoke
 a command the host registered. Experimental: batch many ops in one process
 with `recipe validate|plan|run|resolve` (JSON canonical; `.wants` also
 accepted — see docs/RECIPES.md). `recipe run` and `mcp` require a non-empty
-GPUI_AGENT_TOKEN or --token; set the same value on the host.";
+GPUI_AGENT_TOKEN or --token; set the same value on the host. Non-loopback
+`--addr` also needs `--allow-remote` (or GPUI_AGENT_ALLOW_REMOTE=1) and a
+token so a mistyped address cannot leak the secret (see docs/SECURITY.md).";
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -150,9 +157,9 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    gpui_agent::ensure_loopback(cli.addr)
-        .with_context(|| format!("refusing non-loopback agent address {}", cli.addr))?;
     let token = take_non_empty_token(cli.token);
+    gpui_agent::authorize_client(cli.addr, token.as_deref(), cli.allow_remote)
+        .with_context(|| format!("refusing agent address {}", cli.addr))?;
 
     if matches!(cli.command, Command::Mcp) {
         let token = require_recipe_mcp_token(token.as_deref())?;
@@ -562,9 +569,70 @@ mod tests {
         let remote =
             Cli::try_parse_from(["gpui-agent", "--addr", "8.8.8.8:17421", "hello"]).unwrap();
         assert!(gpui_agent::ensure_loopback(remote.addr).is_err());
+        assert!(
+            gpui_agent::authorize_client(remote.addr, remote.token.as_deref(), remote.allow_remote)
+                .is_err()
+        );
 
         let local = Cli::try_parse_from(["gpui-agent", "hello"]).unwrap();
         assert!(gpui_agent::ensure_loopback(local.addr).is_ok());
+        assert!(gpui_agent::authorize_client(local.addr, None, local.allow_remote).is_ok());
+    }
+
+    #[test]
+    fn cli_remote_requires_allow_and_token() {
+        let denied = Cli::try_parse_from([
+            "gpui-agent",
+            "--addr",
+            "8.8.8.8:17421",
+            "--token",
+            "lab",
+            "hello",
+        ])
+        .unwrap();
+        assert!(!denied.allow_remote);
+        assert!(
+            gpui_agent::authorize_client(denied.addr, denied.token.as_deref(), denied.allow_remote)
+                .is_err()
+        );
+
+        let no_token = Cli::try_parse_from([
+            "gpui-agent",
+            "--addr",
+            "8.8.8.8:17421",
+            "--allow-remote",
+            "hello",
+        ])
+        .unwrap();
+        assert!(no_token.allow_remote);
+        assert!(
+            gpui_agent::authorize_client(
+                no_token.addr,
+                take_non_empty_token(no_token.token).as_deref(),
+                no_token.allow_remote
+            )
+            .is_err()
+        );
+
+        let allowed = Cli::try_parse_from([
+            "gpui-agent",
+            "--addr",
+            "8.8.8.8:17421",
+            "--allow-remote",
+            "--token",
+            "lab",
+            "hello",
+        ])
+        .unwrap();
+        assert!(allowed.allow_remote);
+        assert!(
+            gpui_agent::authorize_client(
+                allowed.addr,
+                take_non_empty_token(allowed.token).as_deref(),
+                allowed.allow_remote
+            )
+            .is_ok()
+        );
     }
 
     #[test]

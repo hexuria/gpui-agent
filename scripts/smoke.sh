@@ -20,8 +20,9 @@ export GPUI_AGENT_ADDR="$ADDR"
 echo "==> building CLI + headless host"
 cargo build -p gpui-agent-cli -p todo-headless
 
-CLI="$ROOT/target/debug/gpui-agent"
-HOST="$ROOT/target/debug/todo-headless"
+TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
+CLI="$TARGET/debug/gpui-agent"
+HOST="$TARGET/debug/todo-headless"
 
 cleanup() {
   if [[ -n "${HOST_PID:-}" ]] && kill -0 "$HOST_PID" 2>/dev/null; then

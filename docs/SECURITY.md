@@ -5,21 +5,23 @@ This document is an audit of the opt-in localhost control plane
 limitations** of a local developer tool from **implementation bugs**, and
 records the small hardening patches that landed with this review.
 
-Nothing here weakens the opt-in / loopback model. Automation stays off
-unless `GPUI_AGENT=1`, release binaries still need
-`GPUI_AGENT_ALLOW_RELEASE=1`, and the server still refuses a non-loopback
-bind.
+Nothing here weakens the opt-in model. Automation stays off unless
+`GPUI_AGENT=1`, release binaries still need
+`GPUI_AGENT_ALLOW_RELEASE=1`, and a non-loopback bind is **fail closed**
+unless the authenticated remote triple is set (see below). Loopback
+without a token remains the local-dev default.
 
 ## Trust model (intentional)
 
 | Gate | Behavior |
 | --- | --- |
-| Compile | Feature-gate the bridge. The sample `todo` app defaults `agent` **on** (it is a demo). Product apps should default it **off**. |
+| Compile | Feature-gate the in-process bridge. This repo’s sample `todo` defaults `embedded-host` **off** (the window is a daemon client). Enable it only for widget E2E. Product apps should keep the equivalent flag **off**. |
 | Runtime | `GPUI_AGENT=1` (`true` / `yes` / `on`). |
 | Release | Also `GPUI_AGENT_ALLOW_RELEASE=1`. |
-| Bind | Loopback only. `from_env` / `ensure_loopback` reject anything that is not IPv4 `127.0.0.0/8` or IPv6 `::1`. IPv4-mapped loopback (`::ffff:127.0.0.1`) is **rejected** (fail closed). |
-| Token | Optional on the host (`GPUI_AGENT_TOKEN`). When set, every request must carry it. CLI **`recipe run` and `mcp` require** a non-empty client token (`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on host and client for those workflows. One-off `click` / `snapshot` / `hello` do not require a client token. |
-| Transport | NDJSON over TCP. Not HTTP, not TLS, not a remote API. |
+| Bind | **Loopback default.** `from_env` calls `authorize_bind`. IPv4 `127.0.0.0/8` and IPv6 `::1` are allowed without a token. IPv4-mapped loopback (`::ffff:127.0.0.1`) is **rejected**. Non-loopback (including `0.0.0.0` / `::`) requires `GPUI_AGENT_REMOTE=1` **and** a non-empty `GPUI_AGENT_TOKEN`. |
+| Token | Optional on a **loopback** host (`GPUI_AGENT_TOKEN`). When set, every request must carry it. **Required** for any non-loopback bind. CLI **`recipe run` and `mcp` require** a non-empty client token (`GPUI_AGENT_TOKEN` or `--token`) even on loopback (P2). One-off `click` / `snapshot` / `hello` on loopback do not require a client token unless the host has one. |
+| Remote client | CLI refuses non-loopback `--addr` unless `--allow-remote` / `GPUI_AGENT_ALLOW_REMOTE=1` **and** a non-empty token (M1: do not leak the secret on a mistype). |
+| Transport | NDJSON over TCP. **Not HTTP. Not TLS.** Remote bind is plaintext + token — lab / trusted network only. Prefer an SSH or Tailscale hop until TLS / mTLS is specified. |
 | Delivery | `semantic` (default) calls widget handlers. `virtual` synthesizes in-process GPUI events. **Never OS HID.** |
 
 **Design limitation (not a bug):** any process that can open the loopback
@@ -29,8 +31,29 @@ point. On a shared host it is a cross-user confused deputy. A token
 narrows that to “whoever knows the secret,” but the secret is still a
 local env var.
 
-There is no sandbox, no origin check, and no encryption beyond “it never
-leaves the machine.” Do not enable this in shipping product builds.
+There is no sandbox, no origin check, and no encryption on the wire.
+Loopback traffic never leaves the machine. Remote bind **does** leave
+the machine as plaintext TCP plus a shared secret. Do not enable this
+in shipping product builds. Do not put a daemon on the public internet.
+
+## Threat model — daemon on an agent VM (#14)
+
+**Chosen (2026-09-09):** authenticated remote bind is allowed; loopback
+without auth stays the default.
+
+| Actor | What they can do | Mitigation |
+| --- | --- | --- |
+| Local process on the host | Drive an untokened loopback daemon (H1). | Set `GPUI_AGENT_TOKEN` on any long-lived host. Recipe/MCP already require a client token. |
+| Agent on another machine | Drive the daemon only if the host bound non-loopback with `GPUI_AGENT=1` + `GPUI_AGENT_REMOTE=1` + token, **and** the client passed `--allow-remote` + the same token. | Fail closed without that triple. Caps (1 MiB / 32 conn / 128 mailbox) still apply. |
+| Network observer | Read NDJSON and the token on the wire. | **Known v1 gap.** Treat remote bind as a lab. Tunnel with SSH or Tailscale. TLS / mTLS / pairing codes are follow-up, not this slice. |
+| Random Internet | Bind `0.0.0.0` without the triple is refused. Accidental public listen without a token is refused. | `authorize_bind` + tests. Still do not advertise a public port. |
+
+`hello.auth` remains `"required"` when the host has a token and `"none"`
+otherwise. Remote hosts always have a token, so `hello.auth` is
+`"required"`. P2 recipe/MCP token policy is **not** weakened.
+
+**Deferred:** TLS vs SSH vs mutual TLS, certificate story, OpenGrok /
+Grok Bot pairing UX, ephemeral minted tokens.
 
 ## Findings
 
@@ -38,7 +61,7 @@ leaves the machine.” Do not enable this in shipping product builds.
 | --- | --- | --- | --- | --- | --- | --- |
 | H1 | **High** | Design | Host token is optional. With `GPUI_AGENT=1` and no `GPUI_AGENT_TOKEN`, **any local process** can snapshot, click, invoke, and shut down the app via one-off CLI ops. | `security.rs` `from_env` treats empty/missing token as `None`. `handle_request` skips auth when `expected_token` is `None`. | Malware, another user on the same box, or a compromised MCP client talks to `127.0.0.1:17421` and drives the UI / reads field values. | **Partially mitigated (P2).** CLI `recipe run` and `mcp` refuse to start without a non-empty `GPUI_AGENT_TOKEN` / `--token`, and they send it on every request. Host token stays optional so `./scripts/smoke.sh` click/snapshot still works. Recipe/MCP workflows **must set the same token on host and client**. `hello.auth` is `"required"` \| `"none"`. Ephemeral Jupyter mint is **not** implemented. Integrators: still set `GPUI_AGENT_TOKEN` on the host. |
 | H2 | **High** | Bug | Unbounded NDJSON lines + one OS thread per connection. A client could grow a request line without limit (`BufRead::lines`) and/or open unbounded handler threads. | Former `server.rs` `reader.lines()` and `thread::spawn` on every `accept`. | Local process (no token needed if H1) sends a multi-GB line or opens thousands of connections → memory / thread exhaustion of the GUI process. | **Patched.** `read_limited_line` (default 1 MiB), `MAX_CONNECTIONS` (32), idle read/write timeout (30s). Extra clients are dropped. Oversized lines get an error and the socket is closed (no resync). |
-| M1 | **Medium** | Bug | CLI/MCP accepted any `SocketAddr`. A mistyped or injected `--addr` / `GPUI_AGENT_ADDR` would send `GPUI_AGENT_TOKEN` off-box. | Former `gpui-agent-cli` parsed `addr: SocketAddr` and connected with no loopback check. Server bind was already loopback-only. | User or wrapper runs `gpui-agent --addr 1.2.3.4:17421 hello` with a token in the env → secret leaves the machine. | **Patched.** CLI calls `ensure_loopback` before connect/MCP. Server bind unchanged. |
+| M1 | **Medium** | Bug | CLI/MCP accepted any `SocketAddr`. A mistyped or injected `--addr` / `GPUI_AGENT_ADDR` would send `GPUI_AGENT_TOKEN` off-box. | Former `gpui-agent-cli` parsed `addr: SocketAddr` and connected with no loopback check. | User or wrapper runs `gpui-agent --addr 1.2.3.4:17421 hello` with a token in the env → secret leaves the machine. | **Patched, then extended (#14).** Default: `authorize_client` refuses non-loopback. Remote connect requires `--allow-remote` **and** a non-empty token. Host `authorize_bind` refuses `0.0.0.0` / public addrs without `GPUI_AGENT_REMOTE=1` + token. |
 | M2 | **Medium** | Design | TCP loopback has no peer credentials. Any UID on the host can connect. | `TcpListener::bind` on `127.0.0.1`. No Unix socket, no `SO_PEERCRED`. | User B on a shared Linux box automates user A’s app (especially if H1). | **Documented.** Next step: optional `AF_UNIX` socket with `0600` and peer-uid check. Large change; do not add a second transport in this patch. |
 | M3 | **Medium** | Design | `snapshot` returns widget `value`s (draft text, later passwords if an app puts them on the tree). A PNG of the window shows the same pixels. | `todo-core` `tree()` includes `todo-input` value. Protocol has no redaction. | Local client (H1) reads whatever the user typed **or** screenshots the window. | **Documented.** Integrators must not put secrets on the semantic tree **or** the painted window. A protocol-level redaction hook is a later feature. |
 | M4 | **Medium** | Design | `gpui-agent mcp` is a full confused-deputy: stdio `tools/call` maps 1:1 onto protocol ops, including `invoke` and `shutdown`. | `crates/gpui-agent-cli/src/mcp.rs` | Whoever can write to the MCP process (the IDE/agent) can do anything the socket allows. | **Documented / intended.** Treat the MCP client as equivalent to holding the token. Do not expose this stdio shim on a network. P2: `gpui-agent mcp` **refuses to start** without a non-empty client token. Set the same token on the host. |
@@ -51,8 +74,8 @@ leaves the machine.” Do not enable this in shipping product builds.
 | L6 | **Low** | Leftover | No request-rate limit beyond connection/line/mailbox caps. `Wait.timeout_ms` is ignored (hello is immediate). serde_json nesting is capped by serde’s recursion limit (~128). | `dispatch.rs` `Op::Wait`, `server.rs` | Slowloris is mitigated by idle timeout; CPU spam of small valid ops is still possible. | Acceptable for v1. Add a simple per-connection QPS cap if this becomes a real host. |
 | I1 | **Info** | Positive | `gpui-agent` still has no `unsafe`. Recipe/CLI never map ops onto a shell. `invoke` is an in-process host callback (sample todo: CRUD only). Virtual keys have **no modifiers** (no synthetic ⌘Q). P3: desktop macOS may exec **`screencapture`** with a host-chosen `-l<CGWindowID>` and a client `path` (same write as `write_png`). Argv is otherwise fixed — not a shell. Tiny `unsafe` lives in `apps/todo` (`objc` `windowNumber` only). | repo-wide `unsafe` grep; `todo-core` `invoke`; `virtual_input.rs` `keystroke_token`; `screenshot.rs` `screencapture_window_argv` | — | Keep `invoke` allow-listed in each app. Never map protocol ops onto a shell. Do not add an env override for the `screencapture` binary. |
 | I2 | **Info** | Design | Release gate is `cfg!(debug_assertions)`, not `cfg!(feature = …)`. `cargo run` (dev) does not need `GPUI_AGENT_ALLOW_RELEASE`. | `security.rs` | Shipping a **debug** binary with `GPUI_AGENT=1` baked into a wrapper skips the release latch. | Product builds: release profile + feature off + no env. |
-| I3 | **Info** | Design | Sample `todo` feature `default = ["agent"]`. Copy-paste into a product without turning it off compiles the bridge in. Runtime still needs `GPUI_AGENT=1`. | `apps/todo/Cargo.toml` | Developer runs the product with leftover env from a test session. | Templates should default the feature **off**. |
-| I4 | **Info** | Product | Bind check is IP-literal only (`SocketAddr`). `localhost` as a hostname is not accepted — safer than DNS. CLI and server now agree on loopback. | `from_env`, `ensure_loopback` | — | Keep it this way. |
+| I3 | **Info** | Design | Sample `todo` feature `embedded-host` defaults **off**. Copy-paste of an older `default = ["agent"]` snippet would compile the in-process bridge into a product. Runtime still needs `GPUI_AGENT=1`. | `apps/todo/Cargo.toml` | Developer runs a product with leftover env from a test session. | Templates should default the in-process host **off**. This repo already does. |
+| I4 | **Info** | Product | Bind check is IP-literal only (`SocketAddr`). `localhost` as a hostname is not accepted — safer than DNS. CLI and server share `authorize_*`. | `from_env`, `authorize_bind` | — | Keep it this way. |
 | I5 | **Info** | Positive | This is not HTTP. A browser `fetch('http://127.0.0.1:17421')` cannot speak NDJSON usefully. DNS rebinding is not in play **until** someone adds an HTTP/WebSocket front. | `server.rs` | — | If HTTP is ever added: Origin allow-list, no `*` CORS, still loopback + token. |
 
 ## Surfaces reviewed
@@ -60,9 +83,10 @@ leaves the machine.” Do not enable this in shipping product builds.
 ### Bind / loopback
 
 `from_env` parses `GPUI_AGENT_ADDR` as `SocketAddr` (no DNS) and calls
-`ensure_loopback`. Default `127.0.0.1:17421`. `0.0.0.0`, `::`, and
-public addresses are refused. The CLI now applies the same check so a
-token cannot be sent to a remote IP.
+`authorize_bind`. Default `127.0.0.1:17421`. `0.0.0.0`, `::`, and
+public addresses are refused unless `GPUI_AGENT_REMOTE=1` and a
+non-empty token are both set. The CLI uses `authorize_client` so a
+token cannot be sent to a remote IP without an explicit allow.
 
 ### Auth
 
@@ -109,7 +133,7 @@ They do **not** add privilege and do **not** bypass PR #3 caps:
 
 | Gate | Recipe path |
 | --- | --- |
-| Opt-in / loopback | Host still needs `GPUI_AGENT=1`. CLI still `ensure_loopback`. |
+| Opt-in / bind | Host still needs `GPUI_AGENT=1`. CLI still `authorize_client` (loopback default; remote needs `--allow-remote` + token). |
 | Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. CLI `recipe run` and `mcp` **refuse to start** without a non-empty client token (P2). Host token remains optional so one-off `click`/`snapshot` smoke still works. Set the **same** token on host and client for recipe/MCP. `hello.auth` advertises `"required"` \| `"none"`. Not a wire `batch` op. |
 | Line / conn / mailbox | Unchanged. Extra recipe cap: 256 steps. |
 | `invoke` | Names must be `SchemaKind::Invoke` on the local registry. Unknown names and protocol names used as invoke (`click`) fail closed. Schema names are `[A-Za-z0-9_.-]`. |
@@ -135,9 +159,11 @@ Treat `recipe run` / `recipe_run` as equivalent to holding the token
 
 Optional `--screenshot-dir` asks the host for an app-surface PNG after
 steps (receipt lists paths). Headless / Linux / Windows return
-`screenshot_unavailable` and do not invent a file. macOS desktop writes
-**this window** via `screencapture -l` (Screen Recording). Do not put
-tokens or CI secrets on the painted window. See [RECORDING.md](RECORDING.md).
+`screenshot_unavailable` and do not invent a file. macOS
+`todo --features embedded-host` writes **this window** via
+`screencapture -l` (Screen Recording). The default GUI client does not
+host the agent port. Do not put tokens or CI secrets on the painted
+window. See [RECORDING.md](RECORDING.md).
 
 ### Logging of secrets
 
@@ -220,18 +246,19 @@ intentionally **not** half-implemented in this patch.
    `scripts/ci-recipe.sh` (receipt `ok` + `session_reused`). **Still
    later:** generate or commit a lockfile and `cargo audit` (fail on
    vulnerability advisories; warn on unmaintained).
-10. **Default `agent` feature off in app templates (I3).** Keep it on
-    for `apps/todo` (this is a lab) but say so in INTEGRATING.md as a
-    copy-paste trap.
+10. **Default in-process host off in app templates (I3).** This repo’s
+    `apps/todo` already defaults `embedded-host` off. Say so in
+    INTEGRATING.md as a copy-paste trap if someone still sees `agent`.
 11. **Mailbox + token + virtual integration test.** Needs a GPU/display
     or a fake `Window`. Until then, keep the unit gates
     (`authorize_request` on virtual ops, mailbox overflow).
-12. **In-app GPUI offscreen PNG (P3 partial).** Protocol `screenshot`
-    writes a real PNG on **macOS desktop** (`screencapture -l` of this
-    window). Headless / Linux / Windows stay honest. GPUI
-    `render_to_image` is still `test-support` only — do not enable it
-    in production without asking. `--record` / ScreenCaptureKit crate
-    stay later.
+12. **In-app GPUI offscreen PNG (P3).** Protocol `screenshot` writes a
+    real PNG on **macOS embedded-host** (`screencapture -l` of this
+    window; [#20](https://github.com/hexuria/gpui-agent/pull/20)).
+    Headless / daemon / default GUI client / Linux / Windows stay
+    honest. GPUI `render_to_image` is still `test-support` only — do
+    not enable it in production without asking. `--record` /
+    ScreenCaptureKit crate stay later.
 13. **AccessKit auto-export** so apps register fewer ids by hand.
 14. **Per-connection QPS cap** if anyone runs this as a long-lived
     host. Line/connection/mailbox caps are enough for v1.

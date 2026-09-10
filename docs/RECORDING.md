@@ -8,9 +8,10 @@ does not grow a media appendix.
 
 | Host | `screenshot` / `--screenshot-dir` |
 | --- | --- |
-| `todo-headless` | `screenshot_unavailable`, **no file** |
-| Desktop `todo` on Linux / Windows | Same honesty. GPUI `Window::render_to_image` exists only under `test-support` on this gpui-kit pin; this repo does not enable that in production and does **not** capture the full desktop. |
-| Desktop `todo` on macOS | PNG of **this app window** via `screencapture -l <CGWindowID> -o -x <path>`. Needs **Screen Recording** for the terminal (or the `todo` binary). Failure is `screenshot_unavailable`, not a fake `TEST_PNG`. |
+| `todo-headless` (daemon) | `screenshot_unavailable`, **no file** |
+| Desktop `todo` (default, daemon client) | Same honesty. The GUI does not host the agent port, so it cannot serve a PNG. |
+| Desktop `todo --features embedded-host` on Linux / Windows | Same honesty. GPUI `Window::render_to_image` exists only under `test-support` on this gpui-kit pin; this repo does not enable that in production and does **not** capture the full desktop. |
+| Desktop `todo --features embedded-host` on macOS | PNG of **this app window** via `screencapture -l <CGWindowID> -o -x <path>`. Needs **Screen Recording** for the terminal (or the `todo` binary). Failure is `screenshot_unavailable`, not a fake `TEST_PNG`. |
 
 The image stays on disk. It does not ride the 1 MiB NDJSON line.
 

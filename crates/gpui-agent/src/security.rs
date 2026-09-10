@@ -13,6 +13,12 @@ pub enum SecurityError {
     ReleaseBlocked,
     #[error("automation must bind a loopback address, got {0}")]
     NonLoopback(SocketAddr),
+    #[error(
+        "refusing non-loopback address {0} without GPUI_AGENT_REMOTE=1 (host) or --allow-remote / GPUI_AGENT_ALLOW_REMOTE=1 (client)"
+    )]
+    RemoteDisabled(SocketAddr),
+    #[error("non-loopback address {0} requires a non-empty GPUI_AGENT_TOKEN")]
+    RemoteRequiresToken(SocketAddr),
     #[error("invalid GPUI_AGENT_ADDR: {0}")]
     BadAddr(String),
 }
@@ -22,13 +28,17 @@ pub enum SecurityError {
 /// Trust model:
 /// - Off unless `GPUI_AGENT` is a truthy value (`1`, `true`, `yes`).
 /// - Release binaries also require `GPUI_AGENT_ALLOW_RELEASE=1`.
-/// - The listen address must be loopback (default `127.0.0.1:17421`).
-/// Optional shared secret via `GPUI_AGENT_TOKEN`; when set, every request
-/// must carry the same token. Anyone who can reach the socket can drive
-/// the UI, so this is a local developer/agent tool, not a remote API.
-/// Host token stays optional so one-off `click`/`snapshot` smoke still
-/// works. CLI `recipe run` and `mcp` require a non-empty client token
-/// (P2); set the same value on host and client for those workflows.
+/// - Default listen address is loopback (`127.0.0.1:17421`). Token optional
+///   on loopback so one-off `click`/`snapshot` smoke still works.
+/// - Non-loopback bind requires `GPUI_AGENT_REMOTE=1` **and** a non-empty
+///   `GPUI_AGENT_TOKEN`. Fail closed: `0.0.0.0` without that triple is
+///   refused. Transport is still plaintext TCP — lab / trusted network
+///   only until TLS or an SSH/Tailscale hop exists.
+/// - CLI remote connect requires the same token **and** `--allow-remote`
+///   / `GPUI_AGENT_ALLOW_REMOTE=1` so a mistyped `--addr` cannot leak
+///   the token off-box (M1).
+/// - CLI `recipe run` and `mcp` still require a non-empty client token
+///   (P2) even on loopback.
 #[derive(Clone)]
 pub struct AgentConfig {
     pub addr: SocketAddr,
@@ -60,13 +70,48 @@ pub fn from_env() -> Result<Option<AgentConfig>, SecurityError> {
         Err(_) => default_addr(),
     };
 
-    ensure_loopback(addr)?;
-
     let token = std::env::var("GPUI_AGENT_TOKEN")
         .ok()
         .filter(|s| !s.is_empty());
+    let allow_remote = truthy_env("GPUI_AGENT_REMOTE");
+    authorize_bind(addr, token.as_deref(), allow_remote)?;
 
     Ok(Some(AgentConfig { addr, token }))
+}
+
+/// Host bind policy: loopback always; non-loopback only with token + flag.
+pub fn authorize_bind(
+    addr: SocketAddr,
+    token: Option<&str>,
+    allow_remote: bool,
+) -> Result<SocketAddr, SecurityError> {
+    authorize_endpoint(addr, token, allow_remote)
+}
+
+/// Client connect policy (same gates as bind; flag is `--allow-remote`).
+pub fn authorize_client(
+    addr: SocketAddr,
+    token: Option<&str>,
+    allow_remote: bool,
+) -> Result<SocketAddr, SecurityError> {
+    authorize_endpoint(addr, token, allow_remote)
+}
+
+fn authorize_endpoint(
+    addr: SocketAddr,
+    token: Option<&str>,
+    allow_remote: bool,
+) -> Result<SocketAddr, SecurityError> {
+    if is_loopback_addr(addr) {
+        return Ok(addr);
+    }
+    if !allow_remote {
+        return Err(SecurityError::RemoteDisabled(addr));
+    }
+    match token {
+        Some(t) if !t.is_empty() => Ok(addr),
+        _ => Err(SecurityError::RemoteRequiresToken(addr)),
+    }
 }
 
 pub fn truthy_env(name: &str) -> bool {
@@ -176,5 +221,57 @@ mod tests {
         let rendered = format!("{cfg:?}");
         assert!(rendered.contains("<redacted>"), "{rendered}");
         assert!(!rendered.contains("super-secret-token"), "{rendered}");
+    }
+
+    #[test]
+    fn loopback_bind_does_not_need_token_or_remote_flag() {
+        let addr: SocketAddr = "127.0.0.1:17421".parse().unwrap();
+        assert!(authorize_bind(addr, None, false).is_ok());
+        assert!(authorize_client(addr, None, false).is_ok());
+    }
+
+    #[test]
+    fn public_bind_without_flag_fails_closed() {
+        for raw in ["1.2.3.4:17421", "0.0.0.0:17421", "[::]:17421"] {
+            let addr: SocketAddr = raw.parse().unwrap();
+            let err = authorize_bind(addr, Some("secret"), false).unwrap_err();
+            assert!(
+                matches!(err, SecurityError::RemoteDisabled(_)),
+                "{raw}: {err}"
+            );
+            assert!(ensure_loopback(addr).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn public_bind_with_flag_but_no_token_fails_closed() {
+        let addr: SocketAddr = "10.0.0.2:17421".parse().unwrap();
+        let err = authorize_bind(addr, None, true).unwrap_err();
+        assert!(
+            matches!(err, SecurityError::RemoteRequiresToken(_)),
+            "{err}"
+        );
+        let err = authorize_bind(addr, Some(""), true).unwrap_err();
+        assert!(
+            matches!(err, SecurityError::RemoteRequiresToken(_)),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn public_bind_with_flag_and_token_is_allowed() {
+        let addr: SocketAddr = "10.0.0.2:17421".parse().unwrap();
+        assert_eq!(authorize_bind(addr, Some("lab-token"), true).unwrap(), addr);
+        assert_eq!(
+            authorize_client(addr, Some("lab-token"), true).unwrap(),
+            addr
+        );
+    }
+
+    #[test]
+    fn client_remote_without_allow_does_not_send_token() {
+        let addr: SocketAddr = "8.8.8.8:17421".parse().unwrap();
+        let err = authorize_client(addr, Some("lab-token"), false).unwrap_err();
+        assert!(matches!(err, SecurityError::RemoteDisabled(_)), "{err}");
     }
 }

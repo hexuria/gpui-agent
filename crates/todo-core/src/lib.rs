@@ -18,6 +18,12 @@ pub mod ids {
     pub const EMPTY: &str = "todo-empty";
     pub const STATUS: &str = "todo-status";
     pub const WINDOW: &str = "todo-window";
+    pub const NAV: &str = "todo-nav";
+    pub const NAV_TODOS: &str = "nav-todos";
+    pub const NAV_SETTINGS: &str = "nav-settings";
+    pub const PAGE_TODOS: &str = "page-todos";
+    pub const PAGE_SETTINGS: &str = "page-settings";
+    pub const SETTINGS_CONFIRM_DELETE: &str = "settings-confirm-delete";
 
     pub fn item(id: u64) -> String {
         format!("todo-item-{id}")
@@ -32,6 +38,13 @@ pub mod ids {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Page {
+    #[default]
+    Todos,
+    Settings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Todo {
     pub id: u64,
@@ -39,11 +52,57 @@ pub struct Todo {
     pub done: bool,
 }
 
+/// GUI / client projection of a snapshot. The daemon `TodoStore` remains SoT.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TodoView {
+    pub items: Vec<Todo>,
+    pub draft: String,
+    pub page: Page,
+    pub confirm_delete: bool,
+}
+
+impl TodoView {
+    pub fn from_tree(tree: &UiTree) -> Self {
+        let page = if tree.find(ids::PAGE_SETTINGS).is_some() {
+            Page::Settings
+        } else {
+            Page::Todos
+        };
+        let draft = tree
+            .find(ids::INPUT)
+            .and_then(|node| node.value.clone())
+            .unwrap_or_default();
+        let confirm_delete = tree
+            .find(ids::SETTINGS_CONFIRM_DELETE)
+            .and_then(|node| node.checked)
+            .unwrap_or(false);
+        let mut items = Vec::new();
+        tree.visit(&mut |node| {
+            if let Some(id) = gpui_agent::parse_numbered_id("todo-item-", &node.id) {
+                items.push(Todo {
+                    id,
+                    title: node.name.clone(),
+                    done: node.checked.unwrap_or(false),
+                });
+            }
+        });
+        items.sort_by_key(|todo| todo.id);
+        Self {
+            items,
+            draft,
+            page,
+            confirm_delete,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TodoStore {
     next_id: u64,
     items: Vec<Todo>,
     draft: String,
+    page: Page,
+    confirm_delete: bool,
     platform: PlatformKind,
     shutdown: bool,
 }
@@ -60,9 +119,27 @@ impl TodoStore {
             next_id: 1,
             items: Vec::new(),
             draft: String::new(),
+            page: Page::Todos,
+            confirm_delete: false,
             platform,
             shutdown: false,
         }
+    }
+
+    pub fn page(&self) -> Page {
+        self.page
+    }
+
+    pub fn confirm_delete(&self) -> bool {
+        self.confirm_delete
+    }
+
+    pub fn go(&mut self, page: Page) {
+        self.page = page;
+    }
+
+    pub fn toggle_confirm_delete(&mut self) {
+        self.confirm_delete = !self.confirm_delete;
     }
 
     pub fn items(&self) -> &[Todo] {
@@ -121,48 +198,18 @@ impl TodoStore {
     }
 
     pub fn tree(&self) -> UiTree {
-        let status_name = match self.items.len() {
-            0 => "No todos".to_string(),
-            n => {
-                let done = self.items.iter().filter(|item| item.done).count();
-                format!("{n} todos, {done} done")
-            }
+        let nav = UiNode::navigation(ids::NAV, "Todo")
+            .with_child(UiNode::button(ids::NAV_TODOS, "Todos"))
+            .with_child(UiNode::button(ids::NAV_SETTINGS, "Settings"));
+
+        let page = match self.page {
+            Page::Todos => self.todos_page(),
+            Page::Settings => self.settings_page(),
         };
 
-        let list_children = if self.items.is_empty() {
-            vec![UiNode::new(
-                ids::EMPTY,
-                "note",
-                "No todos yet. Add one above.",
-            )]
-        } else {
-            let mut list_children = Vec::with_capacity(self.items.len());
-            for item in &self.items {
-                list_children.push(
-                    UiNode::new(ids::item(item.id), "listitem", item.title.clone())
-                        .with_checked(item.done)
-                        .with_children(vec![
-                            UiNode::new(ids::toggle(item.id), "checkbox", item.title.clone())
-                                .with_checked(item.done),
-                            UiNode::new(
-                                ids::delete(item.id),
-                                "button",
-                                format!("Delete {}", item.title),
-                            ),
-                        ]),
-                );
-            }
-            list_children
-        };
-
-        let window = UiNode::new(ids::WINDOW, "window", "Agent Todo")
-            .with_child(
-                UiNode::new(ids::INPUT, "textbox", "What needs doing?")
-                    .with_value(self.draft.clone()),
-            )
-            .with_child(UiNode::new(ids::ADD, "button", "Add"))
-            .with_child(UiNode::new(ids::LIST, "list", "Todos").with_children(list_children))
-            .with_child(UiNode::new(ids::STATUS, "status", status_name));
+        let window = UiNode::window(ids::WINDOW, "Agent Todo")
+            .with_child(nav)
+            .with_child(page);
 
         UiTree {
             app: "todo".into(),
@@ -172,7 +219,66 @@ impl TodoStore {
         }
     }
 
+    fn todos_page(&self) -> UiNode {
+        let status_name = match self.items.len() {
+            0 => "No todos".to_string(),
+            n => {
+                let done = self.items.iter().filter(|item| item.done).count();
+                format!("{n} todos, {done} done")
+            }
+        };
+
+        let list_children = if self.items.is_empty() {
+            vec![UiNode::note(ids::EMPTY, "No todos yet. Add one above.")]
+        } else {
+            self.items
+                .iter()
+                .map(|item| {
+                    UiNode::listitem(ids::item(item.id), item.title.clone())
+                        .with_checked(item.done)
+                        .with_child(
+                            UiNode::checkbox(ids::toggle(item.id), item.title.clone())
+                                .with_checked(item.done),
+                        )
+                        .with_child(UiNode::button(
+                            ids::delete(item.id),
+                            format!("Delete {}", item.title),
+                        ))
+                })
+                .collect()
+        };
+
+        UiNode::page(ids::PAGE_TODOS, "Todos")
+            .with_child(
+                UiNode::textbox(ids::INPUT, "What needs doing?").with_value(self.draft.clone()),
+            )
+            .with_child(UiNode::button(ids::ADD, "Add"))
+            .with_child(UiNode::list(ids::LIST, "Todos").with_children(list_children))
+            .with_child(UiNode::status(ids::STATUS, status_name))
+    }
+
+    fn settings_page(&self) -> UiNode {
+        UiNode::page(ids::PAGE_SETTINGS, "Settings").with_child(
+            UiNode::checkbox(ids::SETTINGS_CONFIRM_DELETE, "Confirm before delete")
+                .with_checked(self.confirm_delete),
+        )
+    }
+
     fn click(&mut self, target: &str) -> Result<DispatchResult, String> {
+        if target == ids::NAV_TODOS {
+            self.page = Page::Todos;
+            return Ok(DispatchResult::empty());
+        }
+        if target == ids::NAV_SETTINGS {
+            self.page = Page::Settings;
+            return Ok(DispatchResult::empty());
+        }
+        if target == ids::SETTINGS_CONFIRM_DELETE {
+            self.confirm_delete = !self.confirm_delete;
+            return Ok(DispatchResult::json(serde_json::json!({
+                "confirm_delete": self.confirm_delete
+            })));
+        }
         if target == ids::ADD {
             return self.add_from_draft().map(todo_result);
         }
@@ -239,6 +345,18 @@ impl TodoStore {
             "todo.list" => Ok(DispatchResult::json(
                 serde_json::to_value(&self.items).unwrap(),
             )),
+            "nav.go" => {
+                let page = args
+                    .get("page")
+                    .and_then(|v| v.as_str())
+                    .ok_or("nav.go requires args.page")?;
+                match page {
+                    "todos" => self.page = Page::Todos,
+                    "settings" => self.page = Page::Settings,
+                    other => return Err(format!("unknown page `{other}`")),
+                }
+                Ok(DispatchResult::empty())
+            }
             other => Err(format!("unknown invoke `{other}`")),
         }
     }
@@ -361,10 +479,64 @@ mod tests {
         let tree = store.tree();
         assert!(tree.find(ids::INPUT).is_some());
         assert!(tree.find(ids::ADD).is_some());
+        assert!(tree.find(ids::NAV_TODOS).is_some());
+        assert!(tree.find(ids::NAV_SETTINGS).is_some());
+        assert!(tree.find(ids::PAGE_TODOS).is_some());
         assert!(tree.find(&ids::item(id)).is_some());
         assert!(tree.find(&ids::toggle(id)).is_some());
         assert!(tree.find(&ids::delete(id)).is_some());
         assert_eq!(tree.find(&ids::item(id)).unwrap().name, "Write docs");
+        assert_eq!(
+            tree.find(ids::INPUT).unwrap().role,
+            gpui_agent::role::TEXTBOX
+        );
+        assert_eq!(
+            tree.find(ids::PAGE_TODOS).unwrap().role,
+            gpui_agent::role::PAGE
+        );
+    }
+
+    #[test]
+    fn settings_page_is_a_second_screen() {
+        let mut store = TodoStore::default();
+        add(&mut store, "Keep me");
+        store.dispatch(&Op::click(ids::NAV_SETTINGS)).unwrap();
+        assert_eq!(store.page(), Page::Settings);
+        let tree = store.tree();
+        assert!(tree.find(ids::PAGE_SETTINGS).is_some());
+        assert!(tree.find(ids::SETTINGS_CONFIRM_DELETE).is_some());
+        assert!(tree.find(ids::INPUT).is_none());
+        assert!(tree.find("todo-item-1").is_none());
+
+        store
+            .dispatch(&Op::click(ids::SETTINGS_CONFIRM_DELETE))
+            .unwrap();
+        assert!(store.confirm_delete());
+        store
+            .dispatch(&Op::Invoke {
+                name: "nav.go".into(),
+                args: serde_json::json!({ "page": "todos" }),
+            })
+            .unwrap();
+        assert_eq!(store.page(), Page::Todos);
+        assert!(store.tree().find(ids::PAGE_TODOS).is_some());
+        assert!(store.tree().find("todo-item-1").is_some());
+    }
+
+    #[test]
+    fn view_from_tree_roundtrips_items_and_page() {
+        let mut store = TodoStore::default();
+        add(&mut store, "Milk");
+        store.toggle(1).unwrap();
+        let view = TodoView::from_tree(&store.tree());
+        assert_eq!(view.page, Page::Todos);
+        assert_eq!(view.items.len(), 1);
+        assert_eq!(view.items[0].title, "Milk");
+        assert!(view.items[0].done);
+        store.go(Page::Settings);
+        let settings = TodoView::from_tree(&store.tree());
+        assert_eq!(settings.page, Page::Settings);
+        assert!(settings.items.is_empty());
     }
 
     #[test]

@@ -1,33 +1,47 @@
+#[cfg(feature = "embedded-host")]
 use std::collections::HashMap;
 
+#[cfg(feature = "embedded-host")]
+use gpui_kit::component::ElementExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent as FieldEvent, InputState};
-use gpui_kit::component::{ActiveTheme, ElementExt, Icon, IconName, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use todo_core::{TodoStore, ids};
+#[cfg(feature = "embedded-host")]
+use todo_core::TodoStore;
+#[cfg(not(feature = "embedded-host"))]
+use todo_core::TodoView;
+use todo_core::{Page, ids};
 
-#[cfg(feature = "agent")]
+#[cfg(feature = "embedded-host")]
 use gpui_agent::mailbox::AgentMailbox;
+#[cfg(feature = "embedded-host")]
 use gpui_agent::protocol::PlatformKind;
 
 pub struct TodoApp {
+    #[cfg(feature = "embedded-host")]
     store: TodoStore,
+    #[cfg(not(feature = "embedded-host"))]
+    view: TodoView,
+    #[cfg(not(feature = "embedded-host"))]
+    bridge: crate::daemon_bridge::DaemonBridge,
+    #[cfg(not(feature = "embedded-host"))]
+    daemon_error: Option<String>,
     input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     mailbox: Option<AgentMailbox>,
-    #[cfg(feature = "agent")]
     _refresh: Option<Task<()>>,
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     layout_bounds: HashMap<String, gpui_agent::Bounds>,
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     agent_cursor: gpui_agent::AgentCursor,
 }
 
 impl TodoApp {
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     pub fn new(window: &mut Window, cx: &mut Context<Self>, mailbox: Option<AgentMailbox>) -> Self {
         let mut app = Self::build(window, cx);
         app.mailbox = mailbox;
@@ -46,9 +60,20 @@ impl TodoApp {
         app
     }
 
-    #[cfg(not(feature = "agent"))]
+    #[cfg(not(feature = "embedded-host"))]
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::build(window, cx)
+        let mut app = Self::build(window, cx);
+        app._refresh = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(150))
+                    .await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        }));
+        app
     }
 
     fn build(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -58,7 +83,12 @@ impl TodoApp {
         subscriptions.push(
             cx.subscribe_in(&input, window, |this, state, event, window, cx| {
                 if matches!(event, FieldEvent::Change | FieldEvent::PressEnter { .. }) {
+                    #[cfg(feature = "embedded-host")]
                     this.store.set_draft(state.read(cx).value().to_string());
+                    #[cfg(not(feature = "embedded-host"))]
+                    {
+                        let _ = state;
+                    }
                 }
                 if matches!(event, FieldEvent::PressEnter { .. }) {
                     this.add_from_input(window, cx);
@@ -67,36 +97,162 @@ impl TodoApp {
         );
 
         Self {
+            #[cfg(feature = "embedded-host")]
             store: TodoStore::new(PlatformKind::Desktop),
+            #[cfg(not(feature = "embedded-host"))]
+            view: TodoView::default(),
+            #[cfg(not(feature = "embedded-host"))]
+            bridge: crate::daemon_bridge::DaemonBridge::start(),
+            #[cfg(not(feature = "embedded-host"))]
+            daemon_error: None,
             input,
             _subscriptions: subscriptions,
-            #[cfg(feature = "agent")]
+            #[cfg(feature = "embedded-host")]
             mailbox: None,
-            #[cfg(feature = "agent")]
             _refresh: None,
-            #[cfg(feature = "agent")]
+            #[cfg(feature = "embedded-host")]
             layout_bounds: HashMap::new(),
-            #[cfg(feature = "agent")]
+            #[cfg(feature = "embedded-host")]
             agent_cursor: gpui_agent::AgentCursor::session_default(),
         }
     }
 
     fn add_from_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let title = self.input.read(cx).value().to_string();
-        if self.store.add(title).is_ok() {
-            self.input.update(cx, |state, cx| {
-                state.set_value("", window, cx);
-            });
-            cx.notify();
+        #[cfg(feature = "embedded-host")]
+        {
+            if self.store.add(title).is_ok() {
+                self.input.update(cx, |state, cx| {
+                    state.set_value("", window, cx);
+                });
+                cx.notify();
+            }
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            if !title.trim().is_empty() {
+                self.bridge.set_value(ids::INPUT, title);
+                self.bridge.click(ids::ADD);
+                self.input.update(cx, |state, cx| {
+                    state.set_value("", window, cx);
+                });
+                cx.notify();
+            }
         }
     }
 
+    fn items(&self) -> Vec<todo_core::Todo> {
+        #[cfg(feature = "embedded-host")]
+        {
+            self.store.items().to_vec()
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            self.view.items.clone()
+        }
+    }
+
+    fn page(&self) -> Page {
+        #[cfg(feature = "embedded-host")]
+        {
+            self.store.page()
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            self.view.page
+        }
+    }
+
+    fn confirm_delete(&self) -> bool {
+        #[cfg(feature = "embedded-host")]
+        {
+            self.store.confirm_delete()
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            self.view.confirm_delete
+        }
+    }
+
+    fn go_page(&mut self, page: Page) {
+        #[cfg(feature = "embedded-host")]
+        {
+            self.store.go(page);
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            let target = match page {
+                Page::Todos => ids::NAV_TODOS,
+                Page::Settings => ids::NAV_SETTINGS,
+            };
+            self.bridge.click(target);
+        }
+    }
+
+    fn toggle_item(&mut self, item_id: u64) {
+        #[cfg(feature = "embedded-host")]
+        {
+            let _ = self.store.toggle(item_id);
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            self.bridge.click(ids::toggle(item_id));
+        }
+    }
+
+    fn delete_item(&mut self, item_id: u64) {
+        #[cfg(feature = "embedded-host")]
+        {
+            let _ = self.store.delete(item_id);
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            self.bridge.click(ids::delete(item_id));
+        }
+    }
+
+    fn toggle_confirm_delete(&mut self) {
+        #[cfg(feature = "embedded-host")]
+        {
+            self.store.toggle_confirm_delete();
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            self.bridge.click(ids::SETTINGS_CONFIRM_DELETE);
+        }
+    }
+
+    #[cfg(not(feature = "embedded-host"))]
+    fn apply_daemon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(result) = self.bridge.poll() {
+            match result {
+                Ok(view) => {
+                    self.daemon_error = None;
+                    if view.draft != self.input.read(cx).value().to_string()
+                        && self.page() == Page::Todos
+                    {
+                        // Only push daemon draft when an agent typed; skip if it matches
+                        // after our own clear. Empty daemon draft after add is applied.
+                        if view.draft.is_empty() {
+                            self.input.update(cx, |state, cx| {
+                                state.set_value("", window, cx);
+                            });
+                        }
+                    }
+                    self.view = view;
+                }
+                Err(err) => self.daemon_error = Some(err),
+            }
+        }
+    }
+
+    #[cfg(feature = "embedded-host")]
     fn sync_draft_from_input(&mut self, cx: &App) {
         self.store
             .set_draft(self.input.read(cx).value().to_string());
     }
 
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     fn apply_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(mailbox) = self.mailbox.clone() else {
             return;
@@ -147,7 +303,7 @@ impl TodoApp {
         }
     }
 
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     fn record_window_bounds(&mut self, window: &Window) {
         let bounds = window.bounds();
         self.layout_bounds.insert(
@@ -161,14 +317,14 @@ impl TodoApp {
         );
     }
 
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     fn snapshot_with_bounds(&self) -> gpui_agent::UiTree {
         let mut tree = self.store.tree();
         tree.apply_bounds_map(&self.layout_bounds);
         tree
     }
 
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     fn dispatch_virtual(
         &mut self,
         op: &gpui_agent::Op,
@@ -187,7 +343,7 @@ impl TodoApp {
         }
     }
 
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     fn virtual_click(
         &mut self,
         target: &str,
@@ -206,7 +362,7 @@ impl TodoApp {
         })))
     }
 
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     fn virtual_type(
         &mut self,
         target: &str,
@@ -231,7 +387,7 @@ impl TodoApp {
         })))
     }
 
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     fn virtual_key(
         &mut self,
         target: &str,
@@ -257,7 +413,7 @@ impl TodoApp {
 
     /// Inject move + down + up through GPUI's window event pipeline.
     /// Updates GPUI's in-window mouse position only — never the OS cursor.
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     fn dispatch_pointer_click(&self, x: f32, y: f32, window: &mut Window, cx: &mut Context<Self>) {
         let position = point(px(x), px(y));
         let modifiers = Modifiers::default();
@@ -295,7 +451,7 @@ impl TodoApp {
 
     /// Record a child's painted bounds under a semantic id (previous frame is
     /// what virtual click uses — same timing as real input).
-    #[cfg(feature = "agent")]
+    #[cfg(feature = "embedded-host")]
     fn track_as(
         &self,
         semantic_id: &str,
@@ -321,7 +477,7 @@ impl TodoApp {
         })
     }
 
-    #[cfg(not(feature = "agent"))]
+    #[cfg(not(feature = "embedded-host"))]
     fn track_as(
         &self,
         _semantic_id: &str,
@@ -334,13 +490,14 @@ impl TodoApp {
 
 impl Render for TodoApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(feature = "agent")]
+        #[cfg(feature = "embedded-host")]
         self.apply_agent(window, cx);
-        #[cfg(not(feature = "agent"))]
-        let _ = window;
+        #[cfg(not(feature = "embedded-host"))]
+        self.apply_daemon(window, cx);
 
         let theme = cx.theme().clone();
-        let items = self.store.items().to_vec();
+        let items = self.items();
+        let page = self.page();
         let status = match items.len() {
             0 => "No todos".to_string(),
             n => {
@@ -349,7 +506,7 @@ impl Render for TodoApp {
             }
         };
 
-        #[cfg(feature = "agent")]
+        #[cfg(feature = "embedded-host")]
         let cursor = self.agent_cursor.clone();
 
         v_flex()
@@ -370,61 +527,136 @@ impl Render for TodoApp {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Agent Todo"),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.muted_foreground)
-                            .child("A GPUI Kit 0.6 app with an in-process agent control plane."),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(self.track_as(
-                        ids::INPUT,
-                        cx,
-                        div().id(ids::INPUT).flex_1().child(Input::new(&self.input)),
-                    ))
-                    .child(
-                        self.track_as(
-                            ids::ADD,
-                            cx,
-                            Button::new(ids::ADD)
-                                .primary()
-                                .icon(IconName::Plus)
-                                .label("Add")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.add_from_input(window, cx);
-                                })),
-                        ),
-                    ),
-            )
-            .child(self.render_list(items, theme.muted_foreground, theme.border, cx))
-            .child(
-                div()
-                    .id(ids::STATUS)
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .child(status),
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(
+                        if cfg!(feature = "embedded-host") {
+                            "In-process AgentHost (widget E2E). Product SoT is the daemon."
+                        } else {
+                            "GUI client of todo-headless (ADR-001). Start the daemon to mutate."
+                        },
+                    )),
             )
             .when(
                 {
-                    #[cfg(feature = "agent")]
+                    #[cfg(not(feature = "embedded-host"))]
                     {
-                        cursor.visible
+                        self.daemon_error.is_some()
                     }
-                    #[cfg(not(feature = "agent"))]
+                    #[cfg(feature = "embedded-host")]
                     {
                         false
                     }
                 },
                 |el| {
-                    #[cfg(feature = "agent")]
+                    #[cfg(not(feature = "embedded-host"))]
+                    {
+                        let err = self
+                            .daemon_error
+                            .clone()
+                            .unwrap_or_else(|| "daemon unavailable".into());
+                        el.child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .child(format!("daemon: {err}")),
+                        )
+                    }
+                    #[cfg(feature = "embedded-host")]
+                    {
+                        el
+                    }
+                },
+            )
+            .child(
+                h_flex()
+                    .id(ids::NAV)
+                    .gap_2()
+                    .child(
+                        Button::new(ids::NAV_TODOS)
+                            .when(page == Page::Todos, |b| b.primary())
+                            .when(page != Page::Todos, |b| b.ghost())
+                            .label("Todos")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.go_page(Page::Todos);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new(ids::NAV_SETTINGS)
+                            .when(page == Page::Settings, |b| b.primary())
+                            .when(page != Page::Settings, |b| b.ghost())
+                            .label("Settings")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.go_page(Page::Settings);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(page == Page::Todos, |el| {
+                el.child(
+                    h_flex()
+                        .gap_2()
+                        .w_full()
+                        .child(self.track_as(
+                            ids::INPUT,
+                            cx,
+                            div().id(ids::INPUT).flex_1().child(Input::new(&self.input)),
+                        ))
+                        .child(
+                            self.track_as(
+                                ids::ADD,
+                                cx,
+                                Button::new(ids::ADD)
+                                    .primary()
+                                    .icon(IconName::Plus)
+                                    .label("Add")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.add_from_input(window, cx);
+                                    })),
+                            ),
+                        ),
+                )
+                .child(self.render_list(items, theme.muted_foreground, theme.border, cx))
+                .child(
+                    div()
+                        .id(ids::STATUS)
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(status),
+                )
+            })
+            .when(page == Page::Settings, |el| {
+                let confirm = self.confirm_delete();
+                el.child(
+                    self.track_as(
+                        ids::SETTINGS_CONFIRM_DELETE,
+                        cx,
+                        Checkbox::new(ids::SETTINGS_CONFIRM_DELETE)
+                            .label("Confirm before delete")
+                            .checked(confirm)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_confirm_delete();
+                                cx.notify();
+                            })),
+                    ),
+                )
+            })
+            .when(
+                {
+                    #[cfg(feature = "embedded-host")]
+                    {
+                        cursor.visible
+                    }
+                    #[cfg(not(feature = "embedded-host"))]
+                    {
+                        false
+                    }
+                },
+                |el| {
+                    #[cfg(feature = "embedded-host")]
                     {
                         el.child(agent_cursor_overlay(&cursor))
                     }
-                    #[cfg(not(feature = "agent"))]
+                    #[cfg(not(feature = "embedded-host"))]
                     {
                         el
                     }
@@ -433,7 +665,7 @@ impl Render for TodoApp {
     }
 }
 
-#[cfg(feature = "agent")]
+#[cfg(feature = "embedded-host")]
 fn agent_cursor_overlay(cursor: &gpui_agent::AgentCursor) -> impl IntoElement {
     // Painted overlay only. No hitbox id, no OS pointer warp.
     div()
@@ -523,13 +755,15 @@ impl TodoApp {
                             let entity = entity.clone();
                             move |checked, _window, app| {
                                 entity.update(app, |this, cx| {
-                                    if let Some(current) =
-                                        this.store.items().iter().find(|t| t.id == item_id)
-                                    {
-                                        if current.done != *checked {
-                                            let _ = this.store.toggle(item_id);
-                                            cx.notify();
-                                        }
+                                    let current_done = this
+                                        .items()
+                                        .iter()
+                                        .find(|t| t.id == item_id)
+                                        .map(|t| t.done)
+                                        .unwrap_or(false);
+                                    if current_done != *checked {
+                                        this.toggle_item(item_id);
+                                        cx.notify();
                                     }
                                 });
                             }
@@ -552,24 +786,24 @@ impl TodoApp {
                         .icon(Icon::new(IconName::Delete).small())
                         .label("Delete")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            let _ = this.store.delete(item_id);
+                            this.delete_item(item_id);
                             cx.notify();
                         })),
                 ),
             );
 
-        #[cfg(feature = "agent")]
+        #[cfg(feature = "embedded-host")]
         {
             self.track_as(&row_id, cx, row).into_any_element()
         }
-        #[cfg(not(feature = "agent"))]
+        #[cfg(not(feature = "embedded-host"))]
         {
             row.into_any_element()
         }
     }
 }
 
-#[cfg(feature = "agent")]
+#[cfg(feature = "embedded-host")]
 fn screenshot_this_window(
     window: &Window,
     path: Option<&str>,
