@@ -1,5 +1,7 @@
 # Docs
 
+Epic [#10](https://github.com/hexuria/gpui-agent/issues/10) (SDK, daemon, GUI-as-client, remote bind, packaging) landed on `main` in [#30](https://github.com/hexuria/gpui-agent/pull/30).
+
 | Doc | What |
 | --- | --- |
 | [ADR-001-daemon-sot.md](ADR-001-daemon-sot.md) | Daemon is source of truth; GUI is a client |
