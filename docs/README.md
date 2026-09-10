@@ -8,6 +8,7 @@
 | [SECURITY.md](SECURITY.md) | Trust model, caps, remote bind, recipes |
 | [INTEGRATING.md](INTEGRATING.md) | `AgentHost` checklist |
 | [PROTOCOL.md](PROTOCOL.md) | Wire format v1 |
+| [RECORDING.md](RECORDING.md) | Screenshot backends (Mac window vs honest unavailable) |
 | [RECIPES.md](RECIPES.md) | Experimental recipes |
 | [TRY_ON_MAC.md](TRY_ON_MAC.md) | Laptop copy-paste |
 | [PERF.md](PERF.md) | Session reuse numbers |

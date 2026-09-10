@@ -9,6 +9,9 @@ mod agent_bridge;
 #[cfg(not(feature = "embedded-host"))]
 mod daemon_bridge;
 
+#[cfg(all(feature = "embedded-host", target_os = "macos"))]
+mod macos_window;
+
 use app::TodoApp;
 
 fn main() {

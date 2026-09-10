@@ -145,7 +145,9 @@ pub enum Op {
     ///
     /// The host writes `path` on the same machine so the image does not
     /// ride the 1 MiB NDJSON line. Headless hosts return
-    /// `screenshot_unavailable` instead of a fake image.
+    /// `screenshot_unavailable` instead of a fake image. macOS desktop
+    /// writes **this window** via `screencapture -l`. Linux/Windows
+    /// desktop stays unavailable (no full-desktop capture).
     Screenshot {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,

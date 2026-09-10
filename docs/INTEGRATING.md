@@ -8,7 +8,7 @@ Cookbook and `TestHost`: [SDK.md](SDK.md). Sync model: [ADR-001](ADR-001-daemon-
 
 | Gate | What you do |
 | --- | --- |
-| Compile | Feature-gate the bridge (`agent`). Default it **off** in product builds. |
+| Compile | Feature-gate the in-process bridge. This repo’s sample uses `embedded-host` (default **off**). Other apps often name the flag `agent`. Default it **off** in product builds. |
 | Runtime | Start the server only when `GPUI_AGENT=1` (`true`/`yes`/`on`). |
 | Release | Also require `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | Loopback default. `from_env` / `authorize_bind`. Non-loopback needs `GPUI_AGENT_REMOTE=1` and a token. See [SECURITY.md](SECURITY.md). |
@@ -49,9 +49,12 @@ impl AgentHost for MyStore {
 Desktop GPUI: spawn `spawn_mailbox` and drain `AgentMailbox` on the UI
 thread (the TCP thread must not touch GPUI objects). Intercept
 `delivery=virtual` there and call `Window::dispatch_event` /
-`dispatch_keystroke` — never OS HID. Headless / tests: `spawn_host`
-with `Arc<Mutex<YourStore>>` and return `virtual_unavailable` for
-virtual ops.
+`dispatch_keystroke` — never OS HID. Intercept `Op::Screenshot` the
+same way: on macOS call `gpui_agent::capture_window_via_screencapture`
+with this window’s `CGWindowID`; on other OSes return
+`screenshot_unavailable`. Headless / tests: `spawn_host`
+with `Arc<Mutex<YourStore>>` and return `virtual_unavailable` /
+`screenshot_unavailable`.
 
 ## 3. Assign stable ids
 
@@ -128,11 +131,18 @@ reuses a single TCP session across `tools/call`.
       ([RECIPES.md](RECIPES.md); laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md)).
       `invoke` names in the recipe must match the host allow-list;
       shutdown recipes need `--yes`. Optional `--screenshot-dir` is
-      observe-only; headless stays `screenshot_unavailable`. Recipes
-      still cannot bypass [SECURITY.md](SECURITY.md#recipes-experimental).
+      observe-only; headless / Linux / Windows stay
+      `screenshot_unavailable`. macOS **embedded-host** writes this
+      window (`screencapture -l`). Recipes still cannot bypass
+      [SECURITY.md](SECURITY.md#recipes-experimental). Visual note:
+      [RECORDING.md](RECORDING.md).
 - [ ] Product builds leave the feature off
 - [ ] `hello.deliveries` lists `semantic` and, on a painted GPUI window, `virtual`
 - [ ] `hello.auth` is `"required"` when `GPUI_AGENT_TOKEN` is set on the host (`"none"` otherwise)
 - [ ] Recipe / MCP clients export the **same** `GPUI_AGENT_TOKEN` as the host
 - [ ] Virtual click/type/key go through the mailbox → UI thread → `Window::dispatch_event` / `dispatch_keystroke` (never OS HID)
-- [ ] Headless returns `virtual_unavailable` instead of pretending
+- [ ] Headless returns `virtual_unavailable` / `screenshot_unavailable`
+      instead of pretending
+- [ ] Desktop screenshot runs on the UI thread with a real `Window`
+      (macOS **embedded-host**: `screencapture -l` of that window only).
+      A GUI that is only a daemon client cannot serve a window PNG.

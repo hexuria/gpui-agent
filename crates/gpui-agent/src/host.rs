@@ -13,9 +13,13 @@ pub trait AgentHost: Send {
 
     /// Observe-only PNG of the **app surface** (not the desktop).
     ///
-    /// Write `path` on this machine. Headless hosts — and desktop GPUI
-    /// until it can export a frame — must return
+    /// Write `path` on this machine. Headless hosts must return
     /// [`crate::screenshot_unavailable`] instead of inventing pixels.
+    /// Desktop GPUI should intercept `Op::Screenshot` on the UI thread
+    /// (real `Window`) and call
+    /// [`crate::capture_window_via_screencapture`] on macOS. Linux /
+    /// Windows desktop stays unavailable: `Window::render_to_image` is
+    /// `test-support` only on this gpui-kit pin.
     fn screenshot(&self, path: Option<&str>) -> Result<DispatchResult, String> {
         let _ = path;
         Err(crate::screenshot_unavailable(

@@ -7,6 +7,7 @@
 #
 # P2: one-off click/snapshot stay untokened. `recipe run` / `mcp` require
 # a token; the recipe phase below exports the same value on host and CLI.
+# P3: headless screenshot must stay screenshot_unavailable (no fake PNG).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,8 +20,9 @@ export GPUI_AGENT_ADDR="$ADDR"
 echo "==> building CLI + headless host"
 cargo build -p gpui-agent-cli -p todo-headless
 
-CLI="$ROOT/target/debug/gpui-agent"
-HOST="$ROOT/target/debug/todo-headless"
+TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
+CLI="$TARGET/debug/gpui-agent"
+HOST="$TARGET/debug/todo-headless"
 
 cleanup() {
   if [[ -n "${HOST_PID:-}" ]] && kill -0 "$HOST_PID" 2>/dev/null; then
@@ -50,6 +52,18 @@ HOST_PID=$!
 echo "==> wait until ready"
 "$CLI" --addr "$ADDR" wait
 "$CLI" --addr "$ADDR" hello
+
+echo "==> screenshot is honestly unavailable on headless (no fake PNG)"
+SHOT="$(mktemp -u /tmp/gpui-agent-smoke-shot-XXXXXX.png)"
+rm -f "$SHOT"
+if "$CLI" --addr "$ADDR" screenshot --out "$SHOT"; then
+  echo "expected screenshot_unavailable from headless" >&2
+  exit 1
+fi
+if [[ -e "$SHOT" ]]; then
+  echo "headless must not invent $SHOT" >&2
+  exit 1
+fi
 
 echo "==> snapshot (empty)"
 "$CLI" --addr "$ADDR" snapshot --pretty

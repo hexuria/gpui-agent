@@ -14,9 +14,9 @@ branches. Remote heads stay as a museum; they are not deleted.
 | **P0** | Session reuse, NDJSON buffer reuse, flatten, mailbox `mem::take` | **Merged** [#6](https://github.com/hexuria/gpui-agent/pull/6) |
 | **P1** | Recipes (JSON canonical, `.wants` alias), sequential session `rpc`, honest `screenshot` op + `--screenshot-dir` | **Merged** [#9](https://github.com/hexuria/gpui-agent/pull/9) |
 | **P2** | Token required for CLI `recipe run` and `mcp` only (same token on host) | **Merged** [#19](https://github.com/hexuria/gpui-agent/pull/19) |
-| **P3** | macOS app-window PNG via `screencapture -l`; headless stays `screenshot_unavailable` | **Open** [#20](https://github.com/hexuria/gpui-agent/pull/20) — keep |
-| **P4** | CI: headless recipe receipt `"ok"` + `session_reused` on `ubuntu-latest` | **Open** [#21](https://github.com/hexuria/gpui-agent/pull/21) — keep |
-| **P5** | This note + close leftover #4/#5 without merge | This PR |
+| **P3** | macOS app-window PNG via `screencapture -l`; headless stays `screenshot_unavailable` | **Merged** [#20](https://github.com/hexuria/gpui-agent/pull/20) |
+| **P4** | CI: headless recipe receipt `"ok"` + `session_reused` on `ubuntu-latest` | **Merged** [#21](https://github.com/hexuria/gpui-agent/pull/21) |
+| **P5** | This note + close leftover #4/#5 without merge | **Merged** [#22](https://github.com/hexuria/gpui-agent/pull/22) |
 
 Earlier merged work that is not a no-brainer phase: [#1](https://github.com/hexuria/gpui-agent/pull/1)
 (framework-agnostic CLI/MCP), [#2](https://github.com/hexuria/gpui-agent/pull/2)
@@ -35,7 +35,7 @@ Earlier merged work that is not a no-brainer phase: [#1](https://github.com/hexu
 ## What was duplicated on #4/#5 and dropped from `main`
 
 Do **not** cherry-pick or rebase these branches onto current `main`.
-Duplicate work that already landed (or is in flight as #20/#21):
+Duplicate work that already landed as #20/#21:
 
 - Session reuse, NDJSON line buffers, flatten, mailbox `mem::take` (P0 / #6)
 - Recipes, TMP-shaped schemas, sequential `rpc` on the kept session (P1 / #9)
@@ -53,15 +53,15 @@ If a leftover experiment is wanted later: **new branch from current
 `main`**, re-implement only the not-yet-landed piece. Drop duplicate
 client / ndjson / flatten / mailbox.
 
-## Later open PRs (verified 2026-09-09 against GitHub; not this branch)
+## Later PRs (inventory written 2026-09-09; updated after merge)
 
-These landed as separate drafts on current `main` after this inventory
-was first written. Keep them; do not fold them into P5.
+These were separate drafts on `main` after this inventory was first
+written. Do not fold leftover #4/#5 into them. They have since merged:
 
 | PR | Title | Disposition |
 | --- | --- | --- |
-| [#23](https://github.com/hexuria/gpui-agent/pull/23) | Pipeline all-Read recipe waves; keep writes sequential | **Open draft** (`gol/read-wave-pipeline-b20f`). This is the `rpc_pipeline` follow-on (include `4d464c7` retry-after-write + sibling receipts). |
-| [#24](https://github.com/hexuria/gpui-agent/pull/24) | MCP `isError` on failed `recipe_run`; `$params` do not rewrite `id`/`needs` | **Open draft** (`gol/mcp-iserror-params-b20f`). This is the P1 review leftover. |
+| [#23](https://github.com/hexuria/gpui-agent/pull/23) | Pipeline all-Read recipe waves; keep writes sequential | **Merged.** `rpc_pipeline` follow-on (include `4d464c7` retry-after-write + sibling receipts). |
+| [#24](https://github.com/hexuria/gpui-agent/pull/24) | MCP `isError` on failed `recipe_run`; `$params` do not rewrite `id`/`needs` | **Merged.** P1 review leftover. |
 
 GitHub facts for the closed leftovers (same day this note was written):
 

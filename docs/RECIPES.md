@@ -12,8 +12,9 @@ TCP session, many ops — instead of a tool round-trip per action.
 thin alias. Laptop (pull + run only): [TRY_ON_MAC.md](TRY_ON_MAC.md).
 Threat model vs PR #3 caps: [SECURITY.md](SECURITY.md#recipes-experimental).
 Wire ops stay one NDJSON request each: [PROTOCOL.md](PROTOCOL.md).
-Roadmap: [NO_BRAINER_PLAN.md](NO_BRAINER_PLAN.md) (P0–P2 are on
-`main`; this tree includes **P4** CI recipe receipt).
+Roadmap: [NO_BRAINER_PLAN.md](NO_BRAINER_PLAN.md) (P0–P5 are on `main`,
+including **P3** Mac window PNG [#20](https://github.com/hexuria/gpui-agent/pull/20)
+and **P4** CI recipe receipt [#21](https://github.com/hexuria/gpui-agent/pull/21)).
 
 ## What was borrowed
 
@@ -143,7 +144,9 @@ gpui-agent recipe resolve 'add a todo titled Buy milk'
 # host required — JSON is the documented path
 gpui-agent recipe run examples/recipes/todo-crud.json --set title="Buy milk"
 
-# AI mid-run: intended PNGs after every step (headless lists screenshot_unavailable)
+# AI mid-run: intended PNGs after every step
+# headless / daemon / default GUI client / Linux / Windows: receipt lists screenshot_unavailable (no files)
+# macOS embedded-host todo: real PNG of this window (Screen Recording)
 gpui-agent recipe run examples/recipes/todo-crud.json --set title="Buy milk" \
   --screenshot-dir artifacts/steps/
 ```
@@ -157,9 +160,10 @@ gpui-agent screenshot --out artifacts/steps/mid.png
 JSON steps may set `"screenshot": true`; wants lines may take
 `--screenshot`. With `--screenshot-flagged`, only those steps are
 captured. Names are `001-wait.png`, `002-add.png`, … and appear on the
-receipt. Headless (and current desktop GPUI with no export) returns
-`screenshot_unavailable` and **does not invent a file**. Real desktop
-PNG is P3.
+receipt. Headless, the daemon, the default GUI-as-daemon-client, and
+Linux/Windows desktop GPUI return `screenshot_unavailable` and **do not
+invent a file**. macOS `todo --features embedded-host` writes **this
+window** via `screencapture -l`. See [RECORDING.md](RECORDING.md).
 
 Do **not** spawn `gpui-agent` once per op (the old `scripts/smoke.sh`
 pattern). That pays process + TCP handshake every time.
@@ -263,7 +267,7 @@ do the same things the CLI already can. They do not add privilege.
 | Bind | CLI still `ensure_loopback` before connect |
 | Token | CLI `recipe run` and `mcp` **refuse to start** without a non-empty `GPUI_AGENT_TOKEN` or `--token` (P2). Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Host token stays optional for one-off `click`/`snapshot`. **Set the same token on host and client** for recipe/MCP. `hello.auth` is `"required"` \| `"none"`. |
 | Line / conn / idle / mailbox | Unchanged. Recipe cap 256 is extra, not a replacement. |
-| No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--screenshot-dir` is observe-only. |
+| No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--screenshot-dir` is observe-only (macOS **embedded-host**: this window; never the desktop). |
 | No shell | Resolve/plan/run never call `Command`. `invoke` is still an in-process host callback. Unknown invoke names are rejected. |
 | Shutdown | Plans with `Effect::Exit` require `--yes` (rwmcp-style). |
 
@@ -359,9 +363,11 @@ cargo bench -p gpui-agent-recipe --bench recipe_plan -- --quick
    baked in. A `schemas/*.json` directory is the obvious next step.
 7. **Fingerprint stability?** Today it is `DefaultHasher` of the
    compiled ops — fine for one process, not a cross-version lock.
-8. **Real desktop PNG (P3)?** Headless stays honest
-   (`screenshot_unavailable`). Mac `screencapture -l` is in flight as
-   [PR #20](https://github.com/hexuria/gpui-agent/pull/20).
+8. **Real desktop PNG (P3).** Landed as
+   [PR #20](https://github.com/hexuria/gpui-agent/pull/20). Headless /
+   daemon / default GUI client stay honest (`screenshot_unavailable`).
+   macOS **embedded-host** uses `screencapture -l`. `--record` /
+   SVG+PPM / ScreenCaptureKit stay later.
 9. **CI receipt assert (P4).** Gate is receipt `ok` (+ `session_reused`), not pixels.
    Landed as [PR #21](https://github.com/hexuria/gpui-agent/pull/21).
 
@@ -373,7 +379,8 @@ crates/gpui-agent          Session reuse, ndjson buffers, tree/mailbox, screensh
 crates/gpui-agent-cli      experimental recipe validate|plan|run|resolve + MCP tools
 examples/recipes/          Sample todo CRUD (JSON canonical + .wants alias)
 docs/RECIPES.md            This note
-docs/TRY_ON_MAC.md         Pull this branch and run it on a laptop
+docs/TRY_ON_MAC.md         Pull + run recipes on a laptop (headless first)
+docs/RECORDING.md          PNG vs --record (P3)
 docs/SECURITY.md           Caps + recipe threat model
 docs/NO_BRAINER_PLAN.md    P0–P5 roadmap
 .github/workflows/ci.yml   Headless cargo test + recipe receipt

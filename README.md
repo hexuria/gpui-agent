@@ -8,7 +8,7 @@ The CLI and MCP tools are **framework-agnostic**. They speak only the protocol o
 
 **Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md).
 
-**Experimental recipes (P1).** JSON is canonical (`.wants` also accepted). `gpui-agent recipe validate|plan|run|resolve` (and MCP `recipe_*`) batch many protocol ops in one process on that kept session. **P2:** `recipe run` and `mcp` require a non-empty `GPUI_AGENT_TOKEN` or `--token` (same value on the host). **P4:** GitHub Actions runs the headless recipe and fails unless the receipt is `"ok": true`. See [docs/RECIPES.md](docs/RECIPES.md#ci-p4). Merge roadmap: [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md). Leftover experimental PRs: [docs/STACK_HYGIENE.md](docs/STACK_HYGIENE.md).
+**Experimental recipes (P1).** JSON is canonical (`.wants` also accepted). `gpui-agent recipe validate|plan|run|resolve` (and MCP `recipe_*`) batch many protocol ops in one process on that kept session. **P2:** `recipe run` and `mcp` require a non-empty `GPUI_AGENT_TOKEN` or `--token` (same value on the host). **P3:** `screenshot` writes a PNG of the **app window** on macOS when the in-process host is running (`cargo run -p todo --features embedded-host`, `screencapture -l`, Screen Recording). Headless, the default GUI-as-daemon-client, and Linux/Windows stay `screenshot_unavailable` (no fake file). **P4:** GitHub Actions runs the headless recipe and fails unless the receipt is `"ok": true`. See [docs/RECIPES.md](docs/RECIPES.md#ci-p4), [docs/RECORDING.md](docs/RECORDING.md). Roadmap: [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md). Leftover experimental PRs: [docs/STACK_HYGIENE.md](docs/STACK_HYGIENE.md).
 
 ```mermaid
 flowchart LR
@@ -131,11 +131,12 @@ docs/SDK.md                Embeddable SDK cookbook
 docs/INSTALL.md            cargo install CLI + daemon (no GPUI)
 docs/PROTOCOL.md           Wire format
 docs/INTEGRATING.md        How to embed AgentHost in another app
-docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P3 Mac PNG still open as #20)
+docs/NO_BRAINER_PLAN.md    P0–P5 roadmap (P3 Mac PNG merged as #20)
 docs/STACK_HYGIENE.md      P5 leftover experiment PRs
+docs/RECORDING.md          P3 screenshot backends (Mac window vs honest unavailable)
 docs/PERF.md               P0 Criterion numbers (session vs reconnect)
 docs/RECIPES.md            Experimental recipes (JSON canonical)
-docs/TRY_ON_MAC.md         Pull this branch and run recipes on a laptop
+docs/TRY_ON_MAC.md         Pull + run recipes on a laptop (headless first)
 docs/SECURITY.md           Trust model, caps, remote bind, recipe threat model
 examples/todo.sh           Demo-only invoke wrappers
 examples/recipes/          Sample todo CRUD recipe (JSON + wants)
@@ -177,7 +178,7 @@ The window is a **client of the daemon** ([ADR-001](docs/ADR-001-daemon-sot.md))
 
 ```bash
 # terminal 1 — source of truth
-GPUI_AGENT=1 cargo run -p todo-headless -- serve -- serve
+GPUI_AGENT=1 cargo run -p todo-headless -- serve
 
 # terminal 2 — GUI client
 cargo run -p todo
@@ -196,7 +197,7 @@ This is the Flutter `ai_flutter_agent` / semantics-tree loop, adapted to GPUI Ki
 1. **Perceive.** `gpui-agent snapshot` (or MCP tool `snapshot`). You get widgets with **stable ids the app assigned**, plus roles, names, and state. Do **not** scrape pixels to decide what to click.
 2. **Plan.** Choose an action against those ids. Prefer `invoke` when the host exposes a named command; use `set-value` + `click` (`delivery=semantic`, the default) for CI. Use `--delivery virtual` only when you need the real GPUI pointer/key path (hover, hit-test, focus, IME).
 3. **Act.** `click`, `type`, `set-value`, `key`, or `invoke`. Virtual delivery never shares the host HID — it synthesizes events inside the app window and paints an agent cursor overlay.
-4. **Verify.** `assert --id page-root` (or re-snapshot and inspect JSON). Optionally `screenshot --out FILE.png` between steps so an agent can see the app surface. Headless returns `screenshot_unavailable` instead of a fake image. If the node is missing or the field is wrong, the CLI exits non-zero.
+4. **Verify.** `assert --id page-root` (or re-snapshot and inspect JSON). Optionally `screenshot --out FILE.png` between steps so an agent can see the app surface. Headless, the daemon, and Linux/Windows return `screenshot_unavailable` instead of a fake image. A real PNG is macOS **embedded-host** only (`screencapture -l` of that window). If the node is missing or the field is wrong, the CLI exits non-zero.
 
 To change screens: click a nav control, then assert the destination root id is present.
 
@@ -271,10 +272,10 @@ Automation is **opt-in and off by default**. Full audit: [docs/SECURITY.md](docs
 
 | Gate | Default |
 | --- | --- |
-| Compile | Feature-gate the bridge (this demo’s `todo` feature `agent` is on; a product build should default it **off**) |
+| Compile | Feature-gate the in-process bridge. This demo’s `todo` defaults `embedded-host` **off** (GUI is a daemon client). Product builds should keep the equivalent flag **off**. |
 | Runtime | `GPUI_AGENT=1` (`true`/`yes`/`on` also work) |
 | Release binaries | Also require `GPUI_AGENT_ALLOW_RELEASE=1` |
-| Bind address | Loopback only (`127.0.0.1:17421`). Non-loopback `GPUI_AGENT_ADDR` is refused. The CLI also refuses a non-loopback `--addr`. |
+| Bind address | Loopback default (`127.0.0.1:17421`). Non-loopback needs `GPUI_AGENT_REMOTE=1` **and** a token. The CLI refuses a non-loopback `--addr` unless `--allow-remote` / `GPUI_AGENT_ALLOW_REMOTE=1` **and** a token. Plaintext TCP+token is lab-only. |
 | Optional host token | `GPUI_AGENT_TOKEN` — when set, every request must repeat it. **Set this on shared machines.** |
 | Required for `recipe run` / `mcp` | Non-empty `GPUI_AGENT_TOKEN` or `--token` on the **client**. Set the **same** value on the host. One-off `click`/`snapshot`/`hello` do not require a client token. `hello.auth` is `"required"` or `"none"`. |
 | DoS caps | 1 MiB NDJSON line, 32 concurrent connections, 128 mailbox depth, 30s idle timeout |
@@ -326,21 +327,20 @@ See [docs/PROTOCOL.md](docs/PROTOCOL.md#delivery-modes-click--type--key).
 - **Semantic remains the default.** Virtual is opt-in per op (`delivery: virtual`) and still requires `GPUI_AGENT=1`.
 - **Virtual is a first slice:** pointer move/down/up at node bounds + keystrokes into a focused field. No OS cursor warping APIs.
 - **Bounds are zero** on the headless host. Desktop fills them from the last painted frame when the agent bridge is on.
-- **`screenshot` is observe-only.** The host writes a local PNG of the app surface (not the desktop). Headless / no-export GPUI returns `screenshot_unavailable` instead of inventing pixels. Recipe `--screenshot-dir` lists those paths on the receipt. Real desktop PNG is P3.
+- **`screenshot` is observe-only.** The host writes a local PNG of the app surface (not the desktop). Headless / daemon / Linux / Windows return `screenshot_unavailable` instead of inventing pixels. macOS **embedded-host** `todo` uses `screencapture -l` of this window (Screen Recording). The default GUI client does not host the agent port, so it cannot serve a window PNG. Recipe `--screenshot-dir` lists those paths on the receipt. See [docs/RECORDING.md](docs/RECORDING.md).
 - **The desktop window needs a GPU/display.** Cloud agents should use a headless `AgentHost` + `cargo test`.
 - **Not a GPUI patch.** No fork of `gpui-kit`. When GPUI exposes a first-class test-id / a11y export, this crate should consume it instead of a parallel registry.
-- **Single-app, local only.** No multi-window routing, no remote attach.
+- **Single-app.** No multi-window routing. Remote bind is an authenticated opt-in (plaintext TCP+token, lab-only until TLS). See [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Next steps
 
-Phased plan (P0–P2, P4, pipeline, and MCP hardenings are in this tree; P3 Mac PNG is still [#20](https://github.com/hexuria/gpui-agent/pull/20); P5 hygiene): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md), [docs/STACK_HYGIENE.md](docs/STACK_HYGIENE.md).
+Phased plan (P0–P5 including P3 Mac PNG [#20](https://github.com/hexuria/gpui-agent/pull/20), pipeline, and MCP hardenings): [docs/NO_BRAINER_PLAN.md](docs/NO_BRAINER_PLAN.md), [docs/STACK_HYGIENE.md](docs/STACK_HYGIENE.md).
 
 1. Richer virtual input (scroll, drag, IME composition, multi-click)
-2. In-app GPUI offscreen frames so `screenshot` can write real pixels when a GPU is present (P3 — [PR #20](https://github.com/hexuria/gpui-agent/pull/20))
-3. WASM host implementing `AgentHost` for `platform: web`
-4. Auto-export nodes from AccessKit so apps register fewer ids by hand
-5. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store
-6. Close leftover stacked PRs #4/#5 without merging them (P5)
+2. WASM host implementing `AgentHost` for `platform: web`
+3. Auto-export nodes from AccessKit so apps register fewer ids by hand
+4. GPUI `#[gpui_kit::test]` visual tests once `test-support` is wired through the same store
+5. `--record` / in-app `render_to_image` in production (ask first; still `test-support` only on this gpui pin)
 
 ## License
 

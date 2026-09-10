@@ -61,7 +61,9 @@ enum Command {
         #[arg(long)]
         pretty: bool,
     },
-    /// Observe-only PNG of the app surface (not the desktop). Host writes `--out`.
+    /// Observe-only PNG of the **app surface**. Host writes `--out`.
+    /// Headless / Linux / Windows: `screenshot_unavailable` (no fake file).
+    /// macOS desktop: PNG of **this window** via `screencapture -l`.
     Screenshot {
         /// Destination PNG on this machine so the image does not ride NDJSON.
         #[arg(long)]

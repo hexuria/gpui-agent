@@ -38,7 +38,7 @@ Product mutations for agent-machine workflows go through the daemon.
 
 - No event-bus / push protocol bump in this ADR.
 - GUI v1 is **snapshot poll** plus ordinary ops (`click`, `set_value`, `invoke`, …) over `AgentClient`.
-- Screenshot stays honest: headless remains `screenshot_unavailable`; desktop PNG is a later host concern (parked Mac work is not this ADR).
+- Screenshot stays honest: headless / daemon remain `screenshot_unavailable`. A real Mac window PNG exists only on the in-process **embedded-host** mailbox path (`screencapture -l` of that window; [#20](https://github.com/hexuria/gpui-agent/pull/20)). The default GUI client does not host the agent port, so it cannot serve a PNG.
 - Caps, no OS HID, semantic default, no wire `batch` — unchanged.
 
 ## Consequences

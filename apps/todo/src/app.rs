@@ -271,6 +271,15 @@ impl TodoApp {
                     }
                     Err(error) => gpui_agent::Response::err(&posted.request.id, error),
                 }
+            } else if let gpui_agent::Op::Screenshot { path } = &posted.request.op {
+                match screenshot_this_window(window, path.as_deref()) {
+                    Ok(result) => {
+                        let mut resp = gpui_agent::Response::ok(&posted.request.id);
+                        resp.result = result.value;
+                        resp
+                    }
+                    Err(error) => gpui_agent::Response::err(&posted.request.id, error),
+                }
             } else {
                 let mut response =
                     gpui_agent::handle_request(&mut self.store, posted.request.clone(), None);
@@ -791,5 +800,28 @@ impl TodoApp {
         {
             row.into_any_element()
         }
+    }
+}
+
+#[cfg(feature = "embedded-host")]
+fn screenshot_this_window(
+    window: &Window,
+    path: Option<&str>,
+) -> Result<gpui_agent::DispatchResult, String> {
+    let path = gpui_agent::require_screenshot_path(path)?;
+    #[cfg(target_os = "macos")]
+    {
+        let id = crate::macos_window::cgwindow_id(window)?;
+        gpui_agent::capture_window_via_screencapture(id, Some(path))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        let _ = path;
+        Err(gpui_agent::screenshot_unavailable(
+            "desktop PNG of the app window is macOS-only (`screencapture -l` of this window). \
+             This OS has no production GPUI framebuffer export (`Window::render_to_image` is \
+             test-support only). Headless stays screenshot_unavailable.",
+        ))
     }
 }

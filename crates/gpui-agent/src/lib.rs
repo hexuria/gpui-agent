@@ -38,7 +38,9 @@ pub use protocol::{
     Response,
 };
 pub use screenshot::{
-    SCREENSHOT_UNAVAILABLE, TEST_PNG, is_screenshot_unavailable, screenshot_unavailable, write_png,
+    SCREENSHOT_BACKEND_SCREENCAPTURE, SCREENSHOT_UNAVAILABLE, TEST_PNG, accept_written_png,
+    capture_window_via_screencapture, is_screenshot_unavailable, require_screenshot_path,
+    screencapture_window_argv, screenshot_unavailable, write_png,
 };
 pub use security::{
     AgentConfig, SecurityError, authorize_bind, authorize_client, ensure_loopback, from_env,
