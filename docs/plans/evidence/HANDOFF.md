@@ -68,4 +68,4 @@ Evidence `Commit:` SHAs lag the amended HEAD of each task by one amend (T0 throu
 
 ## Push / PR
 
-Operator override (2026-09-11): push `gol/security-remediation-2026-09-11` and open a **draft** PR into `main`. Do not merge. Do not mark ready for review. Independent Section 8.1 review is not done yet.
+Operator override (2026-09-11): pushed `gol/security-remediation-2026-09-11` and opened **draft** PR https://github.com/hexuria/gpui-agent/pull/33 into `main`. Do not merge. Do not mark ready for review. Independent Section 8.1 review is not done yet.
