@@ -679,3 +679,70 @@ Diff:
 
 Deviations: `rpc_pipeline_wrong_token_fails_fast` also accepts connection-reset in the error string (peer RST after auth close). Untokened `AgentClient` vs tokened v2 host maps a leftover challenge line to `automation token required` so `recipe_does_not_bypass_token` stays fail-closed without weakening its `"token"` assertion. `click_without_delivery_is_semantic` still parses old `"v":1` documents (serde, not live authorize). No `tokio`. Cargo.lock left untracked.
 
+---
+
+## R9 — Wait.timeout_ms polls hello.ready
+
+Task: R9 Wait.timeout_ms polls hello.ready
+Commit: 6803a8725a8e424841fd075c00e4a6ff036e7bc0
+Red: new test only, against current Wait≈Hello (R4 tree). Command: `cargo test -p gpui-agent --lib dispatch::tests::wait_times_out_when_not_ready -- --exact`
+Exit: 101
+
+```
+running 1 test
+test dispatch::tests::wait_times_out_when_not_ready ... FAILED
+
+failures:
+
+---- dispatch::tests::wait_times_out_when_not_ready stdout ----
+
+thread 'dispatch::tests::wait_times_out_when_not_ready' (47308) panicked at crates/gpui-agent/src/dispatch.rs:363:9:
+Response { v: 2, id: "1", ok: true, error: None, hello: Some(HelloInfo { protocol: 2, app: "test", platform: Headless, ready: false, deliveries: [], auth: None }), tree: None, result: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    dispatch::tests::wait_times_out_when_not_ready
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p gpui-agent --lib`
+```
+
+Green: same command after Wait polling. Exit: 0
+
+```
+running 1 test
+test dispatch::tests::wait_times_out_when_not_ready ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.05s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 83 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 83+28+7+8+61+16+8+1 = **212** (>= 209 + 3).
+
+Diff:
+
+```
+ crates/gpui-agent/src/dispatch.rs                  | 176 ++++++++++++++++++++-
+ .../evidence/2026-09-11-remediation-evidence.md    |  65 ++++++++
+ 2 files changed, 234 insertions(+), 7 deletions(-)
+```
+
+Deviations: none.
+

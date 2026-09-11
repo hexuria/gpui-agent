@@ -69,13 +69,11 @@ pub fn handle_request(
     }
 
     match req.op {
-        Op::Hello | Op::Wait { .. } => {
-            let mut resp = Response::ok(&req.id);
-            let mut hello = host.hello();
-            hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
-            resp.hello = Some(hello);
-            resp
-        }
+        Op::Hello => hello_response(host, &req.id, expected_token),
+        Op::Wait { timeout_ms: None } => hello_response(host, &req.id, expected_token),
+        Op::Wait {
+            timeout_ms: Some(ms),
+        } => wait_until_ready(host, &req.id, expected_token, ms),
         Op::Snapshot => {
             let mut resp = Response::ok(&req.id);
             resp.tree = Some(host.snapshot());
@@ -109,6 +107,38 @@ pub fn handle_request(
             }
             Err(error) => Response::err(req.id, error),
         },
+    }
+}
+
+fn hello_response(host: &dyn AgentHost, id: &str, expected_token: Option<&str>) -> Response {
+    let mut resp = Response::ok(id);
+    let mut hello = host.hello();
+    hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
+    resp.hello = Some(hello);
+    resp
+}
+
+fn wait_until_ready(
+    host: &dyn AgentHost,
+    id: &str,
+    expected_token: Option<&str>,
+    timeout_ms: u64,
+) -> Response {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let hello = host.hello();
+        if hello.ready {
+            let mut resp = Response::ok(id);
+            let mut hello = hello;
+            hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
+            resp.hello = Some(hello);
+            return resp;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Response::err(id, "wait timed out");
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
     }
 }
 
@@ -319,5 +349,137 @@ mod tests {
                 .is_some_and(|e| e.contains("invalid automation token")),
             "{resp:?}"
         );
+    }
+
+    struct ReadyHost {
+        ready: bool,
+    }
+
+    impl AgentHost for ReadyHost {
+        fn hello(&self) -> HelloInfo {
+            HelloInfo {
+                protocol: PROTOCOL_VERSION,
+                app: "test".into(),
+                platform: PlatformKind::Headless,
+                ready: self.ready,
+                deliveries: vec![],
+                auth: crate::protocol::HelloAuth::None,
+            }
+        }
+
+        fn snapshot(&self) -> UiTree {
+            UiTree {
+                app: "test".into(),
+                platform: PlatformKind::Headless,
+                ready: self.ready,
+                nodes: vec![],
+            }
+        }
+
+        fn dispatch(&mut self, _op: &Op) -> Result<DispatchResult, String> {
+            Err("unsupported".into())
+        }
+    }
+
+    #[test]
+    fn wait_times_out_when_not_ready() {
+        let mut host = ReadyHost { ready: false };
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::Wait {
+                    timeout_ms: Some(50),
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok, "{resp:?}");
+        assert!(
+            resp.error
+                .as_deref()
+                .is_some_and(|e| e.contains("timed out")),
+            "{resp:?}"
+        );
+        assert!(resp.hello.is_none() || resp.hello.as_ref().is_some_and(|h| !h.ready));
+    }
+
+    #[test]
+    fn wait_none_is_immediate_hello() {
+        let mut host = ReadyHost { ready: false };
+        let started = std::time::Instant::now();
+        let resp = handle_request(
+            &mut host,
+            Request::new("1", Op::Wait { timeout_ms: None }),
+            None,
+            None,
+        );
+        let elapsed = started.elapsed();
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(resp.hello.as_ref().unwrap().ready, false);
+        assert!(
+            elapsed < std::time::Duration::from_millis(40),
+            "Wait None must not poll: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn wait_succeeds_when_host_becomes_ready() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FlipHost {
+            ready: Arc<AtomicBool>,
+        }
+
+        impl AgentHost for FlipHost {
+            fn hello(&self) -> HelloInfo {
+                HelloInfo {
+                    protocol: PROTOCOL_VERSION,
+                    app: "test".into(),
+                    platform: PlatformKind::Headless,
+                    ready: self.ready.load(Ordering::SeqCst),
+                    deliveries: vec![],
+                    auth: crate::protocol::HelloAuth::None,
+                }
+            }
+
+            fn snapshot(&self) -> UiTree {
+                UiTree {
+                    app: "test".into(),
+                    platform: PlatformKind::Headless,
+                    ready: self.ready.load(Ordering::SeqCst),
+                    nodes: vec![],
+                }
+            }
+
+            fn dispatch(&mut self, _op: &Op) -> Result<DispatchResult, String> {
+                Err("unsupported".into())
+            }
+        }
+
+        let ready = Arc::new(AtomicBool::new(false));
+        let mut host = FlipHost {
+            ready: ready.clone(),
+        };
+        let flag = ready.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            flag.store(true, Ordering::SeqCst);
+        });
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::Wait {
+                    timeout_ms: Some(500),
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(resp.hello.as_ref().unwrap().ready, true);
     }
 }
