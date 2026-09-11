@@ -809,6 +809,7 @@ fn screenshot_this_window(
     path: Option<&str>,
 ) -> Result<gpui_agent::DispatchResult, String> {
     let path = gpui_agent::require_screenshot_path(path)?;
+    let _dest = gpui_agent::confine_screenshot_path(path)?;
     #[cfg(target_os = "macos")]
     {
         let id = crate::macos_window::cgwindow_id(window)?;

@@ -1273,7 +1273,8 @@ Deviations: none. Round-1 T0 paste that claimed a successful `libfontconfig1-dev
 
 `libfontconfig1-dev` is not installable in this Ubuntu 24.04.4 apt snapshot (`E: Unable to locate package libfontconfig1-dev`; apt offers `libfontconfig1` runtime only). Round-2 tasks that edit `apps/todo` cannot `cargo check -p todo` / `--features embedded-host` here. Operator should run those two commands locally after pull.
 
-Round-2 `apps/todo` edits (listed as they land): none at T0 (round 2) time.
+Round-2 `apps/todo` edits (listed as they land):
+- R3 (round 2): `apps/todo/src/app.rs` `screenshot_this_window` calls `confine_screenshot_path` before capture / `screenshot_unavailable`.
 
 ---
 
@@ -1404,4 +1405,68 @@ Diff:
 ```
 
 Deviations: none. Test lives in `recipe_mcp_token.rs` because that crate already spawns `CARGO_BIN_EXE_gpui-agent` (plan required a real binary spawn, not `render_long_help()`).
+
+---
+
+## R3 (round 2) — confine before `screenshot_unavailable`
+
+Task: R3 (round 2) `TodoStore::screenshot` / `todo-headless` reject unconfined paths before `screenshot_unavailable`
+Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Red: added `screenshot_unconfined_path_fails_before_unavailable` while `TodoStore::screenshot` still ignored `path` (not stash). Command:
+
+`cargo test -p todo-core --lib tests::screenshot_unconfined_path_fails_before_unavailable -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'tests::screenshot_unconfined_path_fails_before_unavailable' (14186) panicked at crates/todo-core/src/lib.rs:579:13:
+unconfined path must fail at confine, not unavailable: /etc/passwd.png screenshot_unavailable: headless host has no pixel surface
+test tests::screenshot_unconfined_path_fails_before_unavailable ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+```
+
+Green: same command after `require_screenshot_path` + `confine_screenshot_path` in `TodoStore::screenshot`. Exit: 0
+
+```
+running 1 test
+test tests::screenshot_unconfined_path_fails_before_unavailable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+```
+
+`screenshot_is_honestly_unavailable` and `desktop_store_screenshot_stays_unavailable_without_a_window` now send a relative `.png` (still `screenshot_unavailable`, still must not invent a file). `apps/todo` `screenshot_this_window` also confines first (BLOCKED-ENV compile).
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 87+28+8+9+64+16+13+1 = **226** (>= 225 + 1).
+
+Command: `cargo check -p todo`
+Exit: 101 **BLOCKED-ENV** (`yeslogic-fontconfig-sys` / `fontconfig.pc` missing; see T0 round 2).
+
+Diff:
+
+```
+ apps/todo/src/app.rs            |  1 +
+ crates/todo-core/src/lib.rs     | (confine + tests)
+ docs/plans/evidence/2026-09-11-remediation-evidence.md | (this block)
+```
+
+Deviations: also confined in `apps/todo` `screenshot_this_window` so a live GUI screenshot cannot skip confine on the Linux unavailable path. `cargo check -p todo` BLOCKED-ENV.
 
