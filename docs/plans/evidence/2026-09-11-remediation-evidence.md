@@ -1708,3 +1708,64 @@ Diff:
 
 Deviations: chose threading `--schema` (not env-only docs). Tool arg `schema` (string or array) merges with CLI paths. Did not add a live stdio MCP spawn; parse test + `recipe_validate_honors_schema_paths` cover the flag and the registry sink.
 
+---
+
+## R11 (round 2) — `plan_click` fail-closed on duplicate ids
+
+Task: R11 (round 2) `virtual_input::plan_click` uses `require_id` (click-id resolution is in scope; not first-match)
+Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Red: added `plan_click_duplicate_id_is_error` while `plan_click` still used `tree.find` (not stash). Two nodes share id `dup` with non-zero bounds so first-match would succeed. Command:
+
+`cargo test -p gpui-agent --lib virtual_input::tests::plan_click_duplicate_id_is_error -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'virtual_input::tests::plan_click_duplicate_id_is_error' (31934) panicked at crates/gpui-agent/src/virtual_input.rs:181:44:
+called `Result::unwrap_err()` on an `Ok` value: VirtualPointerClick { target: "dup", x: 5.0, y: 5.0 }
+test virtual_input::tests::plan_click_duplicate_id_is_error ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.00s
+```
+
+That is **first-match click**, not zero-bounds `virtual_unavailable`.
+
+Green: same command after `tree.require_id(target)?`. Exit: 0
+
+```
+running 1 test
+test virtual_input::tests::plan_click_duplicate_id_is_error ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.00s
+```
+
+`missing_node_is_not_virtual_unavailable` still passes (`require_id` still returns `node `{id}` not found`). `find` remains first-match for non-dispatch helpers. R11b skipped (D5).
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 91 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 91+30+8+9+64+16+13+1 = **232** (>= 231 + 1). Caps unchanged. `assert_tree` still uses `require_id`.
+
+Diff:
+
+```
+ crates/gpui-agent/src/virtual_input.rs | 35 +++++++++++++++++++++++++++++++---
+```
+
+Deviations: none. Title’s click-id resolution treated as in scope (did not only document first-match).
+
