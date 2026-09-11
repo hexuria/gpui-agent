@@ -229,3 +229,65 @@ Diff:
 
 Deviations: none.
 
+---
+
+## R6 — No pre-delete of screenshot destinations
+
+Task: R6 Do not `remove_file` the destination before `screencapture`
+Commit: afa61b190419d97a9eea586a847a682f49a060db
+Red: helper `prepare_screencapture_dest` still unlinked an existing dest (extracted from `run_screencapture`; not stash). Command:
+
+`cargo test -p gpui-agent --lib screenshot::tests::screencapture_prepare_does_not_predelete_existing_file -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'screenshot::tests::screencapture_prepare_does_not_predelete_existing_file' (18917) panicked at crates/gpui-agent/src/screenshot.rs:411:34:
+called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+test screenshot::tests::screencapture_prepare_does_not_predelete_existing_file ... FAILED
+
+failures:
+    screenshot::tests::screencapture_prepare_does_not_predelete_existing_file
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 72 filtered out; finished in 0.00s
+```
+
+Green: same command after removing the unlink. Exit: 0
+
+```
+running 1 test
+test screenshot::tests::screencapture_prepare_does_not_predelete_existing_file ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 72 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 73 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+```
+
+Sum: 73+26+7+8+61+16+8+1 = **200** (>= 199 + 1).
+
+Diff:
+
+```
+ crates/gpui-agent/src/screenshot.rs                | 34 +++++++++---
+ .../evidence/2026-09-11-remediation-evidence.md    | 60 ++++++++++++++++++++++
+ 2 files changed, 88 insertions(+), 6 deletions(-)
+```
+
+Deviations: none.
+

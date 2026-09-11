@@ -181,18 +181,23 @@ pub fn capture_window_via_screencapture(
     }
 }
 
-#[cfg(target_os = "macos")]
-fn run_screencapture(args: &[String], dest: &str) -> Result<DispatchResult, String> {
-    let dest_path = Path::new(dest);
-    if dest_path.exists() {
-        let _ = std::fs::remove_file(dest_path);
-    }
+/// Create parent dirs for `path`. Must **not** unlink an existing dest
+/// (that would be arbitrary client-influenced deletion).
+pub fn prepare_screencapture_dest(path: &str) -> Result<(), String> {
+    let dest_path = Path::new(path);
     if let Some(parent) = dest_path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("create {}: {err}", parent.display()))?;
     }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn run_screencapture(args: &[String], dest: &str) -> Result<DispatchResult, String> {
+    let dest_path = Path::new(dest);
+    prepare_screencapture_dest(dest)?;
 
     let output = Command::new("screencapture")
         .args(args)
@@ -385,6 +390,23 @@ mod tests {
             "must not claim a screencapture PNG on this OS: {err}"
         );
         assert!(!dest.exists(), "must not invent {}", dest.display());
+    }
+
+    #[test]
+    fn screencapture_prepare_does_not_predelete_existing_file() {
+        let dir = std::env::temp_dir().join(format!("gpui-agent-predelete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("keep.png");
+        let sentinel = b"sentinel-bytes-must-remain";
+        std::fs::write(&dest, sentinel).unwrap();
+        prepare_screencapture_dest(dest.to_str().unwrap()).unwrap();
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            sentinel,
+            "prepare must not unlink an existing dest"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
