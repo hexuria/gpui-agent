@@ -177,6 +177,12 @@ fn claim_connection(inflight: &AtomicUsize, max: usize) -> bool {
 }
 
 fn prepare_stream(stream: &TcpStream, idle: Duration) -> bool {
+    // Accepted sockets inherit nonblocking from the listener on macOS/BSD.
+    // Timeouts only work on blocking sockets; a nonblocking read returns
+    // WouldBlock and the handler used to drop the connection with no reply.
+    if stream.set_nonblocking(false).is_err() {
+        return false;
+    }
     let _ = stream.set_nodelay(true);
     stream.set_read_timeout(Some(idle)).is_ok() && stream.set_write_timeout(Some(idle)).is_ok()
 }
