@@ -12,7 +12,11 @@ use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
 use recipe_cmd::RecipeCommand;
 
-/// Drive any GPUI Kit app over the opt-in agent protocol (not CDP).
+/// Talk to an embedded AgentHost over the opt-in agent protocol (not CDP).
+///
+/// The host must implement `AgentHost`, publish stable ids, and start the
+/// server under `GPUI_AGENT=1`. This CLI does not attach to an arbitrary
+/// GPUI Kit process.
 ///
 /// First-class commands are the protocol ops only. App-specific verbs
 /// (`todo.add`, `nav.go`, …) belong in the host (`invoke`) or in agent
@@ -327,6 +331,19 @@ mod tests {
         assert!(
             help.to_ascii_lowercase().contains("experimental"),
             "top-level help should label recipes experimental:\n{help}"
+        );
+    }
+
+    #[test]
+    fn cli_help_does_not_claim_cdp_attach() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            !help.contains("Drive any GPUI Kit app"),
+            "help must not claim CDP-like attach to any process:\n{help}"
+        );
+        assert!(
+            help.contains("AgentHost") || help.to_ascii_lowercase().contains("embed"),
+            "help must mention AgentHost or embed:\n{help}"
         );
     }
 

@@ -516,3 +516,70 @@ Diff:
 
 Deviations: cargo build is split (`cli`+`todo-headless` first, then `todo`) so a GUI link/display failure cannot fail the SoT CRUD. Installed `libxkbcommon-dev`/`libxkbcommon-x11-dev` once so `cargo build -p todo` could link. GUI start was attempted (`DISPLAY` set) and skipped after `Failed to create surface`.
 
+---
+
+## R1 — Docs: embed-only, not CDP attach
+
+Task: R1 Stop claiming the CLI attaches to an arbitrary GPUI Kit process
+Commit: 5bc60c9a1e61a76950174aca248c6ef5e3fee974
+Red: `cli_help_does_not_claim_cdp_attach` added before the help string change (not stash). Command:
+
+`cargo test -p gpui-agent-cli tests::cli_help_does_not_claim_cdp_attach -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'tests::cli_help_does_not_claim_cdp_attach' (38320) panicked at crates/gpui-agent-cli/src/main.rs:336:9:
+help must not claim CDP-like attach to any process:
+Drive any GPUI Kit app over the opt-in agent protocol (not CDP).
+…
+test tests::cli_help_does_not_claim_cdp_attach ... FAILED
+
+failures:
+    tests::cli_help_does_not_claim_cdp_attach
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
+```
+
+Green: same command after help text change. Exit: 0
+
+```
+running 1 test
+test tests::cli_help_does_not_claim_cdp_attach ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+```
+
+Sum: 76+28+7+8+61+16+8+1 = **205** (>= 204 + 1).
+
+Diff:
+
+```
+ README.md                                          |  2 +-
+ crates/gpui-agent-cli/src/main.rs                  | 19 ++++++-
+ docs/INTEGRATING.md                                |  3 ++
+ docs/PROTOCOL.md                                   |  8 +--
+ .../evidence/2026-09-11-remediation-evidence.md    | 62 ++++++++++++++++++++++
+ 5 files changed, 88 insertions(+), 6 deletions(-)
+```
+
+Deviations: none. Help test uses `Cli::command().render_long_help()` (same as other CLI tests) rather than spawning `gpui-agent --help`.
+

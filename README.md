@@ -1,6 +1,6 @@
 # GPUI Agent Lab
 
-An experimental control plane that lets an AI agent **observe and drive any GPUI Kit 0.6 app without Chrome DevTools Protocol**.
+An experimental control plane for GPUI Kit apps that **embed** an `AgentHost`, publish **stable ids**, and start the server under `GPUI_AGENT=1`. This is **not** Chrome DevTools Protocol and does **not** attach to an arbitrary process.
 
 GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and CDP have nothing to attach to. This repo is a smaller, in-process alternative: the app publishes a **semantic UI tree** and accepts **scripted actions** over localhost JSON — the same idea as [Vercel Native SDK automation](https://native-sdk.dev/automation), purpose-built for GPUI Kit.
 

@@ -1,5 +1,8 @@
 # Integrating gpui-agent into another GPUI Kit app
 
+The CLI does **not** attach to an arbitrary GPUI Kit process. You embed
+`AgentHost`, assign stable ids, and start the server under `GPUI_AGENT=1`.
+
 `gpui-agent` is a **generic** control plane. Your app supplies the
 semantic tree and action handlers; the CLI/MCP never learn your domain.
 Cookbook and `TestHost`: [SDK.md](SDK.md). Sync model: [ADR-001](ADR-001-daemon-sot.md).
