@@ -25,11 +25,7 @@ pub fn run(addr: SocketAddr, token: String) -> Result<()> {
     let mut stdin = BufReader::new(std::io::stdin());
     let mut stdout = std::io::stdout();
     let mut line_buf = Vec::with_capacity(4096);
-    loop {
-        match read_limited_line_into(&mut stdin, &mut line_buf, MAX_LINE_BYTES)? {
-            true => {}
-            false => break,
-        }
+    while read_limited_line_into(&mut stdin, &mut line_buf, MAX_LINE_BYTES)? {
         if line_is_blank(&line_buf) {
             continue;
         }

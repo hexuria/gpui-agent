@@ -1050,3 +1050,66 @@ Diff:
 
 Deviations: pinned `cargo-audit` 0.22.2 (0.21.2 failed to parse current advisory-db CVSS 4.0). Cargo.lock generated locally for audit, left untracked. Did not use `--deny warnings` (5 unmaintained GPUI-stack warnings).
 
+---
+
+## R14 — Clippy Result size and unsafe wording
+
+Task: R14 clippy Result size and unsafe wording
+Commit: 3af8279fb59f7746821391d40ca08fee8a265b91
+Red: `cargo clippy -p gpui-agent -- -D warnings` before boxing `authorize_request` error. Exit: 101
+
+```
+error: the `Err`-variant returned from this function is very large
+  --> crates/gpui-agent/src/dispatch.rs:28:6
+   |
+28 | ) -> Result<(), Response> {
+   |      ^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 200 bytes
+   |
+   = help: try reducing the size of `protocol::Response`, for example by boxing large elements or replacing it with `Box<protocol::Response>`
+   = note: `-D clippy::result-large-err` implied by `-D warnings`
+
+error: could not compile `gpui-agent` (lib) due to 1 previous error
+```
+
+Green: same command after `Result<(), Box<Response>>`. Exit: 0
+
+```
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+```
+
+Verify:
+
+Command: `cargo clippy -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe -- -D warnings`
+Exit: 0
+
+```
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.36s
+```
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 87+28+8+8+64+16+10+1 = **222** (>= 222 + 0).
+
+Diff:
+
+```
+ crates/gpui-agent-cli/src/mcp.rs                   |  6 +--
+ crates/gpui-agent/src/dispatch.rs                  | 31 +++++++----
+ .../evidence/2026-09-11-remediation-evidence.md    | 60 ++++++++++++++++++++++
+ 3 files changed, 83 insertions(+), 14 deletions(-)
+```
+
+Deviations: boxed `authorize_request` error (`Box<Response>`) rather than `#[allow]`. Also rewrote pre-existing `clippy::while_let_loop` in `mcp.rs` so the four-package `-D warnings` Verify could pass. I1 workspace-unsafe wording was already made exact in R12.
+

@@ -25,31 +25,44 @@ pub fn authorize_request(
     req: &Request,
     expected_token: Option<&str>,
     session_nonce: Option<&[u8]>,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     if req.v != PROTOCOL_VERSION {
-        return Err(Response::err(
+        return Err(Box::new(Response::err(
             req.id.clone(),
             format!(
                 "unsupported protocol version {} (want {PROTOCOL_VERSION})",
                 req.v
             ),
-        ));
+        )));
     }
 
     if let Some(expected) = expected_token {
         if req.token.as_deref().is_some_and(|t| !t.is_empty()) {
-            return Err(Response::err(
+            return Err(Box::new(Response::err(
                 req.id.clone(),
                 "token must not be sent on the wire",
-            ));
+            )));
         }
         let Some(nonce) = session_nonce.filter(|n| n.len() == NONCE_LEN) else {
-            return Err(Response::err(req.id.clone(), "automation token required"));
+            return Err(Box::new(Response::err(
+                req.id.clone(),
+                "automation token required",
+            )));
         };
         match req.auth.as_deref() {
             Some(auth) if hmac_verify(expected, nonce, auth) => {}
-            Some(_) => return Err(Response::err(req.id.clone(), "invalid automation token")),
-            None => return Err(Response::err(req.id.clone(), "automation token required")),
+            Some(_) => {
+                return Err(Box::new(Response::err(
+                    req.id.clone(),
+                    "invalid automation token",
+                )));
+            }
+            None => {
+                return Err(Box::new(Response::err(
+                    req.id.clone(),
+                    "automation token required",
+                )));
+            }
         }
     }
 
@@ -65,7 +78,7 @@ pub fn handle_request(
     session_nonce: Option<&[u8]>,
 ) -> Response {
     if let Err(resp) = authorize_request(&req, expected_token, session_nonce) {
-        return resp;
+        return *resp;
     }
 
     match req.op {
