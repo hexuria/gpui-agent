@@ -19,7 +19,7 @@ non-empty `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`.
 | Runtime | `GPUI_AGENT=1` (`true` / `yes` / `on`). |
 | Release | Also `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | **Loopback default.** `from_env` calls `authorize_bind`. IPv4 `127.0.0.0/8` and IPv6 `::1` require a non-empty `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`. IPv4-mapped loopback (`::ffff:127.0.0.1`) is **rejected**. Non-loopback (including `0.0.0.0` / `::`) requires `GPUI_AGENT_REMOTE=1` **and** a non-empty `GPUI_AGENT_TOKEN`. |
-| Token | **Required** to bind a host (`GPUI_AGENT_TOKEN`). `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback and prints a banner. When a token is set, every request must carry it. CLI **`recipe run` and `mcp` require** a non-empty client token even on loopback (P2). One-off `click` / `snapshot` / `hello` must send the same token as the host. |
+| Token | **Required** to bind a host (`GPUI_AGENT_TOKEN`). `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback and prints a banner. When a token is set, every request must send v2 `auth` HMAC (never the raw token). CLI **`recipe run` and `mcp` require** a non-empty client token even on loopback (P2). One-off `click` / `snapshot` / `hello` use the same token as the host for the HMAC. |
 | Remote client | CLI refuses non-loopback `--addr` unless `--allow-remote` / `GPUI_AGENT_ALLOW_REMOTE=1` **and** a non-empty token (M1: do not leak the secret on a mistype). |
 | Transport | NDJSON over TCP. **Not HTTP. Not TLS.** Remote bind is plaintext + token — lab / trusted network only. Prefer an SSH or Tailscale hop until TLS / mTLS is specified. |
 | Delivery | `semantic` (default) calls widget handlers. `virtual` synthesizes in-process GPUI events. **Never OS HID.** |
@@ -46,7 +46,7 @@ demos and prints a banner. Authenticated remote bind is unchanged.
 | --- | --- | --- |
 | Local process on the host | Drive an untokened loopback daemon only if the operator set `GPUI_AGENT_INSECURE_NO_TOKEN=1` (H1). | Default-deny bind. Set `GPUI_AGENT_TOKEN` on any long-lived host. |
 | Agent on another machine | Drive the daemon only if the host bound non-loopback with `GPUI_AGENT=1` + `GPUI_AGENT_REMOTE=1` + token, **and** the client passed `--allow-remote` + the same token. | Fail closed without that triple. Caps (1 MiB / 32 conn / 128 mailbox) still apply. |
-| Network observer | Read NDJSON and the token on the wire. | **Known v1 gap.** Treat remote bind as a lab. Tunnel with SSH or Tailscale. TLS / mTLS / pairing codes are follow-up, not this slice. |
+| Network observer | Read NDJSON metadata (ops, ids). The raw token is **not** on the v2 wire (HMAC over a per-connection nonce). | Remote bind is still plaintext metadata. Tunnel with SSH or Tailscale. TLS / mTLS / pairing codes are follow-up. |
 | Random Internet | Bind `0.0.0.0` without the triple is refused. Accidental public listen without a token is refused. | `authorize_bind` + tests. Still do not advertise a public port. |
 
 `hello.auth` remains `"required"` when the host has a token and `"none"`
@@ -91,12 +91,13 @@ token cannot be sent to a remote IP without an explicit allow.
 
 ### Auth
 
-`authorize_request` is the single gate (version + optional host token).
-Used by `handle_request` and by both TCP stream handlers **before**
-mailbox post / host dispatch. Comparison is `tokens_match`. Failures
-close the socket. `hello.auth` is `"required"` when the host has a
-token and `"none"` otherwise. CLI `recipe run` and `mcp` require a
-client token before they connect.
+`authorize_request` is the single gate (version + HMAC over the session
+nonce when the host has a token). Used by `handle_request` and by both
+TCP stream handlers **before** mailbox post / host dispatch. The raw
+token must not appear on a v2 request; `tokens_match` remains for
+byte compares. Failures close the socket. `hello.auth` is `"required"`
+when the host has a token and `"none"` otherwise. CLI `recipe run`
+and `mcp` require a client token before they connect.
 
 ### Request parsing / DoS
 

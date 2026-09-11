@@ -1,4 +1,4 @@
-use std::io::BufReader;
+use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::dispatch::{authorize_request, handle_request};
+use crate::hmac_auth::{challenge_for_nonce, random_nonce};
 use crate::host::AgentHost;
 use crate::mailbox::AgentMailbox;
 use crate::ndjson::{line_is_blank, read_limited_line_into, write_json_line};
@@ -184,6 +185,21 @@ fn write_resp(writer: &mut TcpStream, encode_buf: &mut Vec<u8>, resp: &Response)
     let _ = write_json_line(writer, encode_buf, resp);
 }
 
+fn begin_session(
+    writer: &mut TcpStream,
+    encode_buf: &mut Vec<u8>,
+    token: Option<&str>,
+) -> Result<Option<[u8; 32]>, ()> {
+    let Some(_token) = token else {
+        return Ok(None);
+    };
+    let nonce = random_nonce().map_err(|_| ())?;
+    let challenge = challenge_for_nonce(&nonce);
+    write_json_line(writer, encode_buf, &challenge).map_err(|_| ())?;
+    writer.flush().map_err(|_| ())?;
+    Ok(Some(nonce))
+}
+
 fn handle_stream_host<H: AgentHost>(
     stream: TcpStream,
     host: Arc<Mutex<H>>,
@@ -201,6 +217,10 @@ fn handle_stream_host<H: AgentHost>(
     let mut reader = BufReader::new(stream);
     let mut line_buf = Vec::with_capacity(4096);
     let mut encode_buf = Vec::with_capacity(4096);
+    let session_nonce = match begin_session(&mut writer, &mut encode_buf, token) {
+        Ok(nonce) => nonce,
+        Err(()) => return,
+    };
     loop {
         match read_limited_line_into(&mut reader, &mut line_buf, limits.max_line_bytes) {
             Ok(true) => {}
@@ -229,14 +249,21 @@ fn handle_stream_host<H: AgentHost>(
                 continue;
             }
         };
-        if let Err(resp) = authorize_request(&req, token) {
+        if let Err(resp) =
+            authorize_request(&req, token, session_nonce.as_ref().map(|n| n.as_slice()))
+        {
             write_resp(&mut writer, &mut encode_buf, &resp);
             break;
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
         let resp = {
             let mut host = host.lock().expect("host");
-            handle_request(&mut *host, req, token)
+            handle_request(
+                &mut *host,
+                req,
+                token,
+                session_nonce.as_ref().map(|n| n.as_slice()),
+            )
         };
         write_resp(&mut writer, &mut encode_buf, &resp);
         if shutdown_op {
@@ -264,6 +291,10 @@ fn handle_stream_mailbox(
     let mut reader = BufReader::new(stream);
     let mut line_buf = Vec::with_capacity(4096);
     let mut encode_buf = Vec::with_capacity(4096);
+    let session_nonce = match begin_session(&mut writer, &mut encode_buf, token) {
+        Ok(nonce) => nonce,
+        Err(()) => return,
+    };
     loop {
         match read_limited_line_into(&mut reader, &mut line_buf, limits.max_line_bytes) {
             Ok(true) => {}
@@ -294,7 +325,9 @@ fn handle_stream_mailbox(
         };
         // Authorize here so virtual ops (which skip handle_request on the
         // UI thread) still get version + token checks.
-        if let Err(resp) = authorize_request(&req, token) {
+        if let Err(resp) =
+            authorize_request(&req, token, session_nonce.as_ref().map(|n| n.as_slice()))
+        {
             write_resp(&mut writer, &mut encode_buf, &resp);
             break;
         }
@@ -542,7 +575,9 @@ mod tests {
                 "wrong token must not run the wave: {resps:?}"
             ),
             Err(msg) => assert!(
-                msg.contains("token") || msg.contains("connection closed"),
+                msg.contains("token")
+                    || msg.contains("connection closed")
+                    || msg.to_ascii_lowercase().contains("reset"),
                 "wrong token must not run the wave: {msg}"
             ),
         }
@@ -560,7 +595,7 @@ mod tests {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 let _ = reader.read_line(&mut line);
-                let _ = writeln!(stream, r#"{{"v":1,"id":"1","ok":true}}"#);
+                let _ = writeln!(stream, r#"{{"v":{PROTOCOL_VERSION},"id":"1","ok":true}}"#);
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
         });
@@ -672,7 +707,7 @@ mod tests {
             let mut host = EmptyHost;
             while !stop_t.load(Ordering::SeqCst) {
                 for posted in drain.take() {
-                    let resp = handle_request(&mut host, posted.request.clone(), None);
+                    let resp = handle_request(&mut host, posted.request.clone(), None, None);
                     posted.reply(resp);
                 }
                 thread::sleep(Duration::from_millis(1));
@@ -696,5 +731,31 @@ mod tests {
         );
         shutdown.store(true, Ordering::SeqCst);
         stop.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn v2_untokened_server_does_not_send_challenge() {
+        let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut buf = [0u8; 16];
+        let n = stream.read(&mut buf);
+        match n {
+            Ok(0) | Err(_) => {}
+            Ok(got) => panic!(
+                "untokened server must not write a challenge first: {:?}",
+                &buf[..got]
+            ),
+        }
+        let line = format!(r#"{{"v":{PROTOCOL_VERSION},"id":"1","op":"hello"}}"#);
+        writeln!(stream, "{line}").unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut resp = String::new();
+        reader.read_line(&mut resp).unwrap();
+        assert!(resp.contains("\"ok\":true"), "{resp}");
+        assert!(!resp.contains("challenge"), "{resp}");
+        shutdown.store(true, Ordering::SeqCst);
     }
 }

@@ -551,7 +551,7 @@ mod tests {
                 path: Some(dest.to_string_lossy().into_owned()),
             },
         );
-        let resp = handle_request(&mut store, req, None);
+        let resp = handle_request(&mut store, req, None, None);
         assert!(!resp.ok, "{resp:?}");
         let err = resp.error.unwrap();
         assert!(gpui_agent::is_screenshot_unavailable(&err), "{err}");
@@ -573,7 +573,7 @@ mod tests {
                 path: Some(dest.to_string_lossy().into_owned()),
             },
         );
-        let resp = handle_request(&mut store, req, None);
+        let resp = handle_request(&mut store, req, None, None);
         assert!(!resp.ok, "{resp:?}");
         let err = resp.error.unwrap();
         assert!(gpui_agent::is_screenshot_unavailable(&err), "{err}");
@@ -597,7 +597,7 @@ mod tests {
                 },
             },
         );
-        let resp = handle_request(&mut store, req, None);
+        let resp = handle_request(&mut store, req, None, None);
         assert!(resp.ok, "{resp:?}");
     }
 }

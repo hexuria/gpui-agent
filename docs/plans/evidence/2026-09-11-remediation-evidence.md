@@ -583,3 +583,99 @@ Diff:
 
 Deviations: none. Help test uses `Cli::command().render_long_help()` (same as other CLI tests) rather than spawning `gpui-agent --help`.
 
+---
+
+## R4 — Protocol v2 HMAC-SHA256 challenge-response
+
+Task: R4 protocol v2 HMAC-SHA256 challenge-response
+Commit: f46f22eeb070f73ba990810db02b82c1bf9f2f60
+Red: produced by running the new test against the R1 tree (`243ab78`, PROTOCOL_VERSION=1, `authorize_request` still accepted `token`) with the test file present. Command: `cargo test -p gpui-agent --lib dispatch::tests::v2_raw_token_on_wire_is_rejected -- --exact`
+Exit: 101
+
+```
+running 1 test
+
+thread 'dispatch::tests::v2_raw_token_on_wire_is_rejected' (39808) panicked at crates/gpui-agent/src/dispatch.rs:270:9:
+Response { v: 1, id: "1", ok: false, error: Some("unsupported protocol version 2 (want 1)"), hello: None, tree: None, result: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test dispatch::tests::v2_raw_token_on_wire_is_rejected ... FAILED
+
+failures:
+
+failures:
+    dispatch::tests::v2_raw_token_on_wire_is_rejected
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 76 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p gpui-agent --lib`
+```
+
+Green: same command after v2 + HMAC production change. Exit: 0
+
+```
+running 1 test
+test dispatch::tests::v2_raw_token_on_wire_is_rejected ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 79 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 80 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.07s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 80+28+7+8+61+16+8+1 = **209** (>= 205 + 4).
+
+Command: `cargo check -p todo --features embedded-host`
+Exit: 0
+
+```
+    Checking todo v0.1.0 (/workspace/apps/todo)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.99s
+```
+
+Command: `cargo check -p todo`
+Exit: 0
+
+```
+    Checking todo v0.1.0 (/workspace/apps/todo)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.45s
+```
+
+Diff:
+
+```
+ README.md                                          |   2 +-
+ apps/todo-headless/src/main.rs                     |   2 +-
+ apps/todo/src/agent_bridge.rs                      |   2 +-
+ apps/todo/src/app.rs                               |   2 +-
+ crates/gpui-agent/Cargo.toml                       |   2 +
+ crates/gpui-agent/benches/agent_perf.rs            |   7 +-
+ crates/gpui-agent/src/client.rs                    |  82 +++++++++-----
+ crates/gpui-agent/src/dispatch.rs                  |  89 ++++++++++++---
+ crates/gpui-agent/src/hmac_auth.rs                 | 120 +++++++++++++++++++++
+ crates/gpui-agent/src/lib.rs                       |   4 +
+ crates/gpui-agent/src/protocol.rs                  |  12 ++-
+ crates/gpui-agent/src/server.rs                    |  75 +++++++++++--
+ crates/todo-core/src/lib.rs                        |   6 +-
+ docs/PROTOCOL.md                                   |  28 ++++-
+ docs/RECIPES.md                                    |   4 +-
+ docs/SECURITY.md                                   |  17 +--
+ docs/TRY_ON_MAC.md                                 |   2 +-
+ .../evidence/2026-09-11-remediation-evidence.md    |  78 ++++++++++++++
+ 18 files changed, 459 insertions(+), 75 deletions(-)
+```
+
+Deviations: `rpc_pipeline_wrong_token_fails_fast` also accepts connection-reset in the error string (peer RST after auth close). Untokened `AgentClient` vs tokened v2 host maps a leftover challenge line to `automation token required` so `recipe_does_not_bypass_token` stays fail-closed without weakening its `"token"` assertion. `click_without_delivery_is_semantic` still parses old `"v":1` documents (serde, not live authorize). No `tokio`. Cargo.lock left untracked.
+

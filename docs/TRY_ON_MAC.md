@@ -77,7 +77,7 @@ You should see:
 
 ```text
 gpui-agent listening on 127.0.0.1:17421 (platform=headless, app=todo)
-opt-in: GPUI_AGENT=1 · bind via from_env · protocol v1
+opt-in: GPUI_AGENT=1 · bind via from_env · protocol v2
 auth: required (GPUI_AGENT_TOKEN set; recipe/MCP clients must send the same token)
 ```
 

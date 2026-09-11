@@ -1,4 +1,4 @@
-# GPUI Agent Protocol v1
+# GPUI Agent Protocol v2
 
 Newline-delimited JSON on a loopback TCP socket. One request object, one
 response object **per line**. The client (`AgentClient`) keeps the TCP
@@ -14,13 +14,31 @@ that implements `AgentHost`, assigns **stable ids**, and starts the server
 under `GPUI_AGENT=1` can be driven by `gpui-agent` / MCP with no CLI
 changes. See [INTEGRATING.md](INTEGRATING.md).
 
+## Challenge (when the host has a token)
+
+Immediately after accept the host writes one NDJSON line and flushes:
+
+```json
+{"v":2,"op":"challenge","nonce":"<64 hex chars>"}
+```
+
+The nonce is 32 bytes from `/dev/urandom`. The client must **not** send
+the raw token. Each request on that connection sends `auth` =
+lowercase hex(`HMAC-SHA256(key=token, msg=nonce)`). A new connection
+gets a new nonce (replay on a later session fails). Untokened servers
+(tests / `GPUI_AGENT_INSECURE_NO_TOKEN=1`) do **not** send a challenge.
+
+If a v2 request includes a non-empty `token` field while the host has a
+token, the host rejects with `"token must not be sent on the wire"`
+and closes.
+
 ## Request
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "id": "1",
-  "token": "optional-shared-secret",
+  "auth": "<hmac-sha256 hex>",
   "op": "snapshot"
 }
 ```
@@ -55,10 +73,10 @@ macOS **embedded-host** writes the app window. Details:
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "id": "1",
   "ok": true,
-  "hello": { "protocol": 1, "app": "my-app", "platform": "headless", "ready": true, "deliveries": ["semantic"], "auth": "none" },
+  "hello": { "protocol": 2, "app": "my-app", "platform": "headless", "ready": true, "deliveries": ["semantic"], "auth": "none" },
   "tree": { "app": "my-app", "platform": "headless", "ready": true, "nodes": [] },
   "result": {},
   "error": null

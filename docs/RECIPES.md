@@ -1,7 +1,7 @@
 # Experimental recipes + TMP-inspired mapping
 
 This is an **experimental** P1 slice. It does not replace semantic RPC,
-does not steal the OS pointer, and does not change protocol v1.
+does not steal the OS pointer, and does not change protocol v2.
 
 The goal: let an agent **author or reuse a recipe** of gpui-agent ops
 (`click` / `set-value` / `assert` / `invoke` / …) that compiles to a
@@ -74,7 +74,7 @@ so a human or agent can write a sequence without braces.
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "name": "todo-crud",
   "app": "todo",
   "params": ["title"],

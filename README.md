@@ -285,7 +285,7 @@ Anyone who can connect to that loopback socket can drive the UI as the user. Tre
 ## Extensibility (desktop now, web/mobile later)
 
 ```text
-                    gpui-agent protocol v1
+                    gpui-agent protocol v2
                               │
            ┌──────────────────┼──────────────────┐
            ▼                  ▼                  ▼

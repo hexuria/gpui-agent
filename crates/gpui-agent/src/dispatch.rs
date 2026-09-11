@@ -1,6 +1,6 @@
+use crate::hmac_auth::{NONCE_LEN, hmac_verify};
 use crate::host::AgentHost;
 use crate::protocol::{AssertSpec, Op, PROTOCOL_VERSION, Request, Response};
-use crate::security::tokens_match;
 use crate::tree::UiTree;
 
 /// Optional structured payload returned by `invoke` / mutating ops.
@@ -19,9 +19,13 @@ impl DispatchResult {
     }
 }
 
-/// Version + optional shared-secret gate. Call this before dispatching,
+/// Version + optional HMAC gate. Call this before dispatching,
 /// including on the mailbox path where virtual ops skip [`handle_request`].
-pub fn authorize_request(req: &Request, expected_token: Option<&str>) -> Result<(), Response> {
+pub fn authorize_request(
+    req: &Request,
+    expected_token: Option<&str>,
+    session_nonce: Option<&[u8]>,
+) -> Result<(), Response> {
     if req.v != PROTOCOL_VERSION {
         return Err(Response::err(
             req.id.clone(),
@@ -33,8 +37,17 @@ pub fn authorize_request(req: &Request, expected_token: Option<&str>) -> Result<
     }
 
     if let Some(expected) = expected_token {
-        match req.token.as_deref() {
-            Some(got) if tokens_match(got, expected) => {}
+        if req.token.as_deref().is_some_and(|t| !t.is_empty()) {
+            return Err(Response::err(
+                req.id.clone(),
+                "token must not be sent on the wire",
+            ));
+        }
+        let Some(nonce) = session_nonce.filter(|n| n.len() == NONCE_LEN) else {
+            return Err(Response::err(req.id.clone(), "automation token required"));
+        };
+        match req.auth.as_deref() {
+            Some(auth) if hmac_verify(expected, nonce, auth) => {}
             Some(_) => return Err(Response::err(req.id.clone(), "invalid automation token")),
             None => return Err(Response::err(req.id.clone(), "automation token required")),
         }
@@ -49,8 +62,9 @@ pub fn handle_request(
     host: &mut dyn AgentHost,
     req: Request,
     expected_token: Option<&str>,
+    session_nonce: Option<&[u8]>,
 ) -> Response {
-    if let Err(resp) = authorize_request(&req, expected_token) {
+    if let Err(resp) = authorize_request(&req, expected_token, session_nonce) {
         return resp;
     }
 
@@ -188,7 +202,7 @@ mod tests {
         let mut host = EmptyHost;
         let mut req = Request::new("1", Op::Hello);
         req.v = 99;
-        let resp = handle_request(&mut host, req, None);
+        let resp = handle_request(&mut host, req, None, None);
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("unsupported protocol"));
     }
@@ -196,16 +210,19 @@ mod tests {
     #[test]
     fn rejects_missing_token() {
         let mut host = EmptyHost;
+        let nonce = [0x11u8; 32];
         let req = Request::new("1", Op::Hello);
-        let resp = handle_request(&mut host, req, Some("secret"));
+        let resp = handle_request(&mut host, req, Some("secret"), Some(&nonce));
         assert!(!resp.ok);
     }
 
     #[test]
     fn accepts_matching_token() {
         let mut host = EmptyHost;
-        let req = Request::new("1", Op::Hello).with_token("secret");
-        let resp = handle_request(&mut host, req, Some("secret"));
+        let nonce = [0x11u8; 32];
+        let auth = crate::hmac_auth::hmac_hex("secret", &nonce).unwrap();
+        let req = Request::new("1", Op::Hello).with_auth(auth);
+        let resp = handle_request(&mut host, req, Some("secret"), Some(&nonce));
         assert!(resp.ok);
         assert!(resp.hello.is_some());
     }
@@ -222,7 +239,7 @@ mod tests {
                 path: Some(dest.to_string_lossy().into_owned()),
             },
         );
-        let resp = handle_request(&mut host, req, None);
+        let resp = handle_request(&mut host, req, None, None);
         assert!(!resp.ok);
         let err = resp.error.unwrap();
         assert!(crate::is_screenshot_unavailable(&err), "{err}");
@@ -237,7 +254,7 @@ mod tests {
     fn authorize_rejects_virtual_wrong_version() {
         let mut req = Request::new("1", Op::click_virtual("todo-add"));
         req.v = 99;
-        let err = authorize_request(&req, None).unwrap_err();
+        let err = authorize_request(&req, None, None).unwrap_err();
         assert!(!err.ok);
         assert!(err.error.unwrap().contains("unsupported protocol"));
     }
@@ -245,7 +262,7 @@ mod tests {
     #[test]
     fn hello_auth_none_without_host_token() {
         let mut host = EmptyHost;
-        let resp = handle_request(&mut host, Request::new("1", Op::Hello), None);
+        let resp = handle_request(&mut host, Request::new("1", Op::Hello), None, None);
         assert!(resp.ok);
         assert_eq!(resp.hello.unwrap().auth, crate::protocol::HelloAuth::None);
     }
@@ -253,12 +270,54 @@ mod tests {
     #[test]
     fn hello_auth_required_with_host_token() {
         let mut host = EmptyHost;
-        let req = Request::new("1", Op::Hello).with_token("secret");
-        let resp = handle_request(&mut host, req, Some("secret"));
+        let nonce = [0x11u8; 32];
+        let auth = crate::hmac_auth::hmac_hex("secret", &nonce).unwrap();
+        let req = Request::new("1", Op::Hello).with_auth(auth);
+        let resp = handle_request(&mut host, req, Some("secret"), Some(&nonce));
         assert!(resp.ok);
         assert_eq!(
             resp.hello.unwrap().auth,
             crate::protocol::HelloAuth::Required
+        );
+    }
+
+    #[test]
+    fn v2_raw_token_on_wire_is_rejected() {
+        let req = Request::new("1", Op::Hello).with_token("secret");
+        let nonce = [0x11u8; 32];
+        let err = authorize_request(&req, Some("secret"), Some(&nonce)).unwrap_err();
+        assert!(
+            err.error
+                .as_deref()
+                .is_some_and(|e| e.contains("token must not be sent on the wire")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn v2_challenge_hmac_accepts_matching_token() {
+        let mut host = EmptyHost;
+        let nonce = [0x22u8; 32];
+        let auth = crate::hmac_auth::hmac_hex("secret", &nonce).unwrap();
+        let req = Request::new("1", Op::Hello).with_auth(auth);
+        let resp = handle_request(&mut host, req, Some("secret"), Some(&nonce));
+        assert!(resp.ok, "{resp:?}");
+    }
+
+    #[test]
+    fn v2_hmac_from_wrong_nonce_is_rejected() {
+        let mut host = EmptyHost;
+        let nonce = [0x22u8; 32];
+        let other = [0x33u8; 32];
+        let auth = crate::hmac_auth::hmac_hex("secret", &other).unwrap();
+        let req = Request::new("1", Op::Hello).with_auth(auth);
+        let resp = handle_request(&mut host, req, Some("secret"), Some(&nonce));
+        assert!(!resp.ok, "{resp:?}");
+        assert!(
+            resp.error
+                .as_deref()
+                .is_some_and(|e| e.contains("invalid automation token")),
+            "{resp:?}"
         );
     }
 }

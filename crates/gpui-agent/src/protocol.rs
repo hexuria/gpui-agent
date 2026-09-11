@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::tree::UiTree;
 
 /// Bump when introducing a breaking change to the wire format.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Which runtime is serving the protocol. Only `Desktop` and `Headless`
 /// are implemented in this repository; `Web` and `Mobile` are reserved
@@ -36,6 +36,9 @@ pub struct Request {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// HMAC-SHA256(token, session nonce) as lowercase hex. Never the raw token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
     #[serde(flatten)]
     pub op: Op,
 }
@@ -46,6 +49,7 @@ impl fmt::Debug for Request {
             .field("v", &self.v)
             .field("id", &self.id)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("auth", &self.auth.as_ref().map(|_| "<redacted>"))
             .field("op", &self.op)
             .finish()
     }
@@ -236,12 +240,18 @@ impl Request {
             v: PROTOCOL_VERSION,
             id: id.into(),
             token: None,
+            auth: None,
             op,
         }
     }
 
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
+        self
+    }
+
+    pub fn with_auth(mut self, auth: impl Into<String>) -> Self {
+        self.auth = Some(auth.into());
         self
     }
 }

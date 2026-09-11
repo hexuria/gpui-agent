@@ -71,7 +71,7 @@ fn serve() -> Result<(), ExitCode> {
         spawn_host(config.addr, config.token, store.clone()).expect("bind agent server");
 
     eprintln!("gpui-agent listening on {addr} (platform=headless, app=todo)");
-    eprintln!("opt-in: GPUI_AGENT=1 · bind via from_env · protocol v1");
+    eprintln!("opt-in: GPUI_AGENT=1 · bind via from_env · protocol v2");
     if token_set {
         eprintln!("auth: required (GPUI_AGENT_TOKEN set; clients must send the same token)");
     } else {

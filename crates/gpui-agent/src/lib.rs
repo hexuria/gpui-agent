@@ -16,6 +16,7 @@
 
 pub mod client;
 pub mod dispatch;
+pub mod hmac_auth;
 pub mod host;
 pub mod mailbox;
 pub mod ndjson;
@@ -30,6 +31,9 @@ pub mod virtual_input;
 
 pub use client::AgentClient;
 pub use dispatch::{DispatchResult, authorize_request, handle_request};
+pub use hmac_auth::{
+    Challenge, challenge_for_nonce, hex_decode, hex_encode, hmac_hex, hmac_verify,
+};
 pub use host::AgentHost;
 pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{line_is_blank, read_limited_line, read_limited_line_into, write_json_line};
