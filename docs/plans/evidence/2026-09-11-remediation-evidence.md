@@ -370,3 +370,67 @@ Diff:
 
 Deviations: none. `apps/todo` still calls `require_screenshot_path` then `capture_window_via_screencapture`; confinement and temp-then-rename live in the SDK helper.
 
+---
+
+## R7 — Mailbox hello.auth matches the server token
+
+Task: R7 Mailbox TCP path stamps `hello.auth` from the server token
+Commit: 0c69b0431756fb5551d72544a043210924bb7686
+Red: test added before TCP-thread stamp (drain still `handle_request(..., None)`). Command:
+
+`cargo test -p gpui-agent --lib server::tests::mailbox_hello_auth_matches_server_token -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'server::tests::mailbox_hello_auth_matches_server_token' (24655) panicked at crates/gpui-agent/src/server.rs:690:9:
+assertion `left == right` failed
+  left: None
+ right: Required
+test server::tests::mailbox_hello_auth_matches_server_token ... FAILED
+
+failures:
+    server::tests::mailbox_hello_auth_matches_server_token
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 75 filtered out; finished in 0.01s
+```
+
+Green: same command after stamp. Exit: 0
+
+```
+running 1 test
+test server::tests::mailbox_hello_auth_matches_server_token ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 75 filtered out; finished in 0.01s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+```
+
+Sum: 76+26+7+8+61+16+8+1 = **203** (>= 202 + 1). `authorize_request` remains on the TCP thread. Mailbox depth cap unchanged.
+
+Diff:
+
+```
+ crates/gpui-agent/src/server.rs                    | 41 +++++++++++++-
+ .../evidence/2026-09-11-remediation-evidence.md    | 62 ++++++++++++++++++++++
+ 2 files changed, 102 insertions(+), 1 deletion(-)
+```
+
+Deviations: none. Did not change `apps/todo` drain (`handle_request(..., None)`); TCP stamp is the client-visible source of truth.
+

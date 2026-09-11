@@ -299,9 +299,12 @@ fn handle_stream_mailbox(
             break;
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
-        let resp = mailbox
+        let mut resp = mailbox
             .wait(req, timeout)
             .unwrap_or_else(|err| Response::err("?", err));
+        if let Some(hello) = resp.hello.as_mut() {
+            hello.auth = crate::protocol::HelloAuth::from_token_configured(token);
+        }
         write_resp(&mut writer, &mut encode_buf, &resp);
         if shutdown_op {
             shutdown.store(true, Ordering::SeqCst);
@@ -657,5 +660,41 @@ mod tests {
             "{err}"
         );
         assert!(!client.has_session());
+    }
+
+    #[test]
+    fn mailbox_hello_auth_matches_server_token() {
+        let mailbox = AgentMailbox::new();
+        let drain = mailbox.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_t = stop.clone();
+        thread::spawn(move || {
+            let mut host = EmptyHost;
+            while !stop_t.load(Ordering::SeqCst) {
+                for posted in drain.take() {
+                    let resp = handle_request(&mut host, posted.request.clone(), None);
+                    posted.reply(resp);
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let (addr, shutdown) = spawn_mailbox(
+            "127.0.0.1:0".parse().unwrap(),
+            Some("secret".into()),
+            mailbox,
+            Duration::from_secs(2),
+        )
+        .expect("bind mailbox");
+        let mut client = AgentClient::connect(addr)
+            .with_token("secret")
+            .with_timeout(Duration::from_secs(2));
+        let resp = client.rpc(Op::Hello).expect("hello");
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(
+            resp.hello.expect("hello payload").auth,
+            crate::protocol::HelloAuth::Required
+        );
+        shutdown.store(true, Ordering::SeqCst);
+        stop.store(true, Ordering::SeqCst);
     }
 }
