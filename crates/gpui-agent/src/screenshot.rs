@@ -116,11 +116,62 @@ pub fn write_png(path: &str, png: &[u8]) -> Result<serde_json::Value, String> {
 /// [`write_png`] against an explicit base directory (tests).
 pub fn write_png_in(path: &str, png: &[u8], base: &Path) -> Result<serde_json::Value, String> {
     let dest = confine_screenshot_path_in(path, base)?;
-    if let Some(parent) = dest.parent() {
+    atomic_write_png(&dest, png)?;
+    Ok(serde_json::json!({ "path": dest.to_string_lossy() }))
+}
+
+/// Adjacent temp path: `{parent}/.{stem}.{pid}-{n}.tmp`.
+pub fn png_write_temp_path(dest: &Path, n: u32) -> PathBuf {
+    let parent = dest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let stem = dest
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("shot");
+    parent.join(format!(".{stem}.{}-{n}.tmp", std::process::id()))
+}
+
+/// Write `png` onto `dest` via an adjacent temp file then `rename`.
+/// Unix rename replaces atomically; that is not a pre-delete.
+pub fn atomic_write_png(dest: &Path, png: &[u8]) -> Result<(), String> {
+    if let Some(parent) = dest.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
     }
-    std::fs::write(&dest, png).map_err(|err| format!("{}: {err}", dest.display()))?;
-    Ok(serde_json::json!({ "path": dest.to_string_lossy() }))
+    let mut n = 0u32;
+    let tmp = loop {
+        let candidate = png_write_temp_path(dest, n);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                if let Err(err) = std::io::Write::write_all(&mut file, png) {
+                    let _ = std::fs::remove_file(&candidate);
+                    return Err(format!("{}: {err}", candidate.display()));
+                }
+                let _ = file.sync_all();
+                break candidate;
+            }
+            Err(_) if n < 32 => {
+                n += 1;
+                continue;
+            }
+            Err(err) => {
+                return Err(format!("{}: {err}", candidate.display()));
+            }
+        }
+    };
+    match std::fs::rename(&tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(format!("{}: {err}", dest.display()))
+        }
+    }
 }
 
 /// 1×1 transparent PNG for tests / mock hosts only. Not a stand-in for
@@ -140,6 +191,11 @@ pub const TEST_PNG: &[u8] = &[
 /// shell).
 pub fn screencapture_window_argv(window_id: u32, path: &str) -> Result<Vec<String>, String> {
     let path = require_screenshot_path(Some(path))?;
+    if path.starts_with('-') {
+        return Err(
+            "screenshot path must not start with '-' (would look like a screencapture flag)".into(),
+        );
+    }
     if window_id == 0 {
         return Err(screenshot_unavailable(
             "refusing screencapture without a CGWindowID (would not be this app window)",
@@ -164,13 +220,23 @@ pub fn capture_window_via_screencapture(
 ) -> Result<DispatchResult, String> {
     let path = require_screenshot_path(path)?;
     let dest = confine_screenshot_path(path)?;
-    let dest_str = dest
+    let tmp = png_write_temp_path(&dest, 0);
+    let tmp_str = tmp
         .to_str()
-        .ok_or_else(|| "screenshot path is not utf-8".to_string())?;
-    let args = screencapture_window_argv(window_id, dest_str)?;
+        .ok_or_else(|| "screenshot temp path is not utf-8".to_string())?;
+    let args = screencapture_window_argv(window_id, tmp_str)?;
     #[cfg(target_os = "macos")]
     {
-        run_screencapture(&args, dest_str)
+        let dest_str = dest
+            .to_str()
+            .ok_or_else(|| "screenshot path is not utf-8".to_string())?;
+        prepare_screencapture_dest(dest_str)?;
+        run_screencapture(&args, tmp_str)?;
+        if let Err(err) = std::fs::rename(&tmp, &dest) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("{}: {err}", dest.display()));
+        }
+        accept_written_png(dest_str)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -445,5 +511,41 @@ mod tests {
         assert_eq!(value["path"], dest.to_str().unwrap());
         assert_eq!(std::fs::read(&dest).unwrap(), TEST_PNG);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn write_png_temp_then_rename_replaces_without_predelete() {
+        let dir =
+            std::env::temp_dir().join(format!("gpui-agent-atomic-png-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("shot.png");
+        std::fs::write(&dest, b"old-bytes").unwrap();
+        atomic_write_png(&dest, TEST_PNG).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), TEST_PNG);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no leftover temp files: {leftovers:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn screencapture_argv_rejects_leading_dash_filename() {
+        let err = confine_screenshot_path_in("-evil.png", Path::new("/tmp")).unwrap_err();
+        assert!(
+            err.contains('-') || err.contains("filename"),
+            "confine must reject leading dash: {err}"
+        );
+        let err = screencapture_window_argv(42, "-evil.png").unwrap_err();
+        assert!(
+            err.contains('-') || err.contains("flag"),
+            "argv last slot must not be a flag: {err}"
+        );
     }
 }

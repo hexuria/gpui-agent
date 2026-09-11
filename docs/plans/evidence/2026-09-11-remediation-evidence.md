@@ -291,3 +291,82 @@ Diff:
 
 Deviations: none.
 
+---
+
+## R5 — Temp-then-rename + dash-safe argv
+
+Task: R5 Write PNG via adjacent temp file then rename; confined path cannot start with `-`
+Commit: 3c61d2208e391a396d9cc921550f449245b8d711
+Red: `atomic_write_png` stub returned `"atomic_write_png not implemented"` (not stash). Command:
+
+`cargo test -p gpui-agent --lib screenshot::tests::write_png_temp_then_rename_replaces_without_predelete -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'screenshot::tests::write_png_temp_then_rename_replaces_without_predelete' (21506) panicked at crates/gpui-agent/src/screenshot.rs:467:43:
+called `Result::unwrap()` on an `Err` value: "atomic_write_png not implemented"
+test screenshot::tests::write_png_temp_then_rename_replaces_without_predelete ... FAILED
+
+failures:
+    screenshot::tests::write_png_temp_then_rename_replaces_without_predelete
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.00s
+```
+
+Green: same command after temp-then-rename. Exit: 0
+
+```
+running 1 test
+test screenshot::tests::write_png_temp_then_rename_replaces_without_predelete ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.01s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 75+26+7+8+61+16+8+1 = **202** (>= 200 + 2: `write_png_temp_then_rename_replaces_without_predelete`, `screencapture_argv_rejects_leading_dash_filename`).
+
+Command: `cargo check -p todo --features embedded-host`
+Exit: 0
+
+```
+    Checking todo v0.1.0 (/workspace/apps/todo)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.64s
+```
+
+Command: `cargo check -p todo`
+Exit: 0
+
+```
+    Checking todo v0.1.0 (/workspace/apps/todo)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.40s
+```
+
+Diff:
+
+```
+ crates/gpui-agent/src/lib.rs                       |   7 +-
+ crates/gpui-agent/src/screenshot.rs                | 116 +++++++++++++++++++--
+ .../evidence/2026-09-11-remediation-evidence.md    |  76 ++++++++++++++
+ 3 files changed, 189 insertions(+), 10 deletions(-)
+```
+
+Deviations: none. `apps/todo` still calls `require_screenshot_path` then `capture_window_via_screencapture`; confinement and temp-then-rename live in the SDK helper.
+
