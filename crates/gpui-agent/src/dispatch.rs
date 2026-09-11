@@ -143,54 +143,52 @@ fn wait_until_ready(
 }
 
 pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
-    let node = tree.find(&spec.target);
     let exists = spec.exists.unwrap_or(true);
-
-    match (node, exists) {
-        (None, true) => return Err(format!("node `{}` not found", spec.target)),
-        (Some(_), false) => {
-            return Err(format!(
+    if exists {
+        let node = tree.require_id(&spec.target)?;
+        if let Some(name) = spec.name.as_deref() {
+            if node.name != name {
+                return Err(format!(
+                    "node `{}` name: expected {name:?}, got {:?}",
+                    spec.target, node.name
+                ));
+            }
+        }
+        if let Some(value) = spec.value.as_deref() {
+            if node.value.as_deref() != Some(value) {
+                return Err(format!(
+                    "node `{}` value: expected {value:?}, got {:?}",
+                    spec.target, node.value
+                ));
+            }
+        }
+        if let Some(role) = spec.role.as_deref() {
+            if node.role != role {
+                return Err(format!(
+                    "node `{}` role: expected {role:?}, got {:?}",
+                    spec.target, node.role
+                ));
+            }
+        }
+        if let Some(checked) = spec.checked {
+            if node.checked != Some(checked) {
+                return Err(format!(
+                    "node `{}` checked: expected {checked}, got {:?}",
+                    spec.target, node.checked
+                ));
+            }
+        }
+        Ok(())
+    } else {
+        match tree.find_all(&spec.target).len() {
+            0 => Ok(()),
+            1 => Err(format!(
                 "node `{}` exists but should be absent",
                 spec.target
-            ));
-        }
-        (None, false) => return Ok(()),
-        (Some(node), true) => {
-            if let Some(name) = spec.name.as_deref() {
-                if node.name != name {
-                    return Err(format!(
-                        "node `{}` name: expected {name:?}, got {:?}",
-                        spec.target, node.name
-                    ));
-                }
-            }
-            if let Some(value) = spec.value.as_deref() {
-                if node.value.as_deref() != Some(value) {
-                    return Err(format!(
-                        "node `{}` value: expected {value:?}, got {:?}",
-                        spec.target, node.value
-                    ));
-                }
-            }
-            if let Some(role) = spec.role.as_deref() {
-                if node.role != role {
-                    return Err(format!(
-                        "node `{}` role: expected {role:?}, got {:?}",
-                        spec.target, node.role
-                    ));
-                }
-            }
-            if let Some(checked) = spec.checked {
-                if node.checked != Some(checked) {
-                    return Err(format!(
-                        "node `{}` checked: expected {checked}, got {:?}",
-                        spec.target, node.checked
-                    ));
-                }
-            }
+            )),
+            n => Err(format!("duplicate id `{}` ({n} nodes)", spec.target)),
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -481,5 +479,25 @@ mod tests {
         );
         assert!(resp.ok, "{resp:?}");
         assert_eq!(resp.hello.as_ref().unwrap().ready, true);
+    }
+
+    #[test]
+    fn assert_duplicate_id_is_error() {
+        let tree = UiTree {
+            app: "test".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            nodes: vec![UiNode::button("dup", "A").with_child(UiNode::button("dup", "B"))],
+        };
+        let spec = AssertSpec {
+            target: "dup".into(),
+            name: None,
+            value: None,
+            role: None,
+            checked: None,
+            exists: None,
+        };
+        let err = assert_tree(&tree, &spec).unwrap_err();
+        assert!(err.contains("duplicate id"), "{err}");
     }
 }

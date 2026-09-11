@@ -822,3 +822,71 @@ Diff:
 
 Deviations: CLI tests that validate/run `todo-crud.json` now pass `--schema examples/schemas/todo.json` (same specificity; tokenless validate still works). `todo_registry()` kept for in-process tests.
 
+---
+
+## R11 — Fail-closed duplicate ids in tree lookup
+
+Task: R11 fail-closed duplicate ids in tree lookup
+Commit: 7f206d491cf103c9f387fd3fffbb7fc769872c6e
+Red: new test against current `find` first-match. Command: `cargo test -p gpui-agent --lib dispatch::tests::assert_duplicate_id_is_error -- --exact`
+Exit: 101
+
+```
+running 1 test
+test dispatch::tests::assert_duplicate_id_is_error ... FAILED
+
+failures:
+
+---- dispatch::tests::assert_duplicate_id_is_error stdout ----
+
+thread 'dispatch::tests::assert_duplicate_id_is_error' (52405) panicked at crates/gpui-agent/src/dispatch.rs:502:45:
+called `Result::unwrap_err()` on an `Ok` value: ()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    dispatch::tests::assert_duplicate_id_is_error
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 83 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p gpui-agent --lib`
+```
+
+Green: same command after `require_id` in `assert_tree`. Exit: 0
+
+```
+running 1 test
+test dispatch::tests::assert_duplicate_id_is_error ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 86 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 87+28+7+8+64+16+8+1 = **219** (>= 215 + 4).
+
+Diff:
+
+```
+ crates/gpui-agent/src/dispatch.rs                  | 100 ++++++++++++---------
+ crates/gpui-agent/src/tree.rs                      |  93 +++++++++++++++++++
+ .../evidence/2026-09-11-remediation-evidence.md    |  65 ++++++++++++++
+ 3 files changed, 217 insertions(+), 41 deletions(-)
+```
+
+Deviations: none. R11b skipped (D5).
+
