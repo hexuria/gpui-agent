@@ -890,3 +890,74 @@ Diff:
 
 Deviations: none. R11b skipped (D5).
 
+---
+
+## R12 — Fix protocol and README doc drift
+
+Task: R12 fix protocol and README doc drift
+Commit: 4cdfefa60a116872c7807d5cff194dfd7360173e
+Red: test added before PROTOCOL edit (file lacked `GPUI_AGENT_REMOTE`). Command: `cargo test -p todo-core --lib tests::docs_protocol_mentions_remote_triple -- --exact`
+Exit: 101
+
+```
+running 1 test
+test tests::docs_protocol_mentions_remote_triple ... FAILED
+
+failures:
+
+---- tests::docs_protocol_mentions_remote_triple stdout ----
+
+thread 'tests::docs_protocol_mentions_remote_triple' (55248) panicked at crates/todo-core/src/lib.rs:613:9:
+PROTOCOL.md must document remote bind with GPUI_AGENT_REMOTE
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::docs_protocol_mentions_remote_triple
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p todo-core --lib`
+```
+
+Green: same command after PROTOCOL edit. Exit: 0
+
+```
+running 1 test
+test tests::docs_protocol_mentions_remote_triple ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.09s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 87+28+7+8+64+16+10+1 = **221** (>= 219 + 2).
+
+Diff:
+
+```
+ README.md                                          |  2 +-
+ apps/todo-headless/src/main.rs                     |  2 +-
+ crates/todo-core/src/lib.rs                        | 29 ++++++++++
+ docs/PROTOCOL.md                                   | 12 ++--
+ docs/SECURITY.md                                   |  6 +-
+ .../evidence/2026-09-11-remediation-evidence.md    | 65 ++++++++++++++++++++++
+ 6 files changed, 108 insertions(+), 8 deletions(-)
+```
+
+Deviations: also added `page_settings_readme_role_is_page`; corrected SECURITY L6 Wait wording and the workspace-`unsafe` sentence (I1 table already noted objc).
+

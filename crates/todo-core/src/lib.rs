@@ -504,6 +504,10 @@ mod tests {
         assert_eq!(store.page(), Page::Settings);
         let tree = store.tree();
         assert!(tree.find(ids::PAGE_SETTINGS).is_some());
+        assert_eq!(
+            tree.find(ids::PAGE_SETTINGS).unwrap().role,
+            gpui_agent::role::PAGE
+        );
         assert!(tree.find(ids::SETTINGS_CONFIRM_DELETE).is_some());
         assert!(tree.find(ids::INPUT).is_none());
         assert!(tree.find("todo-item-1").is_none());
@@ -599,5 +603,30 @@ mod tests {
         );
         let resp = handle_request(&mut store, req, None, None);
         assert!(resp.ok, "{resp:?}");
+    }
+
+    #[test]
+    fn docs_protocol_mentions_remote_triple() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/PROTOCOL.md");
+        let text = std::fs::read_to_string(&path).expect("PROTOCOL.md");
+        assert!(
+            text.contains("GPUI_AGENT_REMOTE"),
+            "PROTOCOL.md must document remote bind with GPUI_AGENT_REMOTE"
+        );
+    }
+
+    #[test]
+    fn page_settings_readme_role_is_page() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../README.md");
+        let text = std::fs::read_to_string(&path).expect("README.md");
+        assert!(
+            !text.contains("--role window"),
+            "page-settings example must not use --role window"
+        );
+        assert!(
+            text.contains("assert --id page-settings --role page"),
+            "page-settings example should assert role page"
+        );
     }
 }

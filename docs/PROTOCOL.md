@@ -5,9 +5,13 @@ response object **per line**. The client (`AgentClient`) keeps the TCP
 connection open and reuses it for later ops; `rpc_once` reconnects for
 benchmarks. This is **not** Chrome DevTools Protocol.
 
-Default bind: `127.0.0.1:17421` (`GPUI_AGENT_ADDR`). The server and the
-CLI refuse non-loopback addresses. Lines larger than 1 MiB are rejected
-and the connection is closed. Trust model and audit: [SECURITY.md](SECURITY.md).
+Default bind: `127.0.0.1:17421` (`GPUI_AGENT_ADDR`). Loopback is the
+default. Non-loopback bind is allowed with `GPUI_AGENT_REMOTE=1` **and**
+a non-empty token (not a blanket refuse of every non-loopback address).
+The CLI refuses non-loopback `--addr` unless `--allow-remote` /
+`GPUI_AGENT_ALLOW_REMOTE=1` and a token. Lines larger than 1 MiB are
+rejected and the connection is closed. Trust model and audit:
+[SECURITY.md](SECURITY.md).
 
 The protocol is **app-agnostic**. This is not a CDP-like attach: any app
 that implements `AgentHost`, assigns **stable ids**, and starts the server
@@ -55,7 +59,7 @@ and closes.
 | `key` | `target`, `key`, optional `delivery` | `Enter`, `Backspace`, … |
 | `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists` | Check snapshot fields |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
-| `wait` | optional `timeout_ms` | Block until hello/ready |
+| `wait` | optional `timeout_ms` | `None`: immediate hello (even if `ready: false`). `Some(ms)`: poll `hello.ready` until true or `wait timed out` (sleep ≤ 10 ms between polls) |
 | `screenshot` | optional `path` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Headless / daemon / default GUI client / Linux / Windows return `screenshot_unavailable` instead of a fake image. macOS `todo --features embedded-host` writes **this window** via `screencapture -l` (Screen Recording). Never the full desktop. |
 | `shutdown` | | Ask the host to exit |
 

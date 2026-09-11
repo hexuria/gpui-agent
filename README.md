@@ -46,7 +46,7 @@ Navigation between pages is **click + assert** on stable ids (or `invoke` if the
 
 ```bash
 gpui-agent click nav-settings
-gpui-agent assert --id page-settings --role window
+gpui-agent assert --id page-settings --role page
 ```
 
 ### Sample todo app (demo only)

@@ -14,7 +14,7 @@ use todo_core::TodoStore;
 
 /// Headless todo daemon: app domain logic, no GPUI / GPU window.
 ///
-/// Bind policy comes from `SecurityPolicy::from_env` (`GPUI_AGENT=1`,
+/// Bind policy comes from `from_env` (`GPUI_AGENT=1`,
 /// loopback default). Drive it with `gpui-agent` CLI / recipes.
 #[derive(Parser, Debug)]
 #[command(name = "todo-headless")]
