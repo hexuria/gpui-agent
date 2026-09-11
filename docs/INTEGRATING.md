@@ -15,7 +15,7 @@ Cookbook and `TestHost`: [SDK.md](SDK.md). Sync model: [ADR-001](ADR-001-daemon-
 | Runtime | Start the server only when `GPUI_AGENT=1` (`true`/`yes`/`on`). |
 | Release | Also require `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | Loopback default. `from_env` / `authorize_bind`. Non-loopback needs `GPUI_AGENT_REMOTE=1` and a token. See [SECURITY.md](SECURITY.md). |
-| Token | **Required** on the host (`GPUI_AGENT_TOKEN`) to bind. `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback for local demos (prints a banner). When a token is set, every request must carry it. CLI **`recipe run` and `mcp` require** a non-empty client token. Set the **same** value on host and client. `hello.auth` is `"required"` or `"none"`. |
+| Token | **Required** on the host (`GPUI_AGENT_TOKEN`) to bind. `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback for local demos (prints a banner). When a token is set, clients send v2 `auth` HMAC (never the raw token). CLI **`recipe run` and `mcp` require** a non-empty client token. Set the **same** value on host and client. `hello.auth` is `"required"` or `"none"`. |
 | DoS caps | The server caps line size (1 MiB), concurrent connections (32), mailbox depth (128), and idle sockets (30s). See [SECURITY.md](SECURITY.md). |
 
 ```rust
@@ -149,3 +149,15 @@ reuses a single TCP session across `tools/call`.
 - [ ] Desktop screenshot runs on the UI thread with a real `Window`
       (macOS **embedded-host**: `screencapture -l` of that window only).
       A GUI that is only a daemon client cannot serve a window PNG.
+
+## 8. Copy-paste GPUI adapter
+
+Do **not** add `gpui-kit` to `gpui-agent`. Copy this into the app crate:
+
+1. **Mailbox drain (desktop).** `spawn_mailbox` on a background thread; drain `AgentMailbox` on the GPUI UI thread. Never touch GPUI objects from the TCP thread.
+2. **Virtual dispatch.** On the UI thread, intercept `delivery=virtual` and call `Window::dispatch_event` / `dispatch_keystroke`. Never OS HID.
+3. **macOS screenshot intercept.** On the UI thread, intercept `Op::Screenshot` and call `capture_window_via_screencapture` with this window’s `CGWindowID`. Other OSes: `screenshot_unavailable`.
+4. **`spawn_mailbox` vs `spawn_host`.** Painted GPUI: mailbox. Headless / tests: `spawn_host(Arc<Mutex<Store>>)`.
+5. **Default-deny token.** Bind via `from_env` requires `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`.
+6. **Confined screenshots.** Host writes relative `.png` names under `GPUI_AGENT_SCREENSHOT_DIR` (default `{temp_dir}/gpui-agent-screenshots/`). Clients send a file name, not an absolute path.
+7. **Protocol v2 HMAC.** After accept the host sends a challenge nonce; clients send `auth` = hex(`HMAC-SHA256(token, nonce)`). Do not put the raw token on the wire.

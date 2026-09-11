@@ -629,4 +629,19 @@ mod tests {
             "page-settings example should assert role page"
         );
     }
+
+    #[test]
+    fn integrating_md_lists_mailbox_and_screenshot() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/INTEGRATING.md");
+        let text = std::fs::read_to_string(&path).expect("INTEGRATING.md");
+        assert!(
+            text.contains("spawn_mailbox"),
+            "INTEGRATING.md must mention spawn_mailbox"
+        );
+        assert!(
+            text.contains("GPUI_AGENT_SCREENSHOT_DIR"),
+            "INTEGRATING.md must mention GPUI_AGENT_SCREENSHOT_DIR"
+        );
+    }
 }

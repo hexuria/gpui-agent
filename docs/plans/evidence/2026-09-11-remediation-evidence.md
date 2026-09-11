@@ -1113,3 +1113,77 @@ Diff:
 
 Deviations: boxed `authorize_request` error (`Box<Response>`) rather than `#[allow]`. Also rewrote pre-existing `clippy::while_let_loop` in `mcp.rs` so the four-package `-D warnings` Verify could pass. I1 workspace-unsafe wording was already made exact in R12.
 
+---
+
+## R15 — INTEGRATING adapter checklist
+
+Task: R15 INTEGRATING adapter checklist
+Commit: 9c3d226f269f216160450d9c26136e3ea22fab1c
+Red: test added before INTEGRATING bullets (file lacked `GPUI_AGENT_SCREENSHOT_DIR`; not stash). Command: `cargo test -p todo-core --lib tests::integrating_md_lists_mailbox_and_screenshot -- --exact`
+Exit: 101
+
+```
+running 1 test
+test tests::integrating_md_lists_mailbox_and_screenshot ... FAILED
+
+failures:
+
+---- tests::integrating_md_lists_mailbox_and_screenshot stdout ----
+
+thread 'tests::integrating_md_lists_mailbox_and_screenshot' (71931) panicked at crates/todo-core/src/lib.rs:642:9:
+INTEGRATING.md must mention GPUI_AGENT_SCREENSHOT_DIR
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::integrating_md_lists_mailbox_and_screenshot
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p todo-core --lib`
+```
+
+Green: same command after INTEGRATING checklist. Exit: 0
+
+```
+running 1 test
+test tests::integrating_md_lists_mailbox_and_screenshot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 87+28+8+8+64+16+11+1 = **223** (>= 222 + 1).
+
+R7 test `mailbox_hello_auth_matches_server_token` still present (`crates/gpui-agent/src/server.rs`); verify output includes:
+
+```
+test server::tests::mailbox_hello_auth_matches_server_token ... ok
+```
+
+Diff:
+
+```
+ crates/todo-core/src/lib.rs                        | 15 +++++
+ docs/INTEGRATING.md                                | 14 ++++-
+ .../evidence/2026-09-11-remediation-evidence.md    | 71 ++++++++++++++++++++++
+ 3 files changed, 99 insertions(+), 1 deletion(-)
+```
+
+Deviations: R11b skipped (D5). R7 already added `mailbox_hello_auth_matches_server_token`; R15 is docs + the INTEGRATING test only.
+
