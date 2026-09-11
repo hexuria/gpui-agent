@@ -1470,3 +1470,71 @@ Diff:
 
 Deviations: also confined in `apps/todo` `screenshot_this_window` so a live GUI screenshot cannot skip confine on the Linux unavailable path. `cargo check -p todo` BLOCKED-ENV.
 
+---
+
+## R5 (round 2) — `write_png` is atomic, not only the stub
+
+Task: R5 (round 2) assert `write_png` / `write_png_in` no longer `fs::write`s dest in place; keep the atomic-write test; live `-Sc.png` fails at confine (R3 round 2)
+Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Red: named source test inserted onto parent `037eb4e` (pre-R5 `write_png_in` still `fs::write(&dest, png)`; worktree `/tmp/r5-red-wt`, not stash). Command:
+
+`CARGO_TARGET_DIR=/tmp/r5-red-target cargo test -p gpui-agent --lib screenshot::tests::write_png_in_source_does_not_fs_write_dest_in_place -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'screenshot::tests::write_png_in_source_does_not_fs_write_dest_in_place' (17279) panicked at crates/gpui-agent/src/screenshot.rs:407:9:
+write_png_in must call atomic_write_png:
+pub fn write_png_in(path: &str, png: &[u8], base: &Path) -> Result<serde_json::Value, String> {
+    let dest = confine_screenshot_path_in(path, base)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
+    }
+    std::fs::write(&dest, png).map_err(|err| format!("{}: {err}", dest.display()))?;
+    Ok(serde_json::json!({ "path": dest.to_string_lossy() }))
+}
+…
+test screenshot::tests::write_png_in_source_does_not_fs_write_dest_in_place ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 73 filtered out; finished in 0.00s
+```
+
+Green: same command on this tree (production `write_png_in` already calls `atomic_write_png`). Exit: 0
+
+```
+running 1 test
+test screenshot::tests::write_png_in_source_does_not_fs_write_dest_in_place ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 88 filtered out; finished in 0.00s
+```
+
+`write_png_temp_then_rename_replaces_without_predelete` kept. Added `write_png_in_temp_then_rename_replaces_without_predelete` (calls `write_png_in`, not only `atomic_write_png`). R3 round 2: `-Sc.png` fails at confine (`screenshot_unconfined_path_fails_before_unavailable`).
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 89 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 89+28+8+9+64+16+13+1 = **228** (>= 226 + 2).
+
+Diff:
+
+```
+ crates/gpui-agent/src/screenshot.rs | 43 +++++++++++++++++++++++++++++++++++++
+```
+
+Deviations: red reconstructed on reachable parent `037eb4e` (R5 production already used `atomic_write_png`; this follow-up is the missing `write_png` assertion). Original stub test kept.
+

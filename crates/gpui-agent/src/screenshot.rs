@@ -536,6 +536,49 @@ mod tests {
     }
 
     #[test]
+    fn write_png_in_temp_then_rename_replaces_without_predelete() {
+        let dir = std::env::temp_dir().join(format!(
+            "gpui-agent-write-png-in-atomic-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shot.png"), b"old-bytes").unwrap();
+        write_png_in("shot.png", TEST_PNG, &dir).unwrap();
+        assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), TEST_PNG);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "write_png_in must not leave temp files: {leftovers:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_png_in_source_does_not_fs_write_dest_in_place() {
+        let src = include_str!("screenshot.rs");
+        let start = src.find("pub fn write_png_in").expect("write_png_in");
+        let after = &src[start..];
+        let next = after[1..]
+            .find("\npub fn ")
+            .map(|i| i + 1)
+            .expect("function after write_png_in");
+        let body = &after[..next];
+        assert!(
+            body.contains("atomic_write_png"),
+            "write_png_in must call atomic_write_png:\n{body}"
+        );
+        assert!(
+            !body.contains("fs::write"),
+            "write_png_in must not fs::write the dest in place:\n{body}"
+        );
+    }
+
+    #[test]
     fn screencapture_argv_rejects_leading_dash_filename() {
         let err = confine_screenshot_path_in("-evil.png", Path::new("/tmp")).unwrap_err();
         assert!(
