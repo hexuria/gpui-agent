@@ -2,6 +2,7 @@ use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
+use crate::hmac_auth::{hmac_hex, parse_challenge_line};
 use crate::mailbox::MAX_MAILBOX_DEPTH;
 use crate::ndjson::{read_limited_line_into, write_json_line};
 use crate::protocol::{AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response};
@@ -27,10 +28,11 @@ struct LiveSession {
     reader: BufReader<TcpStream>,
     encode_buf: Vec<u8>,
     line_buf: Vec<u8>,
+    auth: Option<String>,
 }
 
 impl LiveSession {
-    fn open(addr: SocketAddr, timeout: Duration) -> Result<Self, String> {
+    fn open(addr: SocketAddr, timeout: Duration, token: Option<&str>) -> Result<Self, String> {
         let stream = TcpStream::connect_timeout(&addr, Duration::from_millis(400))
             .map_err(|err| err.to_string())?;
         let _ = stream.set_nodelay(true);
@@ -41,24 +43,30 @@ impl LiveSession {
             .set_write_timeout(Some(timeout))
             .map_err(|err| err.to_string())?;
         let writer = stream.try_clone().map_err(|err| err.to_string())?;
-        Ok(Self {
+        let mut session = Self {
             writer,
             reader: BufReader::new(stream),
             encode_buf: Vec::with_capacity(4096),
             line_buf: Vec::with_capacity(4096),
-        })
+            auth: None,
+        };
+        if let Some(token) = token {
+            if !read_limited_line_into(&mut session.reader, &mut session.line_buf, MAX_LINE_BYTES)
+                .map_err(|err| err.to_string())?
+            {
+                return Err("connection closed before challenge".into());
+            }
+            let nonce = parse_challenge_line(&session.line_buf)?;
+            session.auth = Some(hmac_hex(token, &nonce)?);
+        }
+        Ok(session)
     }
 
-    fn exchange_wire(
-        &mut self,
-        id: &str,
-        token: Option<&str>,
-        op: &Op,
-    ) -> Result<Response, String> {
+    fn exchange_wire(&mut self, id: &str, op: &Op) -> Result<Response, String> {
         let req = WireRequest {
             v: PROTOCOL_VERSION,
             id,
-            token,
+            auth: self.auth.as_deref(),
             op,
         };
         write_json_line(&mut self.writer, &mut self.encode_buf, &req)
@@ -69,7 +77,7 @@ impl LiveSession {
         {
             return Err("connection closed".into());
         }
-        serde_json::from_slice(&self.line_buf).map_err(|err| format!("bad response: {err}"))
+        parse_response_line(&self.line_buf)
     }
 
     /// Write every request line, flush once, then read one response each.
@@ -80,7 +88,6 @@ impl LiveSession {
     fn exchange_pipeline(
         &mut self,
         start_id: u64,
-        token: Option<&str>,
         ops: &[&Op],
     ) -> Result<Vec<Response>, PipelineError> {
         let mut id_buf = [0u8; 20];
@@ -90,7 +97,7 @@ impl LiveSession {
             let req = WireRequest {
                 v: PROTOCOL_VERSION,
                 id,
-                token,
+                auth: self.auth.as_deref(),
                 op,
             };
             if let Err(err) = write_json_line(&mut self.writer, &mut self.encode_buf, &req) {
@@ -112,10 +119,7 @@ impl LiveSession {
                 Ok(false) => return Err(pipeline_eof(&out)),
                 Err(err) => return Err(PipelineError::Fatal(err.to_string())),
             }
-            out.push(
-                serde_json::from_slice(&self.line_buf)
-                    .map_err(|err| PipelineError::Fatal(format!("bad response: {err}")))?,
-            );
+            out.push(parse_response_line(&self.line_buf).map_err(PipelineError::Fatal)?);
         }
         Ok(out)
     }
@@ -145,7 +149,7 @@ struct WireRequest<'a> {
     v: u32,
     id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    token: Option<&'a str>,
+    auth: Option<&'a str>,
     #[serde(flatten)]
     op: &'a Op,
 }
@@ -278,14 +282,17 @@ impl AgentClient {
 
     fn roundtrip_wire(&mut self, id: &str, op: &Op) -> Result<Response, String> {
         if self.session.is_none() {
-            self.session = Some(LiveSession::open(self.addr, self.timeout)?);
+            self.session = Some(LiveSession::open(
+                self.addr,
+                self.timeout,
+                self.token.as_deref(),
+            )?);
         }
-        let token = self.token.as_deref();
         match self
             .session
             .as_mut()
             .expect("session")
-            .exchange_wire(id, token, op)
+            .exchange_wire(id, op)
         {
             Ok(resp) => Ok(resp),
             Err(err) => {
@@ -326,17 +333,16 @@ impl AgentClient {
         ops: &[&Op],
     ) -> Result<Vec<Response>, PipelineError> {
         if self.session.is_none() {
-            match LiveSession::open(self.addr, self.timeout) {
+            match LiveSession::open(self.addr, self.timeout, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(err) => return Err(PipelineError::Retryable(err)),
             }
         }
-        let token = self.token.as_deref();
         match self
             .session
             .as_mut()
             .expect("session")
-            .exchange_pipeline(start_id, token, ops)
+            .exchange_pipeline(start_id, ops)
         {
             Ok(resps) => Ok(resps),
             Err(err) => {
@@ -454,6 +460,13 @@ impl AgentClient {
     }
 }
 
+fn parse_response_line(line: &[u8]) -> Result<Response, String> {
+    if parse_challenge_line(line).is_ok() {
+        return Err("automation token required".into());
+    }
+    serde_json::from_slice(line).map_err(|err| format!("bad response: {err}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,17 +475,30 @@ mod tests {
     #[test]
     fn wire_request_matches_owned_request_json() {
         let op = Op::click("todo-add");
-        let req = Request::new("42", op.clone()).with_token("secret");
+        let req = Request::new("42", op.clone()).with_auth("deadbeef");
         let wire = WireRequest {
             v: PROTOCOL_VERSION,
             id: "42",
-            token: Some("secret"),
+            auth: Some("deadbeef"),
+            op: &op,
+        };
+        let req_json = serde_json::to_value(&req).unwrap();
+        let wire_json = serde_json::to_value(&wire).unwrap();
+        assert_eq!(req_json, wire_json);
+        assert!(req_json.get("token").is_none());
+        let bare = Request::new("7", op.clone());
+        let bare_wire = WireRequest {
+            v: PROTOCOL_VERSION,
+            id: "7",
+            auth: None,
             op: &op,
         };
         assert_eq!(
-            serde_json::to_value(&req).unwrap(),
-            serde_json::to_value(&wire).unwrap()
+            serde_json::to_value(&bare).unwrap(),
+            serde_json::to_value(&bare_wire).unwrap()
         );
+        assert!(serde_json::to_value(&bare).unwrap().get("token").is_none());
+        assert!(serde_json::to_value(&bare).unwrap().get("auth").is_none());
     }
 
     #[test]

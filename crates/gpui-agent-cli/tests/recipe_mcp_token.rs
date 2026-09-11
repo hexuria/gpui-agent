@@ -25,6 +25,10 @@ fn todo_crud_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/recipes/todo-crud.json")
 }
 
+fn todo_schema_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/schemas/todo.json")
+}
+
 #[test]
 fn recipe_run_without_token_fails_fast() {
     let output = cli_bin()
@@ -100,7 +104,13 @@ fn mcp_empty_flag_token_fails_fast() {
 fn recipe_validate_without_token_still_works() {
     let path = todo_crud_path();
     let output = cli_bin()
-        .args(["recipe", "validate", path.to_str().unwrap()])
+        .args([
+            "recipe",
+            "validate",
+            path.to_str().unwrap(),
+            "--schema",
+            todo_schema_path().to_str().unwrap(),
+        ])
         .output()
         .expect("spawn");
     assert!(
@@ -132,6 +142,8 @@ fn recipe_run_with_matching_token_is_ok_and_reuses_session() {
             "recipe",
             "run",
             recipe.to_str().unwrap(),
+            "--schema",
+            todo_schema_path().to_str().unwrap(),
             "--set",
             "title=Buy milk",
         ])
@@ -207,3 +219,32 @@ fn mcp_with_token_starts_and_answers_initialize() {
         "{stdout}"
     );
 }
+
+#[test]
+fn cli_help_hides_token_env_canary() {
+    const CANARY: &str = "review-canary-9f3a-TOKEN";
+    let output = cli_bin()
+        .env("GPUI_AGENT_TOKEN", CANARY)
+        .arg("--help")
+        .output()
+        .expect("spawn");
+    assert!(
+        output.status.success(),
+        "gpui-agent --help must succeed\n{}",
+        stderr_of(&output)
+    );
+    let text = format!("{}{}", stdout_of(&output), stderr_of(&output));
+    assert!(
+        !text.contains(CANARY),
+        "--help must not print the live GPUI_AGENT_TOKEN canary:\n{text}"
+    );
+    assert!(
+        !text.contains("Drive any GPUI Kit app"),
+        "help must not claim CDP-like attach:\n{text}"
+    );
+    assert!(
+        text.contains("AgentHost") || text.to_ascii_lowercase().contains("embed"),
+        "help must mention AgentHost or embed:\n{text}"
+    );
+}
+

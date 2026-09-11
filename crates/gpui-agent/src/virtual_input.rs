@@ -36,9 +36,7 @@ pub struct VirtualPointerClick {
 }
 
 pub fn plan_click(tree: &UiTree, target: &str) -> Result<VirtualPointerClick, String> {
-    let node = tree
-        .find(target)
-        .ok_or_else(|| format!("node `{target}` not found"))?;
+    let node = tree.require_id(target)?;
     let (x, y) = hit_point(node.bounds)?;
     Ok(VirtualPointerClick {
         target: target.to_string(),
@@ -153,6 +151,37 @@ mod tests {
         let err = plan_click(&tree_with("todo-add", Bounds::default()), "nope").unwrap_err();
         assert!(!err.starts_with(VIRTUAL_UNAVAILABLE), "{err}");
         assert!(err.contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn plan_click_duplicate_id_is_error() {
+        let area = Bounds {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        let mut first = UiNode::new("dup", "button", "First");
+        first.bounds = area;
+        let mut second = UiNode::new("dup", "button", "Second");
+        second.bounds = Bounds {
+            x: 20.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        let tree = UiTree {
+            app: "t".into(),
+            platform: PlatformKind::Desktop,
+            ready: true,
+            nodes: vec![first, second],
+        };
+        let err = plan_click(&tree, "dup").unwrap_err();
+        assert!(
+            err.contains("duplicate id"),
+            "duplicate click-id must fail closed, not first-match: {err}"
+        );
+        assert!(!err.starts_with(VIRTUAL_UNAVAILABLE), "{err}");
     }
 
     #[test]

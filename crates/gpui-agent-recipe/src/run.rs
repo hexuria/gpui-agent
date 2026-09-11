@@ -227,8 +227,13 @@ fn capture_screenshot(
     }
     let path = capture.step_path(index, &step.id);
     let path_str = path.to_string_lossy().into_owned();
+    let wire_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("step.png")
+        .to_string();
     match client.rpc(Op::Screenshot {
-        path: Some(path_str.clone()),
+        path: Some(wire_name),
     }) {
         Ok(resp) if resp.ok => Some(ScreenshotReceipt {
             path: path_str,

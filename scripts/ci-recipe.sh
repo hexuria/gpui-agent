@@ -53,6 +53,7 @@ echo "==> wait until ready"
 
 echo "==> recipe run examples/recipes/todo-crud.json"
 "$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json \
   --set title="Buy milk" \
   --receipt-out "$RECEIPT"
 

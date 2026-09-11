@@ -1,7 +1,7 @@
 # Experimental recipes + TMP-inspired mapping
 
 This is an **experimental** P1 slice. It does not replace semantic RPC,
-does not steal the OS pointer, and does not change protocol v1.
+does not steal the OS pointer, and does not change protocol v2.
 
 The goal: let an agent **author or reuse a recipe** of gpui-agent ops
 (`click` / `set-value` / `assert` / `invoke` / …) that compiles to a
@@ -74,7 +74,7 @@ so a human or agent can write a sequence without braces.
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "name": "todo-crud",
   "app": "todo",
   "params": ["title"],
@@ -137,17 +137,22 @@ interactive debugging.
 export GPUI_AGENT_TOKEN=dev-secret
 
 # no host
-gpui-agent recipe validate examples/recipes/todo-crud.json
-gpui-agent recipe plan examples/recipes/todo-crud.json --set title="Buy milk"
-gpui-agent recipe resolve 'add a todo titled Buy milk'
+gpui-agent recipe validate examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json
+gpui-agent recipe plan examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json --set title="Buy milk"
+gpui-agent recipe resolve 'add a todo titled Buy milk' \
+  --schema examples/schemas/todo.json
 
 # host required — JSON is the documented path
-gpui-agent recipe run examples/recipes/todo-crud.json --set title="Buy milk"
+gpui-agent recipe run examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json --set title="Buy milk"
 
 # AI mid-run: intended PNGs after every step
 # headless / daemon / default GUI client / Linux / Windows: receipt lists screenshot_unavailable (no files)
 # macOS embedded-host todo: real PNG of this window (Screen Recording)
-gpui-agent recipe run examples/recipes/todo-crud.json --set title="Buy milk" \
+gpui-agent recipe run examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json --set title="Buy milk" \
   --screenshot-dir artifacts/steps/
 ```
 
@@ -218,10 +223,18 @@ not run. Plans with `Effect::Exit` never start unless `--yes` is set.
 
 ## Schema allow-list + resolve
 
-The demo registry is baked into `gpui-agent-recipe` (`todo_registry()`):
-protocol ops, `todo.add|toggle|delete|list`, and a few stable ids.
-Other apps should ship their own schemas later; there is no registry
-cloud and no `tmp-core` path-dep.
+The default CLI/MCP registry is **protocol ops only**. App invoke/id
+schemas load from `--schema PATH` (repeatable) and `GPUI_AGENT_SCHEMA`
+(OS path list). `gpui-agent mcp --schema PATH` is the same flag as
+`recipe`; recipe MCP tools also accept a `schema` argument. Sample todo
+schemas live in
+`examples/schemas/todo.json`. `todo_registry()` still exists for in-process
+tests (protocol + those invoke/id names).
+
+```
+gpui-agent recipe validate examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json
+```
 
 - `invoke` **names** must be registered as `SchemaKind::Invoke`. Unknown
   names fail closed. Invoking a protocol name (`click`) is rejected
@@ -265,7 +278,7 @@ do the same things the CLI already can. They do not add privilege.
 | --- | --- |
 | Opt-in | Host still needs `GPUI_AGENT=1` (release: `GPUI_AGENT_ALLOW_RELEASE=1`) |
 | Bind | CLI still `ensure_loopback` before connect |
-| Token | CLI `recipe run` and `mcp` **refuse to start** without a non-empty `GPUI_AGENT_TOKEN` or `--token` (P2). Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Host token stays optional for one-off `click`/`snapshot`. **Set the same token on host and client** for recipe/MCP. `hello.auth` is `"required"` \| `"none"`. |
+| Token | CLI `recipe run` and `mcp` **refuse to start** without a non-empty `GPUI_AGENT_TOKEN` or `--token` (P2). Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Host bind is default-deny; `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback. **Set the same token on host and client**. `hello.auth` is `"required"` \| `"none"`. |
 | Line / conn / idle / mailbox | Unchanged. Recipe cap 256 is extra, not a replacement. |
 | No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--screenshot-dir` is observe-only (macOS **embedded-host**: this window; never the desktop). |
 | No shell | Resolve/plan/run never call `Command`. `invoke` is still an in-process host callback. Unknown invoke names are rejected. |

@@ -5,8 +5,8 @@ use anyhow::{Context, Result, anyhow};
 use clap::Subcommand;
 use gpui_agent::client::AgentClient;
 use gpui_agent_recipe::{
-    RunError, ScreenshotCapture, compile_plan, order_check, parse_recipe, resolve_intent,
-    run_plan_with_screenshots, todo_registry, validate_recipe,
+    RunError, ScreenshotCapture, compile_plan, order_check, parse_recipe,
+    registry_from_schema_paths, resolve_intent, run_plan_with_screenshots, validate_recipe,
 };
 
 #[derive(Debug, Subcommand)]
@@ -51,8 +51,12 @@ pub enum RecipeCommand {
     Resolve { intent: String },
 }
 
-pub fn run(client: Option<AgentClient>, command: RecipeCommand) -> Result<()> {
-    let registry = todo_registry();
+pub fn run(
+    client: Option<AgentClient>,
+    command: RecipeCommand,
+    schema_paths: &[PathBuf],
+) -> Result<()> {
+    let registry = registry_from_schema_paths(schema_paths).map_err(|err| anyhow!("{err}"))?;
     match command {
         RecipeCommand::Validate { path } => {
             let recipe = parse_recipe(&path).map_err(|err| anyhow!("{err}"))?;
@@ -173,6 +177,7 @@ mod tests {
                 screenshot_dir: None,
                 screenshot_flagged: true,
             },
+            &[],
         )
         .unwrap_err();
         assert!(err.to_string().contains("--screenshot-dir"), "{err}");

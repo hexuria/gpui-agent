@@ -8,7 +8,7 @@ fn auth_banner(token_set: bool) -> &'static str {
     if token_set {
         "auth: required (GPUI_AGENT_TOKEN set; recipe/MCP clients must send the same token)"
     } else {
-        "auth: none (one-off click/snapshot ok; recipe run and mcp need the same token on host and client)"
+        "auth: none (GPUI_AGENT_INSECURE_NO_TOKEN=1 — any local process can drive this host)"
     }
 }
 
@@ -37,7 +37,7 @@ pub fn maybe_start() -> Option<AgentMailbox> {
             ) {
                 Ok((addr, _)) => {
                     eprintln!("gpui-agent listening on {addr} (platform=desktop, app=todo)");
-                    eprintln!("opt-in: GPUI_AGENT=1 · bind via from_env · protocol v1");
+                    eprintln!("opt-in: GPUI_AGENT=1 · bind via from_env · protocol v2");
                     eprintln!("{auth}");
                     eprintln!(
                         "delivery: semantic (default) or virtual (in-window GPUI events, no OS HID)"

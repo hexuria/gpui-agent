@@ -161,6 +161,21 @@ impl UiNode {
         self.children.iter().find_map(|child| child.find(id))
     }
 
+    pub fn find_all<'a>(&'a self, id: &str) -> Vec<&'a UiNode> {
+        let mut out = Vec::new();
+        self.collect_id(id, &mut out);
+        out
+    }
+
+    fn collect_id<'a>(&'a self, id: &str, out: &mut Vec<&'a UiNode>) {
+        if self.id == id {
+            out.push(self);
+        }
+        for child in &self.children {
+            child.collect_id(id, out);
+        }
+    }
+
     /// Visit this node and descendants without allocating intermediate vecs.
     pub fn visit<'a, F: FnMut(&'a UiNode)>(&'a self, f: &mut F) {
         f(self);
@@ -209,6 +224,39 @@ pub struct UiTree {
 impl UiTree {
     pub fn find(&self, id: &str) -> Option<&UiNode> {
         self.nodes.iter().find_map(|node| node.find(id))
+    }
+
+    pub fn find_all<'a>(&'a self, id: &str) -> Vec<&'a UiNode> {
+        let mut out = Vec::new();
+        for node in &self.nodes {
+            node.collect_id(id, &mut out);
+        }
+        out
+    }
+
+    pub fn duplicate_ids(&self) -> Vec<String> {
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        self.visit(&mut |node| {
+            *counts.entry(node.id.clone()).or_insert(0) += 1;
+        });
+        counts
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    pub fn ids_are_unique(&self) -> bool {
+        self.duplicate_ids().is_empty()
+    }
+
+    pub fn require_id(&self, id: &str) -> Result<&UiNode, String> {
+        let found = self.find_all(id);
+        match found.len() {
+            0 => Err(format!("node `{id}` not found")),
+            1 => Ok(found[0]),
+            n => Err(format!("duplicate id `{id}` ({n} nodes)")),
+        }
     }
 
     pub fn visit<'a, F: FnMut(&'a UiNode)>(&'a self, f: &mut F) {
@@ -295,5 +343,50 @@ mod tests {
         // Reordering bools vs Bounds did not shrink this (see docs/PERF.md).
         assert_eq!(std::mem::size_of::<UiNode>(), 168);
         assert_eq!(std::mem::size_of::<Bounds>(), 16);
+    }
+
+    fn dup_tree() -> UiTree {
+        UiTree {
+            app: "t".into(),
+            platform: crate::protocol::PlatformKind::Headless,
+            ready: true,
+            nodes: vec![
+                UiNode::window("root", "Root")
+                    .with_child(UiNode::button("dup", "First"))
+                    .with_child(
+                        UiNode::list("list", "List").with_child(UiNode::button("dup", "Second")),
+                    ),
+            ],
+        }
+    }
+
+    #[test]
+    fn find_all_returns_every_duplicate_in_dfs_order() {
+        let tree = dup_tree();
+        let names: Vec<&str> = tree
+            .find_all("dup")
+            .iter()
+            .map(|n| n.name.as_str())
+            .collect();
+        assert_eq!(names, ["First", "Second"]);
+        assert_eq!(tree.duplicate_ids(), vec!["dup".to_string()]);
+        assert!(!tree.ids_are_unique());
+    }
+
+    #[test]
+    fn require_id_zero_is_not_found() {
+        let tree = dup_tree();
+        let err = tree.require_id("missing").unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+        assert!(err.contains("missing"), "{err}");
+    }
+
+    #[test]
+    fn require_id_many_is_duplicate_error() {
+        let tree = dup_tree();
+        let err = tree.require_id("dup").unwrap_err();
+        assert!(err.contains("duplicate id"), "{err}");
+        assert!(err.contains('2') || err.contains("2 nodes"), "{err}");
+        assert_eq!(tree.require_id("root").unwrap().name, "Root");
     }
 }

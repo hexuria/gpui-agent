@@ -16,6 +16,7 @@
 
 pub mod client;
 pub mod dispatch;
+pub mod hmac_auth;
 pub mod host;
 pub mod mailbox;
 pub mod ndjson;
@@ -30,6 +31,9 @@ pub mod virtual_input;
 
 pub use client::AgentClient;
 pub use dispatch::{DispatchResult, authorize_request, handle_request};
+pub use hmac_auth::{
+    Challenge, challenge_for_nonce, hex_decode, hex_encode, hmac_hex, hmac_verify,
+};
 pub use host::AgentHost;
 pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{line_is_blank, read_limited_line, read_limited_line_into, write_json_line};
@@ -39,12 +43,15 @@ pub use protocol::{
 };
 pub use screenshot::{
     SCREENSHOT_BACKEND_SCREENCAPTURE, SCREENSHOT_UNAVAILABLE, TEST_PNG, accept_written_png,
-    capture_window_via_screencapture, is_screenshot_unavailable, require_screenshot_path,
-    screencapture_window_argv, screenshot_unavailable, write_png,
+    atomic_write_png, capture_window_via_screencapture, confine_screenshot_path,
+    confine_screenshot_path_in, is_screenshot_unavailable, png_write_temp_path,
+    require_screenshot_path, screencapture_window_argv, screenshot_base_dir,
+    screenshot_unavailable, write_png, write_png_in,
 };
 pub use security::{
-    AgentConfig, SecurityError, authorize_bind, authorize_client, ensure_loopback, from_env,
-    is_loopback_addr, tokens_match,
+    AgentConfig, INSECURE_NO_TOKEN_BANNER, SecurityError, authorize_bind,
+    authorize_bind_with_insecure, authorize_client, ensure_loopback, from_env, is_loopback_addr,
+    tokens_match,
 };
 pub use server::{
     AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, MAX_CONNECTIONS, MAX_LINE_BYTES, ServerLimits,

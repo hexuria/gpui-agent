@@ -1,26 +1,51 @@
-# GPUI Agent Protocol v1
+# GPUI Agent Protocol v2
 
 Newline-delimited JSON on a loopback TCP socket. One request object, one
 response object **per line**. The client (`AgentClient`) keeps the TCP
 connection open and reuses it for later ops; `rpc_once` reconnects for
 benchmarks. This is **not** Chrome DevTools Protocol.
 
-Default bind: `127.0.0.1:17421` (`GPUI_AGENT_ADDR`). The server and the
-CLI refuse non-loopback addresses. Lines larger than 1 MiB are rejected
-and the connection is closed. Trust model and audit: [SECURITY.md](SECURITY.md).
+Default bind: `127.0.0.1:17421` (`GPUI_AGENT_ADDR`). Loopback is the
+default. Non-loopback bind is allowed with `GPUI_AGENT_REMOTE=1` **and**
+a non-empty token (not a blanket refuse of every non-loopback address).
+The CLI refuses non-loopback `--addr` unless `--allow-remote` /
+`GPUI_AGENT_ALLOW_REMOTE=1` and a token. Lines larger than 1 MiB are
+rejected and the connection is closed. Trust model and audit:
+[SECURITY.md](SECURITY.md).
 
-The protocol is **app-agnostic**. Any GPUI Kit app that implements
-`AgentHost`, assigns **stable ids**, and starts the server under
-`GPUI_AGENT=1` can be driven by `gpui-agent` / MCP with no CLI changes.
-See [INTEGRATING.md](INTEGRATING.md).
+The protocol is **app-agnostic**. This is not a CDP-like attach: any app
+that implements `AgentHost`, assigns **stable ids**, and starts the server
+under `GPUI_AGENT=1` can be driven by `gpui-agent` / MCP with no CLI
+changes. See [INTEGRATING.md](INTEGRATING.md).
+
+## Challenge (when the host has a token)
+
+Immediately after accept the host writes one NDJSON line and flushes:
+
+```json
+{"v":2,"op":"challenge","nonce":"<64 hex chars>"}
+```
+
+The nonce is 32 bytes from `/dev/urandom`. The client must **not** send
+the raw token. Each request on that connection sends `auth` =
+lowercase hex(`HMAC-SHA256(key=token, msg=nonce)`). A new connection
+gets a new nonce (replay on a later session fails). Untokened servers
+(tests / `GPUI_AGENT_INSECURE_NO_TOKEN=1`) do **not** send a challenge.
+
+If a v2 request includes a non-empty `token` field while the host has a
+token, the host rejects with `"token must not be sent on the wire"`
+and closes. After a challenge (tokened host), a non-JSON / HTTP line
+gets `"bad json: …"` and the connection **closes**; a later valid HMAC
+on that socket is not served. Blank lines are ignored. Untokened
+servers close on bad JSON the same way.
 
 ## Request
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "id": "1",
-  "token": "optional-shared-secret",
+  "auth": "<hmac-sha256 hex>",
   "op": "snapshot"
 }
 ```
@@ -37,7 +62,7 @@ See [INTEGRATING.md](INTEGRATING.md).
 | `key` | `target`, `key`, optional `delivery` | `Enter`, `Backspace`, … |
 | `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists` | Check snapshot fields |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
-| `wait` | optional `timeout_ms` | Block until hello/ready |
+| `wait` | optional `timeout_ms` | `None`: immediate hello (even if `ready: false`). `Some(ms)`: poll `hello.ready` until true or `wait timed out` (sleep ≤ 10 ms between polls) |
 | `screenshot` | optional `path` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Headless / daemon / default GUI client / Linux / Windows return `screenshot_unavailable` instead of a fake image. macOS `todo --features embedded-host` writes **this window** via `screencapture -l` (Screen Recording). Never the full desktop. |
 | `shutdown` | | Ask the host to exit |
 
@@ -55,10 +80,10 @@ macOS **embedded-host** writes the app window. Details:
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "id": "1",
   "ok": true,
-  "hello": { "protocol": 1, "app": "my-app", "platform": "headless", "ready": true, "deliveries": ["semantic"], "auth": "none" },
+  "hello": { "protocol": 2, "app": "my-app", "platform": "headless", "ready": true, "deliveries": ["semantic"], "auth": "none" },
   "tree": { "app": "my-app", "platform": "headless", "ready": true, "nodes": [] },
   "result": {},
   "error": null
@@ -172,9 +197,10 @@ plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; client-side batching; see
 [RECIPES.md](RECIPES.md)).
 
-Point Claude Code at the binary (`args: ["mcp"]`). Set
+Point Claude Code at the binary (`args: ["mcp"]` or
+`["mcp", "--schema", "examples/schemas/todo.json"]`). Set
 `GPUI_AGENT_ADDR` and **`GPUI_AGENT_TOKEN`** (required; same value as
-the host). Document your app’s ids and `invoke` names in the project
+the host). `GPUI_AGENT_SCHEMA` is still honored. Document your app’s ids and `invoke` names in the project
 prompt — do not add per-app MCP tools to this repo.
 
 ## Named commands (`invoke`)

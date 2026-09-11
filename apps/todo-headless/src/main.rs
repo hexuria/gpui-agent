@@ -14,7 +14,7 @@ use todo_core::TodoStore;
 
 /// Headless todo daemon: app domain logic, no GPUI / GPU window.
 ///
-/// Bind policy comes from `SecurityPolicy::from_env` (`GPUI_AGENT=1`,
+/// Bind policy comes from `from_env` (`GPUI_AGENT=1`,
 /// loopback default). Drive it with `gpui-agent` CLI / recipes.
 #[derive(Parser, Debug)]
 #[command(name = "todo-headless")]
@@ -71,14 +71,12 @@ fn serve() -> Result<(), ExitCode> {
         spawn_host(config.addr, config.token, store.clone()).expect("bind agent server");
 
     eprintln!("gpui-agent listening on {addr} (platform=headless, app=todo)");
-    eprintln!("opt-in: GPUI_AGENT=1 · bind via from_env · protocol v1");
+    eprintln!("opt-in: GPUI_AGENT=1 · bind via from_env · protocol v2");
     if token_set {
-        eprintln!(
-            "auth: required (GPUI_AGENT_TOKEN set; recipe/MCP clients must send the same token)"
-        );
+        eprintln!("auth: required (GPUI_AGENT_TOKEN set; clients must send the same token)");
     } else {
         eprintln!(
-            "auth: none (one-off click/snapshot ok; recipe run and mcp need the same token on host and client)"
+            "auth: none (GPUI_AGENT_INSECURE_NO_TOKEN=1 — any local process can drive this host)"
         );
     }
     eprintln!("delivery: semantic only (virtual_unavailable — no GPUI event pipeline)");

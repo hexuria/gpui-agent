@@ -5,17 +5,19 @@
 # (set-value / click / assert / invoke). There is no `gpui-agent todo`
 # command — app-specific verbs are host `invoke` names or click targets.
 #
-# P2: one-off click/snapshot stay untokened. `recipe run` / `mcp` require
-# a token; the recipe phase below exports the same value on host and CLI.
-# P3: headless screenshot must stay screenshot_unavailable (no fake PNG).
+# Host bind is default-deny: a token is required (D1). `recipe run` / `mcp`
+# already required a client token. One-off click/snapshot now send the same
+# value. P3: headless screenshot must stay screenshot_unavailable (no fake PNG).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 ADDR="${GPUI_AGENT_ADDR:-127.0.0.1:17421}"
+TOKEN="${GPUI_AGENT_TOKEN:-smoke-token}"
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR="$ADDR"
+export GPUI_AGENT_TOKEN="$TOKEN"
 
 echo "==> building CLI + headless host"
 cargo build -p gpui-agent-cli -p todo-headless
@@ -33,7 +35,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> recipe run / mcp without token fail fast"
-if out=$(env -u GPUI_AGENT_TOKEN "$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --set title="x" 2>&1); then
+if out=$(env -u GPUI_AGENT_TOKEN "$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --schema examples/schemas/todo.json --set title="x" 2>&1); then
   echo "expected recipe run without token to fail, got: $out" >&2
   exit 1
 fi
@@ -45,7 +47,7 @@ if out=$(env -u GPUI_AGENT_TOKEN "$CLI" --addr "$ADDR" mcp </dev/null 2>&1); the
 fi
 echo "$out" | grep -E -i 'GPUI_AGENT_TOKEN|token' >/dev/null
 
-echo "==> starting todo-headless on $ADDR (no token; one-off click/snapshot)"
+echo "==> starting todo-headless on $ADDR (token required; same value on CLI)"
 "$HOST" &
 HOST_PID=$!
 
@@ -54,7 +56,7 @@ echo "==> wait until ready"
 "$CLI" --addr "$ADDR" hello
 
 echo "==> screenshot is honestly unavailable on headless (no fake PNG)"
-SHOT="$(mktemp -u /tmp/gpui-agent-smoke-shot-XXXXXX.png)"
+SHOT="smoke-shot-$$.png"
 rm -f "$SHOT"
 if "$CLI" --addr "$ADDR" screenshot --out "$SHOT"; then
   echo "expected screenshot_unavailable from headless" >&2
@@ -104,11 +106,10 @@ wait "$HOST_PID" 2>/dev/null || true
 HOST_PID=""
 
 echo "==> recipe run with matching host + client token"
-export GPUI_AGENT_TOKEN=smoke-p2-token
 "$HOST" &
 HOST_PID=$!
 "$CLI" --addr "$ADDR" wait
-receipt="$("$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --set title="Buy milk")"
+receipt="$("$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --schema examples/schemas/todo.json --set title="Buy milk")"
 echo "$receipt"
 echo "$receipt" | grep -F '"ok": true' >/dev/null
 echo "$receipt" | grep -F '"session_reused": true' >/dev/null

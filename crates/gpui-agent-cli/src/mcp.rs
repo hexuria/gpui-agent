@@ -1,5 +1,6 @@
 use std::io::{BufReader, Write};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -7,8 +8,8 @@ use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
 use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
 use gpui_agent_recipe::{
-    RunError, ScreenshotCapture, compile_plan, parse_recipe_source, resolve_intent,
-    run_plan_with_screenshots, todo_registry, validate_recipe,
+    RunError, ScreenshotCapture, compile_plan, parse_recipe_source, registry_from_schema_paths,
+    resolve_intent, run_plan_with_screenshots, validate_recipe,
 };
 use serde_json::{Value, json};
 
@@ -19,17 +20,13 @@ use serde_json::{Value, json};
 ///
 /// One [`AgentClient`] lives for the process: protocol `rpc` reuses a single
 /// TCP session across `tools/call` (no per-tool reconnect).
-pub fn run(addr: SocketAddr, token: String) -> Result<()> {
+pub fn run(addr: SocketAddr, token: String, schema_paths: Vec<PathBuf>) -> Result<()> {
     let mut client = AgentClient::connect(addr).with_token(token);
 
     let mut stdin = BufReader::new(std::io::stdin());
     let mut stdout = std::io::stdout();
     let mut line_buf = Vec::with_capacity(4096);
-    loop {
-        match read_limited_line_into(&mut stdin, &mut line_buf, MAX_LINE_BYTES)? {
-            true => {}
-            false => break,
-        }
+    while read_limited_line_into(&mut stdin, &mut line_buf, MAX_LINE_BYTES)? {
         if line_is_blank(&line_buf) {
             continue;
         }
@@ -56,7 +53,7 @@ pub fn run(addr: SocketAddr, token: String) -> Result<()> {
                 continue;
             }
             "tools/list" => json!({ "tools": tools() }),
-            "tools/call" => tools_call_result(&mut client, &params),
+            "tools/call" => tools_call_result(&mut client, &params, &schema_paths),
             "ping" => json!({}),
             other => {
                 write_msg(
@@ -173,7 +170,8 @@ pub(crate) fn tools() -> Vec<Value> {
             json!({
                 "type": "object",
                 "properties": {
-                    "recipe": { "description": "JSON recipe object (canonical) or wants text." }
+                    "recipe": { "description": "JSON recipe object (canonical) or wants text." },
+                    "schema": schema_arg()
                 },
                 "required": ["recipe"]
             }),
@@ -185,7 +183,8 @@ pub(crate) fn tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "recipe": { "description": "JSON recipe object (canonical) or wants text." },
-                    "set": { "type": "object", "description": "Parameter bindings." }
+                    "set": { "type": "object", "description": "Parameter bindings." },
+                    "schema": schema_arg()
                 },
                 "required": ["recipe"]
             }),
@@ -200,7 +199,8 @@ pub(crate) fn tools() -> Vec<Value> {
                     "set": { "type": "object", "description": "Parameter bindings." },
                     "yes": { "type": "boolean" },
                     "screenshot_dir": { "type": "string", "description": "After each step (or flagged steps), write an app-surface PNG. Receipt lists paths; headless/Linux/Windows are screenshot_unavailable; macOS desktop uses screencapture -l of this window." },
-                    "screenshot_flagged": { "type": "boolean", "description": "Only steps with screenshot: true." }
+                    "screenshot_flagged": { "type": "boolean", "description": "Only steps with screenshot: true." },
+                    "schema": schema_arg()
                 },
                 "required": ["recipe"]
             }),
@@ -211,12 +211,23 @@ pub(crate) fn tools() -> Vec<Value> {
             json!({
                 "type": "object",
                 "properties": {
-                    "intent": { "type": "string" }
+                    "intent": { "type": "string" },
+                    "schema": schema_arg()
                 },
                 "required": ["intent"]
             }),
         ),
     ]
+}
+
+fn schema_arg() -> Value {
+    json!({
+        "description": "App invoke/id schema JSON path(s). Same as CLI `--schema` / `GPUI_AGENT_SCHEMA`.",
+        "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+        ]
+    })
 }
 
 fn tool(name: &str, description: &str, input_schema: Value) -> Value {
@@ -257,7 +268,11 @@ fn parse_delivery(args: &Value) -> Result<DeliveryMode, String> {
     }
 }
 
-fn call_tool(client: &mut AgentClient, params: &Value) -> Result<Value, String> {
+fn call_tool(
+    client: &mut AgentClient,
+    params: &Value,
+    schema_paths: &[PathBuf],
+) -> Result<Value, String> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -306,10 +321,10 @@ fn call_tool(client: &mut AgentClient, params: &Value) -> Result<Value, String> 
             client.invoke(invoke_name, invoke_args)?
         }
         "shutdown" => client.expect_ok(Op::Shutdown)?,
-        "recipe_validate" => return recipe_validate(&args),
-        "recipe_plan" => return recipe_plan(&args),
-        "recipe_run" => return recipe_run_tool(client, &args),
-        "recipe_resolve" => return recipe_resolve_tool(&args),
+        "recipe_validate" => return recipe_validate(&args, schema_paths),
+        "recipe_plan" => return recipe_plan(&args, schema_paths),
+        "recipe_run" => return recipe_run_tool(client, &args, schema_paths),
+        "recipe_resolve" => return recipe_resolve_tool(&args, schema_paths),
         other => return Err(format!("unknown tool {other}")),
     };
     serde_json::to_value(resp).map_err(|err| err.to_string())
@@ -339,9 +354,28 @@ fn recipe_set(args: &Value) -> std::collections::BTreeMap<String, String> {
     map
 }
 
-fn recipe_validate(args: &Value) -> Result<Value, String> {
+fn recipe_schema_paths(cli: &[PathBuf], args: &Value) -> Vec<PathBuf> {
+    let mut paths = cli.to_vec();
+    match args.get("schema") {
+        Some(Value::Array(arr)) => {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    paths.push(PathBuf::from(s));
+                }
+            }
+        }
+        Some(Value::String(s)) => paths.push(PathBuf::from(s)),
+        _ => {}
+    }
+    paths
+}
+
+fn recipe_validate(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, String> {
     let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
-    validate_recipe(&recipe, &todo_registry())?;
+    validate_recipe(
+        &recipe,
+        &registry_from_schema_paths(&recipe_schema_paths(schema_paths, args))?,
+    )?;
     serde_json::to_value(serde_json::json!({
         "ok": true,
         "name": recipe.name,
@@ -350,15 +384,27 @@ fn recipe_validate(args: &Value) -> Result<Value, String> {
     .map_err(|err| err.to_string())
 }
 
-fn recipe_plan(args: &Value) -> Result<Value, String> {
+fn recipe_plan(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, String> {
     let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
-    let plan = compile_plan(&recipe, &recipe_set(args), &todo_registry())?;
+    let plan = compile_plan(
+        &recipe,
+        &recipe_set(args),
+        &registry_from_schema_paths(&recipe_schema_paths(schema_paths, args))?,
+    )?;
     serde_json::to_value(plan).map_err(|err| err.to_string())
 }
 
-fn recipe_run_tool(client: &mut AgentClient, args: &Value) -> Result<Value, String> {
+fn recipe_run_tool(
+    client: &mut AgentClient,
+    args: &Value,
+    schema_paths: &[PathBuf],
+) -> Result<Value, String> {
     let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
-    let plan = compile_plan(&recipe, &recipe_set(args), &todo_registry())?;
+    let plan = compile_plan(
+        &recipe,
+        &recipe_set(args),
+        &registry_from_schema_paths(&recipe_schema_paths(schema_paths, args))?,
+    )?;
     let yes = args.get("yes").and_then(Value::as_bool).unwrap_or(false);
     let flagged = args
         .get("screenshot_flagged")
@@ -385,8 +431,8 @@ fn recipe_run_tool(client: &mut AgentClient, args: &Value) -> Result<Value, Stri
 
 /// MCP `tools/call` result. Failed recipe steps must be `isError` so a
 /// host does not treat `"ok": false` inside a successful tool payload as OK.
-fn tools_call_result(client: &mut AgentClient, params: &Value) -> Value {
-    match call_tool(client, params) {
+fn tools_call_result(client: &mut AgentClient, params: &Value, schema_paths: &[PathBuf]) -> Value {
+    match call_tool(client, params, schema_paths) {
         Ok(value) => json!({
             "content": [{
                 "type": "text",
@@ -400,12 +446,15 @@ fn tools_call_result(client: &mut AgentClient, params: &Value) -> Value {
     }
 }
 
-fn recipe_resolve_tool(args: &Value) -> Result<Value, String> {
+fn recipe_resolve_tool(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, String> {
     let intent = args
         .get("intent")
         .and_then(Value::as_str)
         .ok_or("missing string `intent`")?;
-    let result = resolve_intent(intent, &todo_registry())?;
+    let result = resolve_intent(
+        intent,
+        &registry_from_schema_paths(&recipe_schema_paths(schema_paths, args))?,
+    )?;
     serde_json::to_value(result).map_err(|err| err.to_string())
 }
 
@@ -482,27 +531,46 @@ mod tests {
 
     #[test]
     fn recipe_validate_unknown_invoke_fails_closed() {
-        let err = recipe_validate(&json!({
-            "recipe": {
-                "name": "bad",
-                "steps": [{"id": "x", "op": "invoke", "name": "shell.run"}]
-            }
-        }))
+        let err = recipe_validate(
+            &json!({
+                "recipe": {
+                    "name": "bad",
+                    "steps": [{"id": "x", "op": "invoke", "name": "shell.run"}]
+                }
+            }),
+            &[],
+        )
         .unwrap_err();
         assert!(err.contains("unknown invoke"), "{err}");
     }
 
     #[test]
+    fn recipe_validate_honors_schema_paths() {
+        let recipe = json!({
+            "recipe": {
+                "name": "add",
+                "steps": [{"id": "x", "op": "invoke", "name": "todo.add", "args": {"title": "Milk"}}]
+            }
+        });
+        let err = recipe_validate(&recipe, &[]).unwrap_err();
+        assert!(err.contains("unknown invoke"), "{err}");
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/schemas/todo.json");
+        let ok = recipe_validate(&recipe, &[path]).expect("todo.json should allow todo.add");
+        assert_eq!(ok["ok"], json!(true));
+    }
+
+    #[test]
     fn recipe_validate_empty_and_bad_json_fail_closed() {
-        let err = recipe_validate(&json!({ "recipe": "" })).unwrap_err();
+        let err = recipe_validate(&json!({ "recipe": "" }), &[]).unwrap_err();
         assert!(err.contains("no steps"), "{err}");
-        let err = recipe_validate(&json!({ "recipe": "{" })).unwrap_err();
+        let err = recipe_validate(&json!({ "recipe": "{" }), &[]).unwrap_err();
         assert!(err.contains("recipe json"), "{err}");
     }
 
     #[test]
     fn recipe_resolve_shell_like_fails_closed() {
-        let err = recipe_resolve_tool(&json!({ "intent": "rm -rf /" })).unwrap_err();
+        let err = recipe_resolve_tool(&json!({ "intent": "rm -rf /" }), &[]).unwrap_err();
         assert!(err.contains("fail closed"), "{err}");
     }
 
@@ -515,6 +583,7 @@ mod tests {
                 "recipe": "hello",
                 "screenshot_flagged": true
             }),
+            &[],
         )
         .unwrap_err();
         assert!(err.contains("screenshot_dir"), "{err}");
@@ -529,6 +598,7 @@ mod tests {
                 "recipe": "hello\nshutdown",
                 "yes": false
             }),
+            &[],
         )
         .unwrap_err();
         assert!(err.contains("yes"), "{err}");
@@ -537,8 +607,12 @@ mod tests {
     #[test]
     fn unknown_mcp_tool_fails_closed() {
         let mut client = AgentClient::connect("127.0.0.1:1".parse().unwrap());
-        let err =
-            call_tool(&mut client, &json!({ "name": "todo.add", "arguments": {} })).unwrap_err();
+        let err = call_tool(
+            &mut client,
+            &json!({ "name": "todo.add", "arguments": {} }),
+            &[],
+        )
+        .unwrap_err();
         assert!(err.contains("unknown tool"), "{err}");
     }
 
@@ -567,6 +641,7 @@ mod tests {
                     }
                 }
             }),
+            &[],
         );
         assert_eq!(
             result.get("isError"),
@@ -606,6 +681,7 @@ mod tests {
                     }
                 }
             }),
+            &[],
         );
         assert!(
             result.get("isError").is_none(),

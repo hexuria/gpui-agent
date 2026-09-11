@@ -12,7 +12,11 @@ use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
 use recipe_cmd::RecipeCommand;
 
-/// Drive any GPUI Kit app over the opt-in agent protocol (not CDP).
+/// Talk to an embedded AgentHost over the opt-in agent protocol (not CDP).
+///
+/// The host must implement `AgentHost`, publish stable ids, and start the
+/// server under `GPUI_AGENT=1`. This CLI does not attach to an arbitrary
+/// GPUI Kit process.
 ///
 /// First-class commands are the protocol ops only. App-specific verbs
 /// (`todo.add`, `nav.go`, …) belong in the host (`invoke`) or in agent
@@ -26,7 +30,7 @@ struct Cli {
     addr: SocketAddr,
     /// Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host
     /// has one. Required (non-empty) for `recipe run` and `mcp`.
-    #[arg(long, env = "GPUI_AGENT_TOKEN")]
+    #[arg(long, env = "GPUI_AGENT_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// Connect to a non-loopback host. Requires a non-empty token. Plaintext
     /// TCP — lab / trusted network only. Prefer SSH or Tailscale until TLS.
@@ -41,7 +45,8 @@ App-specific helpers (for example the sample todo app) live in examples/,
 not in this CLI. Navigate pages with click + assert on stable ids, or invoke
 a command the host registered. Experimental: batch many ops in one process
 with `recipe validate|plan|run|resolve` (JSON canonical; `.wants` also
-accepted — see docs/RECIPES.md). `recipe run` and `mcp` require a non-empty
+accepted — see docs/RECIPES.md). Host bind is default-deny: set
+GPUI_AGENT_TOKEN on the host. `recipe run` and `mcp` require a non-empty
 GPUI_AGENT_TOKEN or --token; set the same value on the host. Non-loopback
 `--addr` also needs `--allow-remote` (or GPUI_AGENT_ALLOW_REMOTE=1) and a
 token so a mistyped address cannot leak the secret (see docs/SECURITY.md).";
@@ -123,9 +128,16 @@ enum Command {
     /// Ask the host to exit.
     Shutdown,
     /// Tiny MCP stdio server exposing the same generic tools. Requires `--token` / `GPUI_AGENT_TOKEN`.
-    Mcp,
+    Mcp {
+        /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
+        #[arg(long = "schema", value_name = "PATH")]
+        schema: Vec<std::path::PathBuf>,
+    },
     /// Experimental: validate / plan / run / resolve a JSON recipe of protocol ops (`.wants` also accepted). `run` requires a token.
     Recipe {
+        /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
+        #[arg(long = "schema", value_name = "PATH", global = true)]
+        schema: Vec<std::path::PathBuf>,
         #[command(subcommand)]
         action: RecipeCommand,
     },
@@ -161,18 +173,18 @@ fn run() -> Result<()> {
     gpui_agent::authorize_client(cli.addr, token.as_deref(), cli.allow_remote)
         .with_context(|| format!("refusing agent address {}", cli.addr))?;
 
-    if matches!(cli.command, Command::Mcp) {
+    if let Command::Mcp { schema } = cli.command {
         let token = require_recipe_mcp_token(token.as_deref())?;
-        return mcp::run(cli.addr, token.to_string());
+        return mcp::run(cli.addr, token.to_string(), schema);
     }
-    if let Command::Recipe { action } = cli.command {
+    if let Command::Recipe { schema, action } = cli.command {
         let client = if matches!(action, RecipeCommand::Run { .. }) {
             let token = require_recipe_mcp_token(token.as_deref())?;
             Some(AgentClient::connect(cli.addr).with_token(token))
         } else {
             None
         };
-        return recipe_cmd::run(client, action);
+        return recipe_cmd::run(client, action, &schema);
     }
 
     let mut client = AgentClient::connect(cli.addr);
@@ -234,7 +246,7 @@ fn run() -> Result<()> {
         }
         Command::Invoke { name, args } => print_resp(rpc(client.invoke(name, parse_args(&args)?))?),
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
-        Command::Mcp | Command::Recipe { .. } => unreachable!(),
+        Command::Mcp { .. } | Command::Recipe { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -295,6 +307,26 @@ mod tests {
     }
 
     #[test]
+    fn smoke_desktop_script_starts_todo_headless() {
+        let script = include_str!("../../../scripts/smoke-desktop.sh");
+        assert!(
+            script.contains("todo-headless"),
+            "desktop smoke must start the daemon SoT (ADR-001), not only the GUI:\n{script}"
+        );
+        assert!(
+            script.contains("ADR-001"),
+            "script header must cite ADR-001:\n{script}"
+        );
+        assert!(
+            !script.lines().any(|line| {
+                let t = line.trim_start();
+                t.starts_with("cargo ") && t.contains("--features embedded-host")
+            }),
+            "must not silently use embedded-host as the only path:\n{script}"
+        );
+    }
+
+    #[test]
     fn help_does_not_advertise_todo() {
         let help = Cli::command().render_long_help().to_string();
         assert!(
@@ -306,6 +338,19 @@ mod tests {
         assert!(
             help.to_ascii_lowercase().contains("experimental"),
             "top-level help should label recipes experimental:\n{help}"
+        );
+    }
+
+    #[test]
+    fn cli_help_does_not_claim_cdp_attach() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            !help.contains("Drive any GPUI Kit app"),
+            "help must not claim CDP-like attach to any process:\n{help}"
+        );
+        assert!(
+            help.contains("AgentHost") || help.to_ascii_lowercase().contains("embed"),
+            "help must mention AgentHost or embed:\n{help}"
         );
     }
 
@@ -481,6 +526,7 @@ mod tests {
         let validate = Cli::try_parse_from(["gpui-agent", "recipe", "validate", "x.json"]).unwrap();
         match validate.command {
             Command::Recipe {
+                schema: _,
                 action: RecipeCommand::Validate { path },
             } => assert_eq!(path.as_os_str(), "x.json"),
             other => panic!("unexpected {other:?}"),
@@ -498,10 +544,55 @@ mod tests {
         .unwrap();
         match run.command {
             Command::Recipe {
+                schema: _,
                 action: RecipeCommand::Run { yes, set, .. },
             } => {
                 assert!(yes);
                 assert_eq!(set, vec!["title=Milk"]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let with_schema = Cli::try_parse_from([
+            "gpui-agent",
+            "recipe",
+            "validate",
+            "x.json",
+            "--schema",
+            "examples/schemas/todo.json",
+        ])
+        .unwrap();
+        match with_schema.command {
+            Command::Recipe { schema, .. } => {
+                assert_eq!(
+                    schema.as_slice(),
+                    [std::path::PathBuf::from("examples/schemas/todo.json")]
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_schema_flag_parses_like_recipe() {
+        let parsed = Cli::try_parse_from([
+            "gpui-agent",
+            "mcp",
+            "--schema",
+            "examples/schemas/todo.json",
+        ]);
+        assert!(
+            parsed.is_ok(),
+            "mcp --schema must parse like recipe --schema: {:?}",
+            parsed.as_ref().err().map(|e| e.to_string())
+        );
+        let help = parsed.unwrap();
+        match help.command {
+            Command::Mcp { schema } => {
+                assert_eq!(
+                    schema.as_slice(),
+                    [std::path::PathBuf::from("examples/schemas/todo.json")]
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -535,6 +626,7 @@ mod tests {
         .unwrap();
         match run.command {
             Command::Recipe {
+                schema: _,
                 action:
                     RecipeCommand::Run {
                         screenshot_dir,

@@ -392,7 +392,8 @@ impl AgentHost for TodoStore {
     }
 
     fn screenshot(&self, path: Option<&str>) -> Result<DispatchResult, String> {
-        let _ = path;
+        let path = gpui_agent::require_screenshot_path(path)?;
+        let _dest = gpui_agent::confine_screenshot_path(path)?;
         let detail = match self.platform {
             PlatformKind::Headless => "headless host has no pixel surface",
             PlatformKind::Desktop => {
@@ -504,6 +505,10 @@ mod tests {
         assert_eq!(store.page(), Page::Settings);
         let tree = store.tree();
         assert!(tree.find(ids::PAGE_SETTINGS).is_some());
+        assert_eq!(
+            tree.find(ids::PAGE_SETTINGS).unwrap().role,
+            gpui_agent::role::PAGE
+        );
         assert!(tree.find(ids::SETTINGS_CONFIRM_DELETE).is_some());
         assert!(tree.find(ids::INPUT).is_none());
         assert!(tree.find("todo-item-1").is_none());
@@ -542,16 +547,11 @@ mod tests {
     #[test]
     fn screenshot_is_honestly_unavailable() {
         let mut store = TodoStore::default();
-        let dest =
-            std::env::temp_dir().join(format!("gpui-agent-todo-no-shot-{}", std::process::id()));
+        let name = format!("todo-headless-no-shot-{}.png", std::process::id());
+        let dest = gpui_agent::screenshot_base_dir().join(&name);
         let _ = std::fs::remove_file(&dest);
-        let req = Request::new(
-            "s",
-            Op::Screenshot {
-                path: Some(dest.to_string_lossy().into_owned()),
-            },
-        );
-        let resp = handle_request(&mut store, req, None);
+        let req = Request::new("s", Op::Screenshot { path: Some(name) });
+        let resp = handle_request(&mut store, req, None, None);
         assert!(!resp.ok, "{resp:?}");
         let err = resp.error.unwrap();
         assert!(gpui_agent::is_screenshot_unavailable(&err), "{err}");
@@ -560,20 +560,54 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_unconfined_path_fails_before_unavailable() {
+        let mut store = TodoStore::default();
+        for bad in ["/etc/passwd.png", "-Sc.png", "../x.png"] {
+            let req = Request::new(
+                "s",
+                Op::Screenshot {
+                    path: Some(bad.into()),
+                },
+            );
+            let resp = handle_request(&mut store, req, None, None);
+            assert!(!resp.ok, "{bad} {resp:?}");
+            let err = resp.error.clone().unwrap();
+            assert!(
+                !gpui_agent::is_screenshot_unavailable(&err),
+                "unconfined path must fail at confine, not unavailable: {bad} {err}"
+            );
+            assert!(
+                err.contains("relative")
+                    || err.contains("filename")
+                    || err.contains("..")
+                    || err.contains(".png"),
+                "{bad} {err}"
+            );
+        }
+        assert!(
+            !std::path::Path::new("/etc/passwd.png").exists(),
+            "must not invent /etc/passwd.png"
+        );
+    }
+
+    #[test]
     fn desktop_store_screenshot_stays_unavailable_without_a_window() {
         let mut store = TodoStore::new(PlatformKind::Desktop);
-        let dest = std::env::temp_dir().join(format!(
-            "gpui-agent-desktop-store-no-shot-{}",
+        let dest = gpui_agent::screenshot_base_dir().join(format!(
+            "todo-desktop-store-no-shot-{}.png",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&dest);
         let req = Request::new(
             "s",
             Op::Screenshot {
-                path: Some(dest.to_string_lossy().into_owned()),
+                path: Some(format!(
+                    "todo-desktop-store-no-shot-{}.png",
+                    std::process::id()
+                )),
             },
         );
-        let resp = handle_request(&mut store, req, None);
+        let resp = handle_request(&mut store, req, None, None);
         assert!(!resp.ok, "{resp:?}");
         let err = resp.error.unwrap();
         assert!(gpui_agent::is_screenshot_unavailable(&err), "{err}");
@@ -597,7 +631,74 @@ mod tests {
                 },
             },
         );
-        let resp = handle_request(&mut store, req, None);
+        let resp = handle_request(&mut store, req, None, None);
         assert!(resp.ok, "{resp:?}");
+    }
+
+    #[test]
+    fn docs_protocol_mentions_remote_triple() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/PROTOCOL.md");
+        let text = std::fs::read_to_string(&path).expect("PROTOCOL.md");
+        assert!(
+            text.contains("GPUI_AGENT_REMOTE"),
+            "PROTOCOL.md must document remote bind with GPUI_AGENT_REMOTE"
+        );
+    }
+
+    #[test]
+    fn page_settings_readme_role_is_page() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../README.md");
+        let text = std::fs::read_to_string(&path).expect("README.md");
+        assert!(
+            !text.contains("--role window"),
+            "page-settings example must not use --role window"
+        );
+        assert!(
+            text.contains("assert --id page-settings --role page"),
+            "page-settings example should assert role page"
+        );
+    }
+
+    #[test]
+    fn integrating_md_lists_mailbox_and_screenshot() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/INTEGRATING.md");
+        let text = std::fs::read_to_string(&path).expect("INTEGRATING.md");
+        assert!(
+            text.contains("spawn_mailbox"),
+            "INTEGRATING.md must mention spawn_mailbox"
+        );
+        assert!(
+            text.contains("GPUI_AGENT_SCREENSHOT_DIR"),
+            "INTEGRATING.md must mention GPUI_AGENT_SCREENSHOT_DIR"
+        );
+        assert!(
+            text.contains("HMAC-SHA256"),
+            "adapter checklist must name HMAC-SHA256"
+        );
+        assert!(
+            text.contains("GPUI_AGENT_INSECURE_NO_TOKEN"),
+            "adapter checklist must name the default-deny opt-in"
+        );
+        assert!(
+            text.contains("Confined screenshots") && text.contains("relative `.png`"),
+            "adapter checklist must require confined relative .png paths"
+        );
+    }
+
+    #[test]
+    fn no_brainer_host_from_env_is_not_optional() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/NO_BRAINER_PLAN.md");
+        let text = std::fs::read_to_string(&path).expect("NO_BRAINER_PLAN.md");
+        assert!(
+            !text.contains("Still optional"),
+            "P2 table must not say host from_env is still optional after D1 default-deny"
+        );
+        assert!(
+            text.contains("GPUI_AGENT_INSECURE_NO_TOKEN"),
+            "P2 table should name the insecure opt-in"
+        );
     }
 }

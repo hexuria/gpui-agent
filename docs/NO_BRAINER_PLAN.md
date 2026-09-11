@@ -39,10 +39,10 @@ These never change unless the user explicitly forks the product:
 
 - **No OS HID.** Virtual delivery is in-process GPUI events only. No
   warp, no PostMessage, no XTEST, no stealing the real cursor/keyboard.
-- **Loopback + caps.** `GPUI_AGENT=1`, loopback bind, host token still
-  optional (one-off `click`/`snapshot` smoke). CLI `recipe run` and
-  `mcp` **require** a non-empty `GPUI_AGENT_TOKEN` / `--token`; set the
-  **same** value on host and client. `MAX_LINE_BYTES` 1 MiB,
+- **Loopback + caps.** `GPUI_AGENT=1`, loopback bind, host token
+  **required** unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`. CLI `recipe run`
+  and `mcp` **require** a non-empty `GPUI_AGENT_TOKEN` / `--token`; set
+  the **same** value on host and client. `MAX_LINE_BYTES` 1 MiB,
   `MAX_CONNECTIONS` 32, `MAX_MAILBOX_DEPTH` 128, 30s idle. Do not
   weaken them. No ephemeral Jupyter mint unless a later prompt asks.
 - **Semantic default.** `delivery=virtual` stays opt-in per op.
@@ -157,7 +157,7 @@ PR #19.
 
 | Surface | Token |
 | --- | --- |
-| Host `from_env` | Still optional. When `GPUI_AGENT_TOKEN` is set, existing `authorize_request` applies. `hello.auth` is `"required"` or `"none"`. |
+| Host `from_env` | **Required** (D1). Loopback bind needs a non-empty `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`. When a token is set, `authorize_request` HMAC applies. `hello.auth` is `"required"` or `"none"`. |
 | CLI `recipe run` / `mcp` | Refuse unless `GPUI_AGENT_TOKEN` or `--token` is non-empty. Send it on every request (`AgentClient`). |
 | CLI `recipe validate\|plan\|resolve` | Local; no host, no token required. |
 | CLI `hello` / `click` / `snapshot` / … | Unchanged. Smoke can stay untokened. |

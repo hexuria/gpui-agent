@@ -140,3 +140,16 @@ fn ci_workflow_token_is_only_on_the_recipe_step() {
     );
     assert!(recipe_block.contains("ci-p4-token"));
 }
+
+#[test]
+fn ci_workflow_runs_cargo_audit() {
+    let yml = include_str!("../../../.github/workflows/ci.yml");
+    assert!(
+        yml.contains("cargo audit"),
+        "CI must run cargo audit: {yml}"
+    );
+    assert!(
+        yml.contains("cargo generate-lockfile"),
+        "CI must generate a lockfile before audit: {yml}"
+    );
+}

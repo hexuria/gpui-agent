@@ -282,7 +282,7 @@ impl TodoApp {
                 }
             } else {
                 let mut response =
-                    gpui_agent::handle_request(&mut self.store, posted.request.clone(), None);
+                    gpui_agent::handle_request(&mut self.store, posted.request.clone(), None, None);
                 if let Some(tree) = response.tree.as_mut() {
                     tree.apply_bounds_map(&self.layout_bounds);
                 }
@@ -809,6 +809,7 @@ fn screenshot_this_window(
     path: Option<&str>,
 ) -> Result<gpui_agent::DispatchResult, String> {
     let path = gpui_agent::require_screenshot_path(path)?;
+    let _dest = gpui_agent::confine_screenshot_path(path)?;
     #[cfg(target_os = "macos")]
     {
         let id = crate::macos_window::cgwindow_id(window)?;

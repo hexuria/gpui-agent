@@ -179,7 +179,12 @@ fn session_vs_reconnect(c: &mut Criterion) {
         let mut host = EmptyHost;
         b.iter(|| {
             for i in 0..32 {
-                let resp = handle_request(&mut host, Request::new(i.to_string(), Op::Hello), None);
+                let resp = handle_request(
+                    &mut host,
+                    Request::new(i.to_string(), Op::Hello),
+                    None,
+                    None,
+                );
                 black_box(resp.ok);
             }
         });
