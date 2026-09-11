@@ -131,6 +131,9 @@ enum Command {
     Mcp,
     /// Experimental: validate / plan / run / resolve a JSON recipe of protocol ops (`.wants` also accepted). `run` requires a token.
     Recipe {
+        /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
+        #[arg(long = "schema", value_name = "PATH", global = true)]
+        schema: Vec<std::path::PathBuf>,
         #[command(subcommand)]
         action: RecipeCommand,
     },
@@ -170,14 +173,14 @@ fn run() -> Result<()> {
         let token = require_recipe_mcp_token(token.as_deref())?;
         return mcp::run(cli.addr, token.to_string());
     }
-    if let Command::Recipe { action } = cli.command {
+    if let Command::Recipe { schema, action } = cli.command {
         let client = if matches!(action, RecipeCommand::Run { .. }) {
             let token = require_recipe_mcp_token(token.as_deref())?;
             Some(AgentClient::connect(cli.addr).with_token(token))
         } else {
             None
         };
-        return recipe_cmd::run(client, action);
+        return recipe_cmd::run(client, action, &schema);
     }
 
     let mut client = AgentClient::connect(cli.addr);
@@ -519,6 +522,7 @@ mod tests {
         let validate = Cli::try_parse_from(["gpui-agent", "recipe", "validate", "x.json"]).unwrap();
         match validate.command {
             Command::Recipe {
+                schema: _,
                 action: RecipeCommand::Validate { path },
             } => assert_eq!(path.as_os_str(), "x.json"),
             other => panic!("unexpected {other:?}"),
@@ -536,10 +540,30 @@ mod tests {
         .unwrap();
         match run.command {
             Command::Recipe {
+                schema: _,
                 action: RecipeCommand::Run { yes, set, .. },
             } => {
                 assert!(yes);
                 assert_eq!(set, vec!["title=Milk"]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let with_schema = Cli::try_parse_from([
+            "gpui-agent",
+            "recipe",
+            "validate",
+            "x.json",
+            "--schema",
+            "examples/schemas/todo.json",
+        ])
+        .unwrap();
+        match with_schema.command {
+            Command::Recipe { schema, .. } => {
+                assert_eq!(
+                    schema.as_slice(),
+                    [std::path::PathBuf::from("examples/schemas/todo.json")]
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -573,6 +597,7 @@ mod tests {
         .unwrap();
         match run.command {
             Command::Recipe {
+                schema: _,
                 action:
                     RecipeCommand::Run {
                         screenshot_dir,

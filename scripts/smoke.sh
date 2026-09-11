@@ -35,7 +35,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> recipe run / mcp without token fail fast"
-if out=$(env -u GPUI_AGENT_TOKEN "$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --set title="x" 2>&1); then
+if out=$(env -u GPUI_AGENT_TOKEN "$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --schema examples/schemas/todo.json --set title="x" 2>&1); then
   echo "expected recipe run without token to fail, got: $out" >&2
   exit 1
 fi
@@ -109,7 +109,7 @@ echo "==> recipe run with matching host + client token"
 "$HOST" &
 HOST_PID=$!
 "$CLI" --addr "$ADDR" wait
-receipt="$("$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --set title="Buy milk")"
+receipt="$("$CLI" --addr "$ADDR" recipe run examples/recipes/todo-crud.json --schema examples/schemas/todo.json --set title="Buy milk")"
 echo "$receipt"
 echo "$receipt" | grep -F '"ok": true' >/dev/null
 echo "$receipt" | grep -F '"session_reused": true' >/dev/null

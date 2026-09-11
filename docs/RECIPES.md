@@ -137,17 +137,22 @@ interactive debugging.
 export GPUI_AGENT_TOKEN=dev-secret
 
 # no host
-gpui-agent recipe validate examples/recipes/todo-crud.json
-gpui-agent recipe plan examples/recipes/todo-crud.json --set title="Buy milk"
-gpui-agent recipe resolve 'add a todo titled Buy milk'
+gpui-agent recipe validate examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json
+gpui-agent recipe plan examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json --set title="Buy milk"
+gpui-agent recipe resolve 'add a todo titled Buy milk' \
+  --schema examples/schemas/todo.json
 
 # host required — JSON is the documented path
-gpui-agent recipe run examples/recipes/todo-crud.json --set title="Buy milk"
+gpui-agent recipe run examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json --set title="Buy milk"
 
 # AI mid-run: intended PNGs after every step
 # headless / daemon / default GUI client / Linux / Windows: receipt lists screenshot_unavailable (no files)
 # macOS embedded-host todo: real PNG of this window (Screen Recording)
-gpui-agent recipe run examples/recipes/todo-crud.json --set title="Buy milk" \
+gpui-agent recipe run examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json --set title="Buy milk" \
   --screenshot-dir artifacts/steps/
 ```
 
@@ -218,10 +223,16 @@ not run. Plans with `Effect::Exit` never start unless `--yes` is set.
 
 ## Schema allow-list + resolve
 
-The demo registry is baked into `gpui-agent-recipe` (`todo_registry()`):
-protocol ops, `todo.add|toggle|delete|list`, and a few stable ids.
-Other apps should ship their own schemas later; there is no registry
-cloud and no `tmp-core` path-dep.
+The default CLI/MCP registry is **protocol ops only**. App invoke/id
+schemas load from `--schema PATH` (repeatable) and `GPUI_AGENT_SCHEMA`
+(OS path list). Sample todo schemas live in
+`examples/schemas/todo.json`. `todo_registry()` still exists for in-process
+tests (protocol + those invoke/id names).
+
+```
+gpui-agent recipe validate examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json
+```
 
 - `invoke` **names** must be registered as `SchemaKind::Invoke`. Unknown
   names fail closed. Invoking a protocol name (`click`) is rejected

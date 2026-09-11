@@ -22,7 +22,9 @@ pub use recipe::{
     MAX_RECIPE_STEPS, RECIPE_FORMAT_VERSION, Recipe, RecipeStep, apply_params, parse_recipe,
     parse_recipe_source, parse_wants, validate_recipe,
 };
-pub use registry::{Registry, todo_registry};
+pub use registry::{
+    Registry, load_schema_file, protocol_registry, registry_from_schema_paths, todo_registry,
+};
 pub use resolve::{ResolveResult, TokenFill, resolve_intent};
 pub use run::{RunError, ScreenshotCapture, run_plan, run_plan_with_screenshots};
 pub use schema::{ArgSchema, Effect, OpSchema, SchemaKind};

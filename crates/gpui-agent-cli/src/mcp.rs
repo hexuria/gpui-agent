@@ -7,8 +7,8 @@ use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
 use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
 use gpui_agent_recipe::{
-    RunError, ScreenshotCapture, compile_plan, parse_recipe_source, resolve_intent,
-    run_plan_with_screenshots, todo_registry, validate_recipe,
+    RunError, ScreenshotCapture, compile_plan, parse_recipe_source, registry_from_schema_paths,
+    resolve_intent, run_plan_with_screenshots, validate_recipe,
 };
 use serde_json::{Value, json};
 
@@ -341,7 +341,7 @@ fn recipe_set(args: &Value) -> std::collections::BTreeMap<String, String> {
 
 fn recipe_validate(args: &Value) -> Result<Value, String> {
     let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
-    validate_recipe(&recipe, &todo_registry())?;
+    validate_recipe(&recipe, &registry_from_schema_paths(&[])?)?;
     serde_json::to_value(serde_json::json!({
         "ok": true,
         "name": recipe.name,
@@ -352,13 +352,21 @@ fn recipe_validate(args: &Value) -> Result<Value, String> {
 
 fn recipe_plan(args: &Value) -> Result<Value, String> {
     let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
-    let plan = compile_plan(&recipe, &recipe_set(args), &todo_registry())?;
+    let plan = compile_plan(
+        &recipe,
+        &recipe_set(args),
+        &registry_from_schema_paths(&[])?,
+    )?;
     serde_json::to_value(plan).map_err(|err| err.to_string())
 }
 
 fn recipe_run_tool(client: &mut AgentClient, args: &Value) -> Result<Value, String> {
     let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
-    let plan = compile_plan(&recipe, &recipe_set(args), &todo_registry())?;
+    let plan = compile_plan(
+        &recipe,
+        &recipe_set(args),
+        &registry_from_schema_paths(&[])?,
+    )?;
     let yes = args.get("yes").and_then(Value::as_bool).unwrap_or(false);
     let flagged = args
         .get("screenshot_flagged")
@@ -405,7 +413,7 @@ fn recipe_resolve_tool(args: &Value) -> Result<Value, String> {
         .get("intent")
         .and_then(Value::as_str)
         .ok_or("missing string `intent`")?;
-    let result = resolve_intent(intent, &todo_registry())?;
+    let result = resolve_intent(intent, &registry_from_schema_paths(&[])?)?;
     serde_json::to_value(result).map_err(|err| err.to_string())
 }
 

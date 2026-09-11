@@ -1,0 +1,89 @@
+{
+  "schemas": [
+    {
+      "name": "todo.add",
+      "kind": "invoke",
+      "description": "Create a todo item from a title.",
+      "effects": ["write"],
+      "idempotent": false,
+      "verified": true,
+      "required": ["title"],
+      "args": {
+        "title": { "type": "string", "required": true }
+      },
+      "result": { "id": "u64", "title": "string", "done": "bool" },
+      "keywords": ["add", "create", "new", "todo", "task"]
+    },
+    {
+      "name": "todo.toggle",
+      "kind": "invoke",
+      "description": "Toggle a todo item's done state.",
+      "effects": ["write"],
+      "idempotent": false,
+      "verified": true,
+      "required": ["id"],
+      "args": {
+        "id": { "type": "number", "required": true }
+      },
+      "result": { "id": "u64", "title": "string", "done": "bool" },
+      "keywords": ["toggle", "check", "complete", "todo"]
+    },
+    {
+      "name": "todo.delete",
+      "kind": "invoke",
+      "description": "Delete a todo item.",
+      "effects": ["write"],
+      "idempotent": false,
+      "verified": true,
+      "required": ["id"],
+      "args": {
+        "id": { "type": "number", "required": true }
+      },
+      "result": { "id": "u64", "title": "string", "done": "bool" },
+      "keywords": ["delete", "remove", "todo"]
+    },
+    {
+      "name": "todo.list",
+      "kind": "invoke",
+      "description": "List todo items.",
+      "effects": ["read"],
+      "idempotent": true,
+      "verified": true,
+      "args": {},
+      "result": [{ "id": "u64", "title": "string", "done": "bool" }],
+      "keywords": ["list", "todos", "items"]
+    },
+    {
+      "name": "todo-input",
+      "kind": "id",
+      "description": "Draft text field for a new todo.",
+      "effects": ["write"],
+      "verified": true,
+      "keywords": ["input", "draft", "textbox"]
+    },
+    {
+      "name": "todo-add",
+      "kind": "id",
+      "description": "Add button that commits the draft.",
+      "effects": ["write"],
+      "verified": true,
+      "keywords": ["add", "button"]
+    },
+    {
+      "name": "todo-list",
+      "kind": "id",
+      "description": "List of todo items.",
+      "effects": ["write"],
+      "verified": true,
+      "keywords": ["list"]
+    },
+    {
+      "name": "todo-window",
+      "kind": "id",
+      "description": "Root window of the sample todo app.",
+      "effects": ["write"],
+      "verified": true,
+      "keywords": ["window"]
+    }
+  ]
+}

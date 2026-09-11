@@ -746,3 +746,79 @@ Diff:
 
 Deviations: none.
 
+---
+
+## R10 — Protocol-only recipe registry loads app schemas
+
+Task: R10 protocol-only recipe registry loads app schemas
+Commit: 9bcb5dfa29289ca50cb133115874f3298f75502b
+Red: `protocol_registry()` implemented as clone of `todo_registry()` (todo.add present). Command: `cargo test -p gpui-agent-recipe --lib registry::tests::recipe_rejects_unknown_invoke_with_protocol_only_registry -- --exact`
+Exit: 101
+
+```
+running 1 test
+test registry::tests::recipe_rejects_unknown_invoke_with_protocol_only_registry ... FAILED
+
+failures:
+
+---- registry::tests::recipe_rejects_unknown_invoke_with_protocol_only_registry stdout ----
+
+thread 'registry::tests::recipe_rejects_unknown_invoke_with_protocol_only_registry' (50296) panicked at crates/gpui-agent-recipe/src/registry.rs:325:81:
+called `Result::unwrap_err()` on an `Ok` value: ()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    registry::tests::recipe_rejects_unknown_invoke_with_protocol_only_registry
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p gpui-agent-recipe --lib`
+```
+
+Green: same command after stripping invokes from `protocol_registry()`. Exit: 0
+
+```
+running 1 test
+test registry::tests::recipe_rejects_unknown_invoke_with_protocol_only_registry ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 83 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.08s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 83+28+7+8+64+16+8+1 = **215** (>= 212 + 3).
+
+Diff:
+
+```
+ crates/gpui-agent-cli/src/main.rs                  |  29 ++++-
+ crates/gpui-agent-cli/src/mcp.rs                   |  20 +++-
+ crates/gpui-agent-cli/src/recipe_cmd.rs            |  13 ++-
+ crates/gpui-agent-cli/tests/recipe_mcp_token.rs    |  14 ++-
+ crates/gpui-agent-recipe/src/lib.rs                |   4 +-
+ crates/gpui-agent-recipe/src/registry.rs           | 128 ++++++++++++++++++++-
+ docs/RECIPES.md                                    |  29 +++--
+ .../evidence/2026-09-11-remediation-evidence.md    |  65 +++++++++++
+ examples/schemas/todo.json                         |  89 ++++++++++++++
+ scripts/ci-recipe.sh                               |   1 +
+ scripts/smoke.sh                                   |   4 +-
+ 11 files changed, 366 insertions(+), 30 deletions(-)
+```
+
+Deviations: CLI tests that validate/run `todo-crud.json` now pass `--schema examples/schemas/todo.json` (same specificity; tokenless validate still works). `todo_registry()` kept for in-process tests.
+

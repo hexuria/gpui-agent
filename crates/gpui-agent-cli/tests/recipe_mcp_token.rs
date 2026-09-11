@@ -25,6 +25,10 @@ fn todo_crud_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/recipes/todo-crud.json")
 }
 
+fn todo_schema_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/schemas/todo.json")
+}
+
 #[test]
 fn recipe_run_without_token_fails_fast() {
     let output = cli_bin()
@@ -100,7 +104,13 @@ fn mcp_empty_flag_token_fails_fast() {
 fn recipe_validate_without_token_still_works() {
     let path = todo_crud_path();
     let output = cli_bin()
-        .args(["recipe", "validate", path.to_str().unwrap()])
+        .args([
+            "recipe",
+            "validate",
+            path.to_str().unwrap(),
+            "--schema",
+            todo_schema_path().to_str().unwrap(),
+        ])
         .output()
         .expect("spawn");
     assert!(
@@ -132,6 +142,8 @@ fn recipe_run_with_matching_token_is_ok_and_reuses_session() {
             "recipe",
             "run",
             recipe.to_str().unwrap(),
+            "--schema",
+            todo_schema_path().to_str().unwrap(),
             "--set",
             "title=Buy milk",
         ])
