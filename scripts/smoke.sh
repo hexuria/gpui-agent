@@ -56,7 +56,7 @@ echo "==> wait until ready"
 "$CLI" --addr "$ADDR" hello
 
 echo "==> screenshot is honestly unavailable on headless (no fake PNG)"
-SHOT="$(mktemp -u /tmp/gpui-agent-smoke-shot-XXXXXX.png)"
+SHOT="smoke-shot-$$.png"
 rm -f "$SHOT"
 if "$CLI" --addr "$ADDR" screenshot --out "$SHOT"; then
   echo "expected screenshot_unavailable from headless" >&2

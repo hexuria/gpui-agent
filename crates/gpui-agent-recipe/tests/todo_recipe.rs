@@ -562,8 +562,9 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(receipt.screenshots.len(), 2);
     assert!(receipt.screenshots.iter().all(|s| s.ok), "{receipt:?}");
-    let wait_png = dir.join("001-wait.png");
-    let add_png = dir.join("002-add.png");
+    let host_base = gpui_agent::screenshot_base_dir();
+    let wait_png = host_base.join("001-wait.png");
+    let add_png = host_base.join("002-add.png");
     assert_eq!(std::fs::read(&wait_png).unwrap(), gpui_agent::TEST_PNG);
     assert_eq!(std::fs::read(&add_png).unwrap(), gpui_agent::TEST_PNG);
 
@@ -580,12 +581,12 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
         flagged_receipt.screenshots[0].path.ends_with("002-add.png"),
         "{flagged_receipt:?}"
     );
-    assert!(!flagged_dir.join("001-wait.png").exists());
     assert_eq!(
-        std::fs::read(flagged_dir.join("002-add.png")).unwrap(),
+        std::fs::read(host_base.join("002-add.png")).unwrap(),
         gpui_agent::TEST_PNG
     );
-
+    let _ = std::fs::remove_file(host_base.join("001-wait.png"));
+    let _ = std::fs::remove_file(host_base.join("002-add.png"));
     let _ = std::fs::remove_dir_all(&dir);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }

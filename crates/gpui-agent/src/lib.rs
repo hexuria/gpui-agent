@@ -39,8 +39,9 @@ pub use protocol::{
 };
 pub use screenshot::{
     SCREENSHOT_BACKEND_SCREENCAPTURE, SCREENSHOT_UNAVAILABLE, TEST_PNG, accept_written_png,
-    capture_window_via_screencapture, is_screenshot_unavailable, require_screenshot_path,
-    screencapture_window_argv, screenshot_unavailable, write_png,
+    capture_window_via_screencapture, confine_screenshot_path, confine_screenshot_path_in,
+    is_screenshot_unavailable, require_screenshot_path, screencapture_window_argv,
+    screenshot_base_dir, screenshot_unavailable, write_png, write_png_in,
 };
 pub use security::{
     AgentConfig, INSECURE_NO_TOKEN_BANNER, SecurityError, authorize_bind,

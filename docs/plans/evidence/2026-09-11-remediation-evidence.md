@@ -153,3 +153,79 @@ Diff:
 
 Deviations: none (flipped the one test named in the plan; `authorize_client` still allows loopback without a token).
 
+---
+
+## R3 — Confine screenshot paths
+
+Task: R3 Relative `.png` names only, under `GPUI_AGENT_SCREENSHOT_DIR`
+Commit: 1fa50bafe20abfdfbb64bcc6d3662942acaba78b
+Red: produced by adding `screenshot_rejects_absolute_path` while production `confine_screenshot_path` still returned `Ok` for `/tmp/evil.png` (not stash). Command:
+
+`cargo test -p gpui-agent --lib screenshot::tests::screenshot_rejects_absolute_path -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'screenshot::tests::screenshot_rejects_absolute_path' (15342) panicked at crates/gpui-agent/src/screenshot.rs:341:60:
+called `Result::unwrap_err()` on an `Ok` value: "/tmp/evil.png"
+test screenshot::tests::screenshot_rejects_absolute_path ... FAILED
+
+failures:
+    screenshot::tests::screenshot_rejects_absolute_path
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 71 filtered out; finished in 0.00s
+```
+
+Green: same command after confinement. Exit: 0
+
+```
+running 1 test
+test screenshot::tests::screenshot_rejects_absolute_path ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 71 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent --lib screenshot::tests::capture_without_macos_does_not_invent_a_file -- --exact --nocapture`
+Exit: 0
+
+```
+running 1 test
+test screenshot::tests::capture_without_macos_does_not_invent_a_file ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 71 filtered out; finished in 0.00s
+```
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 72 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 72+26+7+8+61+16+8+1 = **199** (>= 195 + 4 new tests: `screenshot_rejects_absolute_path`, `screenshot_rejects_dotdot`, `screenshot_rejects_non_png_extension`, `screenshot_relative_png_writes_under_base`).
+
+Diff:
+
+```
+ crates/gpui-agent-recipe/src/run.rs                |   7 +-
+ crates/gpui-agent-recipe/tests/todo_recipe.rs      |  11 +-
+ crates/gpui-agent/src/lib.rs                       |   5 +-
+ crates/gpui-agent/src/screenshot.rs                | 160 ++++++++++++++++++---
+ .../evidence/2026-09-11-remediation-evidence.md    |  70 +++++++++
+ scripts/smoke.sh                                   |   2 +-
+ 6 files changed, 223 insertions(+), 32 deletions(-)
+```
+
+Deviations: none.
+
