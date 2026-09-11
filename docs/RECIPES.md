@@ -225,7 +225,9 @@ not run. Plans with `Effect::Exit` never start unless `--yes` is set.
 
 The default CLI/MCP registry is **protocol ops only**. App invoke/id
 schemas load from `--schema PATH` (repeatable) and `GPUI_AGENT_SCHEMA`
-(OS path list). Sample todo schemas live in
+(OS path list). `gpui-agent mcp --schema PATH` is the same flag as
+`recipe`; recipe MCP tools also accept a `schema` argument. Sample todo
+schemas live in
 `examples/schemas/todo.json`. `todo_registry()` still exists for in-process
 tests (protocol + those invoke/id names).
 

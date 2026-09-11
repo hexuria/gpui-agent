@@ -1635,3 +1635,76 @@ Diff:
 
 Deviations: grouped R4 follow-ups (named red, EPIPE, HTTP close, hmac/sha2 docs) in one round-2 commit. Green HTTP assertion also treats write-side `Broken pipe` as close (server already dropped the socket).
 
+---
+
+## R10 (round 2) — thread `--schema` into MCP recipe tools
+
+Task: R10 (round 2) MCP accepts `--schema` like `recipe`; recipe MCP tools honor those paths (not env-only)
+Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Red: added `mcp_schema_flag_parses_like_recipe` while `Command::Mcp` had no schema field (not stash). Command:
+
+`cargo test -p gpui-agent-cli --bin gpui-agent tests::mcp_schema_flag_parses_like_recipe -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'tests::mcp_schema_flag_parses_like_recipe' (30134) panicked at crates/gpui-agent-cli/src/main.rs:580:9:
+mcp --schema must parse like recipe --schema: Some("error: unexpected argument '--schema' found\n\nUsage: gpui-agent mcp\n\nFor more information, try '--help'.\n")
+test tests::mcp_schema_flag_parses_like_recipe ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s
+```
+
+Green: same command after `Command::Mcp { schema }` + `mcp::run(..., schema)`. Exit: 0
+
+```
+running 1 test
+test tests::mcp_schema_flag_parses_like_recipe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.00s
+```
+
+Also: `cargo test -p gpui-agent-cli --bin gpui-agent mcp::tests::recipe_validate_honors_schema_paths -- --exact --nocapture`
+
+Exit: 0
+
+```
+running 1 test
+test mcp::tests::recipe_validate_honors_schema_paths ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.00s
+```
+
+Empty schema paths still reject `todo.add`; `examples/schemas/todo.json` allows it. MCP `recipe_validate` / `recipe_plan` / `recipe_run` / `recipe_resolve` advertise a `schema` arg and merge it with CLI `--schema`. `GPUI_AGENT_SCHEMA` still honored via `registry_from_schema_paths`.
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+```
+
+Sum: 90+30+8+9+64+16+13+1 = **231** (>= 229 + 2). Caps unchanged. Existing recipe `--schema` and fail-closed unknown invoke kept.
+
+Diff:
+
+```
+ crates/gpui-agent-cli/src/main.rs |  37 ++++++-
+ crates/gpui-agent-cli/src/mcp.rs  | 134 ++++++++++++++++++------
+ docs/PROTOCOL.md                  |   5 +-
+ docs/RECIPES.md                   |   4 +-
+```
+
+Deviations: chose threading `--schema` (not env-only docs). Tool arg `schema` (string or array) merges with CLI paths. Did not add a live stdio MCP spawn; parse test + `recipe_validate_honors_schema_paths` cover the flag and the registry sink.
+

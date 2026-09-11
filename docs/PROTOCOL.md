@@ -197,9 +197,10 @@ plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; client-side batching; see
 [RECIPES.md](RECIPES.md)).
 
-Point Claude Code at the binary (`args: ["mcp"]`). Set
+Point Claude Code at the binary (`args: ["mcp"]` or
+`["mcp", "--schema", "examples/schemas/todo.json"]`). Set
 `GPUI_AGENT_ADDR` and **`GPUI_AGENT_TOKEN`** (required; same value as
-the host). Document your app’s ids and `invoke` names in the project
+the host). `GPUI_AGENT_SCHEMA` is still honored. Document your app’s ids and `invoke` names in the project
 prompt — do not add per-app MCP tools to this repo.
 
 ## Named commands (`invoke`)

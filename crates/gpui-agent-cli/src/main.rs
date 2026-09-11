@@ -128,7 +128,11 @@ enum Command {
     /// Ask the host to exit.
     Shutdown,
     /// Tiny MCP stdio server exposing the same generic tools. Requires `--token` / `GPUI_AGENT_TOKEN`.
-    Mcp,
+    Mcp {
+        /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
+        #[arg(long = "schema", value_name = "PATH")]
+        schema: Vec<std::path::PathBuf>,
+    },
     /// Experimental: validate / plan / run / resolve a JSON recipe of protocol ops (`.wants` also accepted). `run` requires a token.
     Recipe {
         /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
@@ -169,9 +173,9 @@ fn run() -> Result<()> {
     gpui_agent::authorize_client(cli.addr, token.as_deref(), cli.allow_remote)
         .with_context(|| format!("refusing agent address {}", cli.addr))?;
 
-    if matches!(cli.command, Command::Mcp) {
+    if let Command::Mcp { schema } = cli.command {
         let token = require_recipe_mcp_token(token.as_deref())?;
-        return mcp::run(cli.addr, token.to_string());
+        return mcp::run(cli.addr, token.to_string(), schema);
     }
     if let Command::Recipe { schema, action } = cli.command {
         let client = if matches!(action, RecipeCommand::Run { .. }) {
@@ -242,7 +246,7 @@ fn run() -> Result<()> {
         }
         Command::Invoke { name, args } => print_resp(rpc(client.invoke(name, parse_args(&args)?))?),
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
-        Command::Mcp | Command::Recipe { .. } => unreachable!(),
+        Command::Mcp { .. } | Command::Recipe { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -560,6 +564,31 @@ mod tests {
         .unwrap();
         match with_schema.command {
             Command::Recipe { schema, .. } => {
+                assert_eq!(
+                    schema.as_slice(),
+                    [std::path::PathBuf::from("examples/schemas/todo.json")]
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_schema_flag_parses_like_recipe() {
+        let parsed = Cli::try_parse_from([
+            "gpui-agent",
+            "mcp",
+            "--schema",
+            "examples/schemas/todo.json",
+        ]);
+        assert!(
+            parsed.is_ok(),
+            "mcp --schema must parse like recipe --schema: {:?}",
+            parsed.as_ref().err().map(|e| e.to_string())
+        );
+        let help = parsed.unwrap();
+        match help.command {
+            Command::Mcp { schema } => {
                 assert_eq!(
                     schema.as_slice(),
                     [std::path::PathBuf::from("examples/schemas/todo.json")]
