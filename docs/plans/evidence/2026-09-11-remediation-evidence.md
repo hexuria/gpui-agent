@@ -434,3 +434,85 @@ Diff:
 
 Deviations: none. Did not change `apps/todo` drain (`handle_request(..., None)`); TCP stamp is the client-visible source of truth.
 
+---
+
+## R8 — smoke-desktop.sh matches ADR-001
+
+Task: R8 Desktop smoke starts the daemon SoT, not an unlistening GUI
+Commit: d887f997c611a06d9107449dd1f3b7d1163de8c0
+Red: `smoke_desktop_script_starts_todo_headless` added before the script rewrite (not stash). Command:
+
+`cargo test -p gpui-agent-cli tests::smoke_desktop_script_starts_todo_headless -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'tests::smoke_desktop_script_starts_todo_headless' (28011) panicked at crates/gpui-agent-cli/src/main.rs:301:9:
+desktop smoke must start the daemon SoT (ADR-001), not only the GUI:
+#!/usr/bin/env bash
+# CRUD against the GPUI Kit 0.6 window. Needs a display (or Xvfb) and a
+# Vulkan ICD. On a GPU-less VM, Mesa lavapipe is enough:
+…
+echo "desktop smoke ok: GPUI Kit window driven without CDP"
+
+test tests::smoke_desktop_script_starts_todo_headless ... FAILED
+
+failures:
+    tests::smoke_desktop_script_starts_todo_headless
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+```
+
+Green: same command after the script rewrite. Exit: 0
+
+```
+running 1 test
+test tests::smoke_desktop_script_starts_todo_headless ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+```
+
+Sum: 76+27+7+8+61+16+8+1 = **204** (>= 203 + 1).
+
+Command: `./scripts/smoke-desktop.sh`
+Exit: 0
+
+```
+==> starting todo-headless on 127.0.0.1:17421 (ADR-001 daemon SoT; token required)
+…
+==> CLI CRUD against todo-headless (not the GUI)
+…
+todo GUI exited before it stayed up (need a display + Vulkan ICD).
+Headless CRUD already passed. Window skipped.
+desktop smoke ok: ADR-001 daemon SoT driven without CDP
+```
+
+Diff:
+
+```
+ crates/gpui-agent-cli/src/main.rs                  | 20 ++++++
+ .../evidence/2026-09-11-remediation-evidence.md    | 79 ++++++++++++++++++++++
+ scripts/smoke-desktop.sh                           | 75 +++++++++++++-------
+ 3 files changed, 148 insertions(+), 26 deletions(-)
+```
+
+Deviations: cargo build is split (`cli`+`todo-headless` first, then `todo`) so a GUI link/display failure cannot fail the SoT CRUD. Installed `libxkbcommon-dev`/`libxkbcommon-x11-dev` once so `cargo build -p todo` could link. GUI start was attempted (`DISPLAY` set) and skipped after `Failed to create surface`.
+

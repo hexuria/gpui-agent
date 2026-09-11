@@ -296,6 +296,26 @@ mod tests {
     }
 
     #[test]
+    fn smoke_desktop_script_starts_todo_headless() {
+        let script = include_str!("../../../scripts/smoke-desktop.sh");
+        assert!(
+            script.contains("todo-headless"),
+            "desktop smoke must start the daemon SoT (ADR-001), not only the GUI:\n{script}"
+        );
+        assert!(
+            script.contains("ADR-001"),
+            "script header must cite ADR-001:\n{script}"
+        );
+        assert!(
+            !script.lines().any(|line| {
+                let t = line.trim_start();
+                t.starts_with("cargo ") && t.contains("--features embedded-host")
+            }),
+            "must not silently use embedded-host as the only path:\n{script}"
+        );
+    }
+
+    #[test]
     fn help_does_not_advertise_todo() {
         let help = Cli::command().render_long_help().to_string();
         assert!(
