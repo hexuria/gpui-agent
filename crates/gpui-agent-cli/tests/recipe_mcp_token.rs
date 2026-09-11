@@ -219,3 +219,32 @@ fn mcp_with_token_starts_and_answers_initialize() {
         "{stdout}"
     );
 }
+
+#[test]
+fn cli_help_hides_token_env_canary() {
+    const CANARY: &str = "review-canary-9f3a-TOKEN";
+    let output = cli_bin()
+        .env("GPUI_AGENT_TOKEN", CANARY)
+        .arg("--help")
+        .output()
+        .expect("spawn");
+    assert!(
+        output.status.success(),
+        "gpui-agent --help must succeed\n{}",
+        stderr_of(&output)
+    );
+    let text = format!("{}{}", stdout_of(&output), stderr_of(&output));
+    assert!(
+        !text.contains(CANARY),
+        "--help must not print the live GPUI_AGENT_TOKEN canary:\n{text}"
+    );
+    assert!(
+        !text.contains("Drive any GPUI Kit app"),
+        "help must not claim CDP-like attach:\n{text}"
+    );
+    assert!(
+        text.contains("AgentHost") || text.to_ascii_lowercase().contains("embed"),
+        "help must mention AgentHost or embed:\n{text}"
+    );
+}
+

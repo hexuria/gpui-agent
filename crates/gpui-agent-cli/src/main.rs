@@ -30,7 +30,7 @@ struct Cli {
     addr: SocketAddr,
     /// Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host
     /// has one. Required (non-empty) for `recipe run` and `mcp`.
-    #[arg(long, env = "GPUI_AGENT_TOKEN")]
+    #[arg(long, env = "GPUI_AGENT_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// Connect to a non-loopback host. Requires a non-empty token. Plaintext
     /// TCP — lab / trusted network only. Prefer SSH or Tailscale until TLS.

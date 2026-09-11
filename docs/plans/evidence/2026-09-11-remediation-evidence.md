@@ -1338,3 +1338,70 @@ Diff:
 
 Deviations: none. Assertion message shortened after red so green does not dump the whole file; red paste above is the original panic (elided with `…`).
 
+---
+
+## R1 (round 2) — hide token env values on `--help`
+
+Task: R1 (round 2) `hide_env_values` on `--token` / `GPUI_AGENT_TOKEN`; spawn-binary canary test
+Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Red: added `cli_help_hides_token_env_canary` (spawns `gpui-agent --help` with canary env) before `hide_env_values` (not stash). Command:
+
+`cargo test -p gpui-agent-cli --test recipe_mcp_token cli_help_hides_token_env_canary -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'cli_help_hides_token_env_canary' (12957) panicked at crates/gpui-agent-cli/tests/recipe_mcp_token.rs:237:5:
+--help must not print the live GPUI_AGENT_TOKEN canary:
+…
+      --token <TOKEN>
+          Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host has one. Required (non-empty) for `recipe run` and `mcp`
+          
+          [env: GPUI_AGENT_TOKEN=review-canary-9f3a-TOKEN]
+…
+test cli_help_hides_token_env_canary ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+```
+
+Green: same command after `hide_env_values = true`. Exit: 0
+
+```
+running 1 test
+test cli_help_hides_token_env_canary ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+```
+
+Live spawn (`GPUI_AGENT_TOKEN=review-canary-9f3a-TOKEN cargo run -p gpui-agent-cli --bin gpui-agent -- --help`) now prints `[env: GPUI_AGENT_TOKEN]` with no value. `cli_help_does_not_claim_cdp_attach` kept.
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+```
+
+Sum: 87+28+8+9+64+16+12+1 = **225** (>= 224 + 1). Existing `cli_help_does_not_claim_cdp_attach` not deleted.
+
+Diff:
+
+```
+ crates/gpui-agent-cli/src/main.rs               |  2 +-
+ crates/gpui-agent-cli/tests/recipe_mcp_token.rs | 29 +++++++++++++++++++++++++
+ docs/plans/evidence/2026-09-11-remediation-evidence.md | (this block)
+```
+
+Deviations: none. Test lives in `recipe_mcp_token.rs` because that crate already spawns `CARGO_BIN_EXE_gpui-agent` (plan required a real binary spawn, not `render_long_help()`).
+
