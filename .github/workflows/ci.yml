@@ -28,6 +28,12 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@v2
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: cargo audit
+        run: cargo audit
       - name: Unit tests (no GPU)
         run: cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
       - name: Headless recipe receipt (ok + session_reused)

@@ -961,3 +961,92 @@ Diff:
 
 Deviations: also added `page_settings_readme_role_is_page`; corrected SECURITY L6 Wait wording and the workspace-`unsafe` sentence (I1 table already noted objc).
 
+---
+
+## R13 — CI generate-lockfile and cargo audit
+
+Task: R13 CI generate-lockfile and cargo audit
+Commit: cb5e27f9cfc653eb9a8b659731bbe950c7724744
+Red: test added before YAML edit. Command: `cargo test -p gpui-agent-cli --test ci_recipe_assert ci_workflow_runs_cargo_audit -- --exact`
+Exit: 101
+
+```
+running 1 test
+test ci_workflow_runs_cargo_audit ... FAILED
+
+failures:
+
+---- ci_workflow_runs_cargo_audit stdout ----
+
+thread 'ci_workflow_runs_cargo_audit' (57463) panicked at crates/gpui-agent-cli/tests/ci_recipe_assert.rs:147:5:
+CI must run cargo audit: # P4: headless recipe receipt is the visual-free CI gate.
+…
+name: CI
+…
+      - name: Unit tests (no GPU)
+        run: cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
+…
+
+failures:
+    ci_workflow_runs_cargo_audit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p gpui-agent-cli --test ci_recipe_assert`
+```
+
+Green: same command after YAML steps. Exit: 0
+
+```
+running 1 test
+test ci_workflow_runs_cargo_audit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 87+28+8+8+64+16+10+1 = **222** (>= 221 + 1).
+
+Command: `cargo generate-lockfile`
+Exit: 0
+
+```
+    Updating crates.io index
+     Locking 889 packages to latest compatible versions
+```
+
+Command: `cargo audit`
+Exit: 0
+
+```
+    Scanning Cargo.lock for vulnerabilities (895 crate dependencies)
+…
+warning: 5 allowed warnings found
+```
+
+Diff:
+
+```
+ .github/workflows/ci.yml                           |  6 ++
+ crates/gpui-agent-cli/tests/ci_recipe_assert.rs    | 13 ++++
+ .../evidence/2026-09-11-remediation-evidence.md    | 86 ++++++++++++++++++++++
+ 3 files changed, 105 insertions(+)
+```
+
+Deviations: pinned `cargo-audit` 0.22.2 (0.21.2 failed to parse current advisory-db CVSS 4.0). Cargo.lock generated locally for audit, left untracked. Did not use `--deny warnings` (5 unmaintained GPUI-stack warnings).
+
