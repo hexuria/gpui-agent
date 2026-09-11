@@ -644,4 +644,19 @@ mod tests {
             "INTEGRATING.md must mention GPUI_AGENT_SCREENSHOT_DIR"
         );
     }
+
+    #[test]
+    fn no_brainer_host_from_env_is_not_optional() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/NO_BRAINER_PLAN.md");
+        let text = std::fs::read_to_string(&path).expect("NO_BRAINER_PLAN.md");
+        assert!(
+            !text.contains("Still optional"),
+            "P2 table must not say host from_env is still optional after D1 default-deny"
+        );
+        assert!(
+            text.contains("GPUI_AGENT_INSECURE_NO_TOKEN"),
+            "P2 table should name the insecure opt-in"
+        );
+    }
 }

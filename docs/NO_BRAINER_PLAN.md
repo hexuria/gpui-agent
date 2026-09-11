@@ -157,7 +157,7 @@ PR #19.
 
 | Surface | Token |
 | --- | --- |
-| Host `from_env` | Still optional. When `GPUI_AGENT_TOKEN` is set, existing `authorize_request` applies. `hello.auth` is `"required"` or `"none"`. |
+| Host `from_env` | **Required** (D1). Loopback bind needs a non-empty `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`. When a token is set, `authorize_request` HMAC applies. `hello.auth` is `"required"` or `"none"`. |
 | CLI `recipe run` / `mcp` | Refuse unless `GPUI_AGENT_TOKEN` or `--token` is non-empty. Send it on every request (`AgentClient`). |
 | CLI `recipe validate\|plan\|resolve` | Local; no host, no token required. |
 | CLI `hello` / `click` / `snapshot` / … | Unchanged. Smoke can stay untokened. |

@@ -1275,3 +1275,66 @@ Deviations: none. Round-1 T0 paste that claimed a successful `libfontconfig1-dev
 
 Round-2 `apps/todo` edits (listed as they land): none at T0 (round 2) time.
 
+---
+
+## R2 (round 2) — P2 table host `from_env` is not optional
+
+Task: R2 (round 2) leftover P2 table row in `docs/NO_BRAINER_PLAN.md` still said host `from_env` is optional
+Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Red: added `no_brainer_host_from_env_is_not_optional` before editing the table (not stash). Command:
+
+`cargo test -p todo-core --lib tests::no_brainer_host_from_env_is_not_optional -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'tests::no_brainer_host_from_env_is_not_optional' (10714) panicked at crates/todo-core/src/lib.rs:653:9:
+P2 table must not say host from_env is still optional after D1 default-deny:
+# No-brainer plan
+…
+| Host `from_env` | Still optional. When `GPUI_AGENT_TOKEN` is set, existing `authorize_request` applies. `hello.auth` is `"required"` or `"none"`. |
+…
+test tests::no_brainer_host_from_env_is_not_optional ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+```
+
+Green: same command after the table row. Exit: 0
+
+```
+running 1 test
+test tests::no_brainer_host_from_env_is_not_optional ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+```
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+```
+
+Sum: 87+28+8+8+64+16+12+1 = **224** (>= 223 + 1). Production `from_env` / `authorize_bind` unchanged (CONFIRMED in round 1).
+
+Diff:
+
+```
+ crates/todo-core/src/lib.rs                            | 15 +++++++++++++++
+ docs/NO_BRAINER_PLAN.md                                |  2 +-
+ docs/plans/evidence/2026-09-11-remediation-evidence.md |  (this block)
+```
+
+Deviations: none. Assertion message shortened after red so green does not dump the whole file; red paste above is the original panic (elided with `…`).
+
