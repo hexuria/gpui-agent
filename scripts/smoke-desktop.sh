@@ -7,17 +7,19 @@
 # Same generic CLI as the headless smoke — todo ids are the demo app's,
 # not part of gpui-agent.
 #
-# One-off click/snapshot do not require a token. Recipe / MCP workflows
-# must export the same GPUI_AGENT_TOKEN on host and client; see
-# scripts/smoke.sh (recipe phase) and docs/TRY_ON_MAC.md.
+# Host bind is default-deny: set GPUI_AGENT_TOKEN (same value on CLI).
+# Recipe / MCP workflows already required that token; see scripts/smoke.sh
+# and docs/TRY_ON_MAC.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 ADDR="${GPUI_AGENT_ADDR:-127.0.0.1:17421}"
+TOKEN="${GPUI_AGENT_TOKEN:-smoke-desktop-token}"
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR="$ADDR"
+export GPUI_AGENT_TOKEN="$TOKEN"
 
 echo "==> building CLI + GPUI todo"
 cargo build -p gpui-agent-cli -p todo

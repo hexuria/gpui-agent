@@ -19,6 +19,10 @@ pub enum SecurityError {
     RemoteDisabled(SocketAddr),
     #[error("non-loopback address {0} requires a non-empty GPUI_AGENT_TOKEN")]
     RemoteRequiresToken(SocketAddr),
+    #[error(
+        "loopback bind requires a non-empty GPUI_AGENT_TOKEN (set GPUI_AGENT_INSECURE_NO_TOKEN=1 only for local demos)"
+    )]
+    LoopbackRequiresToken,
     #[error("invalid GPUI_AGENT_ADDR: {0}")]
     BadAddr(String),
 }
@@ -28,8 +32,9 @@ pub enum SecurityError {
 /// Trust model:
 /// - Off unless `GPUI_AGENT` is a truthy value (`1`, `true`, `yes`).
 /// - Release binaries also require `GPUI_AGENT_ALLOW_RELEASE=1`.
-/// - Default listen address is loopback (`127.0.0.1:17421`). Token optional
-///   on loopback so one-off `click`/`snapshot` smoke still works.
+/// - Default listen address is loopback (`127.0.0.1:17421`). A non-empty
+///   `GPUI_AGENT_TOKEN` is required to bind. `GPUI_AGENT_INSECURE_NO_TOKEN=1`
+///   restores untokened loopback for local demos and prints a loud banner.
 /// - Non-loopback bind requires `GPUI_AGENT_REMOTE=1` **and** a non-empty
 ///   `GPUI_AGENT_TOKEN`. Fail closed: `0.0.0.0` without that triple is
 ///   refused. Transport is still plaintext TCP — lab / trusted network
@@ -74,30 +79,53 @@ pub fn from_env() -> Result<Option<AgentConfig>, SecurityError> {
         .ok()
         .filter(|s| !s.is_empty());
     let allow_remote = truthy_env("GPUI_AGENT_REMOTE");
-    authorize_bind(addr, token.as_deref(), allow_remote)?;
+    let insecure_no_token = truthy_env("GPUI_AGENT_INSECURE_NO_TOKEN");
+    authorize_bind_with_insecure(addr, token.as_deref(), allow_remote, insecure_no_token)?;
+    if insecure_no_token && token.is_none() && is_loopback_addr(addr) {
+        eprintln!("{INSECURE_NO_TOKEN_BANNER}");
+    }
 
     Ok(Some(AgentConfig { addr, token }))
 }
 
-/// Host bind policy: loopback always; non-loopback only with token + flag.
+/// stderr banner when `GPUI_AGENT_INSECURE_NO_TOKEN=1` binds without a token.
+pub const INSECURE_NO_TOKEN_BANNER: &str = "\
+*** GPUI_AGENT_INSECURE_NO_TOKEN=1 ***\n\
+This host accepts unauthenticated loopback control-plane requests.\n\
+Any local process can snapshot, click, invoke, and shutdown.\n\
+Do not use this on a shared machine or an agent VM. Set GPUI_AGENT_TOKEN instead.";
+
+/// Host bind policy: loopback requires a token unless `insecure_no_token`;
+/// non-loopback only with token + flag.
 pub fn authorize_bind(
     addr: SocketAddr,
     token: Option<&str>,
     allow_remote: bool,
 ) -> Result<SocketAddr, SecurityError> {
-    authorize_endpoint(addr, token, allow_remote)
+    authorize_bind_with_insecure(addr, token, allow_remote, false)
 }
 
-/// Client connect policy (same gates as bind; flag is `--allow-remote`).
-pub fn authorize_client(
+/// Same as [`authorize_bind`], with the demo opt-out for untokened loopback.
+pub fn authorize_bind_with_insecure(
     addr: SocketAddr,
     token: Option<&str>,
     allow_remote: bool,
+    insecure_no_token: bool,
 ) -> Result<SocketAddr, SecurityError> {
-    authorize_endpoint(addr, token, allow_remote)
+    if is_loopback_addr(addr) {
+        match token {
+            Some(t) if !t.is_empty() => Ok(addr),
+            _ if insecure_no_token => Ok(addr),
+            _ => Err(SecurityError::LoopbackRequiresToken),
+        }
+    } else {
+        authorize_remote_endpoint(addr, token, allow_remote)
+    }
 }
 
-fn authorize_endpoint(
+/// Client connect policy (flag is `--allow-remote`). Loopback without a
+/// token remains allowed so a client can talk to an insecure demo host.
+pub fn authorize_client(
     addr: SocketAddr,
     token: Option<&str>,
     allow_remote: bool,
@@ -105,6 +133,14 @@ fn authorize_endpoint(
     if is_loopback_addr(addr) {
         return Ok(addr);
     }
+    authorize_remote_endpoint(addr, token, allow_remote)
+}
+
+fn authorize_remote_endpoint(
+    addr: SocketAddr,
+    token: Option<&str>,
+    allow_remote: bool,
+) -> Result<SocketAddr, SecurityError> {
     if !allow_remote {
         return Err(SecurityError::RemoteDisabled(addr));
     }
@@ -224,10 +260,29 @@ mod tests {
     }
 
     #[test]
-    fn loopback_bind_does_not_need_token_or_remote_flag() {
+    fn loopback_bind_requires_token_client_does_not() {
         let addr: SocketAddr = "127.0.0.1:17421".parse().unwrap();
-        assert!(authorize_bind(addr, None, false).is_ok());
+        let err = authorize_bind(addr, None, false).unwrap_err();
+        assert!(matches!(err, SecurityError::LoopbackRequiresToken), "{err}");
+        let err = authorize_bind(addr, Some(""), false).unwrap_err();
+        assert!(matches!(err, SecurityError::LoopbackRequiresToken), "{err}");
+        assert_eq!(authorize_bind(addr, Some("t"), false).unwrap(), addr);
         assert!(authorize_client(addr, None, false).is_ok());
+    }
+
+    #[test]
+    fn insecure_no_token_allows_untokened_loopback_bind() {
+        let addr: SocketAddr = "127.0.0.1:17421".parse().unwrap();
+        assert_eq!(
+            authorize_bind_with_insecure(addr, None, false, true).unwrap(),
+            addr
+        );
+        let public: SocketAddr = "10.0.0.2:17421".parse().unwrap();
+        let err = authorize_bind_with_insecure(public, None, true, true).unwrap_err();
+        assert!(
+            matches!(err, SecurityError::RemoteRequiresToken(_)),
+            "{err}"
+        );
     }
 
     #[test]

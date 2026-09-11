@@ -75,8 +75,8 @@ handshake). `AgentClient` reuses one loopback session; each step is
 still a normal token-bearing request. Semantic delivery stays the
 default. **`recipe run` and `mcp` require a non-empty token**
 (`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on the host.
-One-off `click` / `snapshot` / `hello` do not require a client token
-unless the host has `GPUI_AGENT_TOKEN` set.
+One-off `click` / `snapshot` / `hello` must send that token too.
+`GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback (demo).
 
 ```bash
 # terminal 1
@@ -276,8 +276,8 @@ Automation is **opt-in and off by default**. Full audit: [docs/SECURITY.md](docs
 | Runtime | `GPUI_AGENT=1` (`true`/`yes`/`on` also work) |
 | Release binaries | Also require `GPUI_AGENT_ALLOW_RELEASE=1` |
 | Bind address | Loopback default (`127.0.0.1:17421`). Non-loopback needs `GPUI_AGENT_REMOTE=1` **and** a token. The CLI refuses a non-loopback `--addr` unless `--allow-remote` / `GPUI_AGENT_ALLOW_REMOTE=1` **and** a token. Plaintext TCP+token is lab-only. |
-| Optional host token | `GPUI_AGENT_TOKEN` — when set, every request must repeat it. **Set this on shared machines.** |
-| Required for `recipe run` / `mcp` | Non-empty `GPUI_AGENT_TOKEN` or `--token` on the **client**. Set the **same** value on the host. One-off `click`/`snapshot`/`hello` do not require a client token. `hello.auth` is `"required"` or `"none"`. |
+| Host token | **Required** to bind (`GPUI_AGENT_TOKEN`). `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback for local demos (loud banner). |
+| Required for `recipe run` / `mcp` | Non-empty `GPUI_AGENT_TOKEN` or `--token` on the **client**. Set the **same** value on the host. `hello.auth` is `"required"` or `"none"`. |
 | DoS caps | 1 MiB NDJSON line, 32 concurrent connections, 128 mailbox depth, 30s idle timeout |
 
 Anyone who can connect to that loopback socket can drive the UI as the user. Treat this as a **developer/agent tool**, not a remote API. Do not enable it in shipping product builds. There is no sandbox, no origin check, and no encryption beyond “it never leaves the machine.”

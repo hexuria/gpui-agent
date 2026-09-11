@@ -41,7 +41,8 @@ App-specific helpers (for example the sample todo app) live in examples/,
 not in this CLI. Navigate pages with click + assert on stable ids, or invoke
 a command the host registered. Experimental: batch many ops in one process
 with `recipe validate|plan|run|resolve` (JSON canonical; `.wants` also
-accepted — see docs/RECIPES.md). `recipe run` and `mcp` require a non-empty
+accepted — see docs/RECIPES.md). Host bind is default-deny: set
+GPUI_AGENT_TOKEN on the host. `recipe run` and `mcp` require a non-empty
 GPUI_AGENT_TOKEN or --token; set the same value on the host. Non-loopback
 `--addr` also needs `--allow-remote` (or GPUI_AGENT_ALLOW_REMOTE=1) and a
 token so a mistyped address cannot leak the secret (see docs/SECURITY.md).";

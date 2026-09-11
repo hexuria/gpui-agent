@@ -43,8 +43,9 @@ pub use screenshot::{
     screencapture_window_argv, screenshot_unavailable, write_png,
 };
 pub use security::{
-    AgentConfig, SecurityError, authorize_bind, authorize_client, ensure_loopback, from_env,
-    is_loopback_addr, tokens_match,
+    AgentConfig, INSECURE_NO_TOKEN_BANNER, SecurityError, authorize_bind,
+    authorize_bind_with_insecure, authorize_client, ensure_loopback, from_env, is_loopback_addr,
+    tokens_match,
 };
 pub use server::{
     AgentServer, DEFAULT_ADDR_STR, DEFAULT_PORT, MAX_CONNECTIONS, MAX_LINE_BYTES, ServerLimits,

@@ -7,8 +7,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 ADDR="${GPUI_AGENT_ADDR:-127.0.0.1:18421}"
+TOKEN="${GPUI_AGENT_TOKEN:-smoke-daemon-token}"
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR="$ADDR"
+export GPUI_AGENT_TOKEN="$TOKEN"
 
 echo "==> building CLI + daemon"
 cargo build -p gpui-agent-cli -p todo-headless

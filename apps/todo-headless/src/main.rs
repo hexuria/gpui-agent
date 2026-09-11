@@ -73,12 +73,10 @@ fn serve() -> Result<(), ExitCode> {
     eprintln!("gpui-agent listening on {addr} (platform=headless, app=todo)");
     eprintln!("opt-in: GPUI_AGENT=1 · bind via from_env · protocol v1");
     if token_set {
-        eprintln!(
-            "auth: required (GPUI_AGENT_TOKEN set; recipe/MCP clients must send the same token)"
-        );
+        eprintln!("auth: required (GPUI_AGENT_TOKEN set; clients must send the same token)");
     } else {
         eprintln!(
-            "auth: none (one-off click/snapshot ok; recipe run and mcp need the same token on host and client)"
+            "auth: none (GPUI_AGENT_INSECURE_NO_TOKEN=1 — any local process can drive this host)"
         );
     }
     eprintln!("delivery: semantic only (virtual_unavailable — no GPUI event pipeline)");

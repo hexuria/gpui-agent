@@ -8,8 +8,8 @@ records the small hardening patches that landed with this review.
 Nothing here weakens the opt-in model. Automation stays off unless
 `GPUI_AGENT=1`, release binaries still need
 `GPUI_AGENT_ALLOW_RELEASE=1`, and a non-loopback bind is **fail closed**
-unless the authenticated remote triple is set (see below). Loopback
-without a token remains the local-dev default.
+unless the authenticated remote triple is set (see below). Loopback without a token is **not** the default. Bind requires a
+non-empty `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`.
 
 ## Trust model (intentional)
 
@@ -18,8 +18,8 @@ without a token remains the local-dev default.
 | Compile | Feature-gate the in-process bridge. This repo’s sample `todo` defaults `embedded-host` **off** (the window is a daemon client). Enable it only for widget E2E. Product apps should keep the equivalent flag **off**. |
 | Runtime | `GPUI_AGENT=1` (`true` / `yes` / `on`). |
 | Release | Also `GPUI_AGENT_ALLOW_RELEASE=1`. |
-| Bind | **Loopback default.** `from_env` calls `authorize_bind`. IPv4 `127.0.0.0/8` and IPv6 `::1` are allowed without a token. IPv4-mapped loopback (`::ffff:127.0.0.1`) is **rejected**. Non-loopback (including `0.0.0.0` / `::`) requires `GPUI_AGENT_REMOTE=1` **and** a non-empty `GPUI_AGENT_TOKEN`. |
-| Token | Optional on a **loopback** host (`GPUI_AGENT_TOKEN`). When set, every request must carry it. **Required** for any non-loopback bind. CLI **`recipe run` and `mcp` require** a non-empty client token (`GPUI_AGENT_TOKEN` or `--token`) even on loopback (P2). One-off `click` / `snapshot` / `hello` on loopback do not require a client token unless the host has one. |
+| Bind | **Loopback default.** `from_env` calls `authorize_bind`. IPv4 `127.0.0.0/8` and IPv6 `::1` require a non-empty `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`. IPv4-mapped loopback (`::ffff:127.0.0.1`) is **rejected**. Non-loopback (including `0.0.0.0` / `::`) requires `GPUI_AGENT_REMOTE=1` **and** a non-empty `GPUI_AGENT_TOKEN`. |
+| Token | **Required** to bind a host (`GPUI_AGENT_TOKEN`). `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback and prints a banner. When a token is set, every request must carry it. CLI **`recipe run` and `mcp` require** a non-empty client token even on loopback (P2). One-off `click` / `snapshot` / `hello` must send the same token as the host. |
 | Remote client | CLI refuses non-loopback `--addr` unless `--allow-remote` / `GPUI_AGENT_ALLOW_REMOTE=1` **and** a non-empty token (M1: do not leak the secret on a mistype). |
 | Transport | NDJSON over TCP. **Not HTTP. Not TLS.** Remote bind is plaintext + token — lab / trusted network only. Prefer an SSH or Tailscale hop until TLS / mTLS is specified. |
 | Delivery | `semantic` (default) calls widget handlers. `virtual` synthesizes in-process GPUI events. **Never OS HID.** |
@@ -38,12 +38,13 @@ in shipping product builds. Do not put a daemon on the public internet.
 
 ## Threat model — daemon on an agent VM (#14)
 
-**Chosen (2026-09-09):** authenticated remote bind is allowed; loopback
-without auth stays the default.
+**Chosen (2026-09-11):** host bind is default-deny (a token is required).
+`GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback for local
+demos and prints a banner. Authenticated remote bind is unchanged.
 
 | Actor | What they can do | Mitigation |
 | --- | --- | --- |
-| Local process on the host | Drive an untokened loopback daemon (H1). | Set `GPUI_AGENT_TOKEN` on any long-lived host. Recipe/MCP already require a client token. |
+| Local process on the host | Drive an untokened loopback daemon only if the operator set `GPUI_AGENT_INSECURE_NO_TOKEN=1` (H1). | Default-deny bind. Set `GPUI_AGENT_TOKEN` on any long-lived host. |
 | Agent on another machine | Drive the daemon only if the host bound non-loopback with `GPUI_AGENT=1` + `GPUI_AGENT_REMOTE=1` + token, **and** the client passed `--allow-remote` + the same token. | Fail closed without that triple. Caps (1 MiB / 32 conn / 128 mailbox) still apply. |
 | Network observer | Read NDJSON and the token on the wire. | **Known v1 gap.** Treat remote bind as a lab. Tunnel with SSH or Tailscale. TLS / mTLS / pairing codes are follow-up, not this slice. |
 | Random Internet | Bind `0.0.0.0` without the triple is refused. Accidental public listen without a token is refused. | `authorize_bind` + tests. Still do not advertise a public port. |
@@ -59,7 +60,7 @@ Grok Bot pairing UX, ephemeral minted tokens.
 
 | ID | Severity | Kind | Finding | Evidence | Exploit | Fix |
 | --- | --- | --- | --- | --- | --- | --- |
-| H1 | **High** | Design | Host token is optional. With `GPUI_AGENT=1` and no `GPUI_AGENT_TOKEN`, **any local process** can snapshot, click, invoke, and shut down the app via one-off CLI ops. | `security.rs` `from_env` treats empty/missing token as `None`. `handle_request` skips auth when `expected_token` is `None`. | Malware, another user on the same box, or a compromised MCP client talks to `127.0.0.1:17421` and drives the UI / reads field values. | **Partially mitigated (P2).** CLI `recipe run` and `mcp` refuse to start without a non-empty `GPUI_AGENT_TOKEN` / `--token`, and they send it on every request. Host token stays optional so `./scripts/smoke.sh` click/snapshot still works. Recipe/MCP workflows **must set the same token on host and client**. `hello.auth` is `"required"` \| `"none"`. Ephemeral Jupyter mint is **not** implemented. Integrators: still set `GPUI_AGENT_TOKEN` on the host. |
+| H1 | **High** | Design | Host token used to be optional. With `GPUI_AGENT=1` and no `GPUI_AGENT_TOKEN`, **any local process** can snapshot, click, invoke, and shut down the app. | Former `from_env` treated empty/missing token as `None`. `handle_request` skips auth when `expected_token` is `None`. | Malware, another user on the same box, or a compromised MCP client talks to `127.0.0.1:17421` and drives the UI. | **Patched (D1 default-deny).** `authorize_bind` / `from_env` refuse loopback without a token. `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores the old hole for local demos and prints `INSECURE_NO_TOKEN_BANNER`. Smoke scripts set a token. No mint-at-bind (PR #8 stays closed). |
 | H2 | **High** | Bug | Unbounded NDJSON lines + one OS thread per connection. A client could grow a request line without limit (`BufRead::lines`) and/or open unbounded handler threads. | Former `server.rs` `reader.lines()` and `thread::spawn` on every `accept`. | Local process (no token needed if H1) sends a multi-GB line or opens thousands of connections → memory / thread exhaustion of the GUI process. | **Patched.** `read_limited_line` (default 1 MiB), `MAX_CONNECTIONS` (32), idle read/write timeout (30s). Extra clients are dropped. Oversized lines get an error and the socket is closed (no resync). |
 | M1 | **Medium** | Bug | CLI/MCP accepted any `SocketAddr`. A mistyped or injected `--addr` / `GPUI_AGENT_ADDR` would send `GPUI_AGENT_TOKEN` off-box. | Former `gpui-agent-cli` parsed `addr: SocketAddr` and connected with no loopback check. | User or wrapper runs `gpui-agent --addr 1.2.3.4:17421 hello` with a token in the env → secret leaves the machine. | **Patched, then extended (#14).** Default: `authorize_client` refuses non-loopback. Remote connect requires `--allow-remote` **and** a non-empty token. Host `authorize_bind` refuses `0.0.0.0` / public addrs without `GPUI_AGENT_REMOTE=1` + token. |
 | M2 | **Medium** | Design | TCP loopback has no peer credentials. Any UID on the host can connect. | `TcpListener::bind` on `127.0.0.1`. No Unix socket, no `SO_PEERCRED`. | User B on a shared Linux box automates user A’s app (especially if H1). | **Documented.** Next step: optional `AF_UNIX` socket with `0600` and peer-uid check. Large change; do not add a second transport in this patch. |
@@ -134,7 +135,7 @@ They do **not** add privilege and do **not** bypass PR #3 caps:
 | Gate | Recipe path |
 | --- | --- |
 | Opt-in / bind | Host still needs `GPUI_AGENT=1`. CLI still `authorize_client` (loopback default; remote needs `--allow-remote` + token). |
-| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. CLI `recipe run` and `mcp` **refuse to start** without a non-empty client token (P2). Host token remains optional so one-off `click`/`snapshot` smoke still works. Set the **same** token on host and client for recipe/MCP. `hello.auth` advertises `"required"` \| `"none"`. Not a wire `batch` op. |
+| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. CLI `recipe run` and `mcp` **refuse to start** without a non-empty client token (P2). Host bind is default-deny (`GPUI_AGENT_TOKEN`); `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback. Set the **same** token on host and client. `hello.auth` advertises `"required"` \| `"none"`. Not a wire `batch` op. |
 | Line / conn / mailbox | Unchanged. Extra recipe cap: 256 steps. |
 | `invoke` | Names must be `SchemaKind::Invoke` on the local registry. Unknown names and protocol names used as invoke (`click`) fail closed. Schema names are `[A-Za-z0-9_.-]`. |
 | Resolve | Keyword score, fail closed. Shell-like / unknown / ambiguous intents do nothing. Never `Command`. |
@@ -212,11 +213,10 @@ commit `Cargo.lock`; CI should generate one and run `cargo audit`.
 Security-relevant items first, then reliability and DX. These are
 intentionally **not** half-implemented in this patch.
 
-1. **Required token for recipe/MCP (H1 / P2 — done).** CLI `recipe run`
-   and `mcp` require a non-empty `GPUI_AGENT_TOKEN` / `--token`. Host
-   token stays optional. No ephemeral Jupyter mint. Remaining H1: a
-   host started without a token is still driveable by one-off CLI ops
-   and any local process that speaks NDJSON.
+1. **Required host token (H1 / D1 — done).** `from_env` / `authorize_bind`
+   refuse loopback without `GPUI_AGENT_TOKEN`. `GPUI_AGENT_INSECURE_NO_TOKEN=1`
+   restores untokened loopback with a banner. CLI `recipe run` and `mcp`
+   still require a client token. No ephemeral Jupyter mint.
 2. **Unix-domain socket + peer uid (M2).** Optional
    `GPUI_AGENT_SOCK=~/.gpui-agent.sock` with `0600` and
    `SO_PEERCRED` / equivalent. Stronger than TCP loopback on multi-user

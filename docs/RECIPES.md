@@ -265,7 +265,7 @@ do the same things the CLI already can. They do not add privilege.
 | --- | --- |
 | Opt-in | Host still needs `GPUI_AGENT=1` (release: `GPUI_AGENT_ALLOW_RELEASE=1`) |
 | Bind | CLI still `ensure_loopback` before connect |
-| Token | CLI `recipe run` and `mcp` **refuse to start** without a non-empty `GPUI_AGENT_TOKEN` or `--token` (P2). Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Host token stays optional for one-off `click`/`snapshot`. **Set the same token on host and client** for recipe/MCP. `hello.auth` is `"required"` \| `"none"`. |
+| Token | CLI `recipe run` and `mcp` **refuse to start** without a non-empty `GPUI_AGENT_TOKEN` or `--token` (P2). Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Host bind is default-deny; `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback. **Set the same token on host and client**. `hello.auth` is `"required"` \| `"none"`. |
 | Line / conn / idle / mailbox | Unchanged. Recipe cap 256 is extra, not a replacement. |
 | No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--screenshot-dir` is observe-only (macOS **embedded-host**: this window; never the desktop). |
 | No shell | Resolve/plan/run never call `Command`. `invoke` is still an in-process host callback. Unknown invoke names are rejected. |

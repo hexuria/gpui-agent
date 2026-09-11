@@ -12,7 +12,7 @@ Cookbook and `TestHost`: [SDK.md](SDK.md). Sync model: [ADR-001](ADR-001-daemon-
 | Runtime | Start the server only when `GPUI_AGENT=1` (`true`/`yes`/`on`). |
 | Release | Also require `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | Loopback default. `from_env` / `authorize_bind`. Non-loopback needs `GPUI_AGENT_REMOTE=1` and a token. See [SECURITY.md](SECURITY.md). |
-| Token | Optional on the host (`GPUI_AGENT_TOKEN`). When set, every request must carry it. CLI **`recipe run` and `mcp` require** a non-empty client token (`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on host and client for those workflows. One-off `click`/`snapshot` do not. `hello.auth` is `"required"` or `"none"`. |
+| Token | **Required** on the host (`GPUI_AGENT_TOKEN`) to bind. `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback for local demos (prints a banner). When a token is set, every request must carry it. CLI **`recipe run` and `mcp` require** a non-empty client token. Set the **same** value on host and client. `hello.auth` is `"required"` or `"none"`. |
 | DoS caps | The server caps line size (1 MiB), concurrent connections (32), mailbox depth (128), and idle sockets (30s). See [SECURITY.md](SECURITY.md). |
 
 ```rust

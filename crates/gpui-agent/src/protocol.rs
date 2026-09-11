@@ -188,7 +188,7 @@ pub struct Response {
 ///
 /// Filled by the server from its configured token, not by `AgentHost::hello`.
 /// `"required"` means a matching token is mandatory; `"none"` means the host
-/// will accept unauthenticated requests (one-off `click`/`snapshot` smoke).
+/// will accept unauthenticated requests (`GPUI_AGENT_INSECURE_NO_TOKEN=1`).
 /// CLI `recipe run` and `mcp` still require a client token either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

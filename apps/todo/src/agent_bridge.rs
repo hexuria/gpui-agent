@@ -8,7 +8,7 @@ fn auth_banner(token_set: bool) -> &'static str {
     if token_set {
         "auth: required (GPUI_AGENT_TOKEN set; recipe/MCP clients must send the same token)"
     } else {
-        "auth: none (one-off click/snapshot ok; recipe run and mcp need the same token on host and client)"
+        "auth: none (GPUI_AGENT_INSECURE_NO_TOKEN=1 — any local process can drive this host)"
     }
 }
 

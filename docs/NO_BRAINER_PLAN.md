@@ -39,10 +39,10 @@ These never change unless the user explicitly forks the product:
 
 - **No OS HID.** Virtual delivery is in-process GPUI events only. No
   warp, no PostMessage, no XTEST, no stealing the real cursor/keyboard.
-- **Loopback + caps.** `GPUI_AGENT=1`, loopback bind, host token still
-  optional (one-off `click`/`snapshot` smoke). CLI `recipe run` and
-  `mcp` **require** a non-empty `GPUI_AGENT_TOKEN` / `--token`; set the
-  **same** value on host and client. `MAX_LINE_BYTES` 1 MiB,
+- **Loopback + caps.** `GPUI_AGENT=1`, loopback bind, host token
+  **required** unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`. CLI `recipe run`
+  and `mcp` **require** a non-empty `GPUI_AGENT_TOKEN` / `--token`; set
+  the **same** value on host and client. `MAX_LINE_BYTES` 1 MiB,
   `MAX_CONNECTIONS` 32, `MAX_MAILBOX_DEPTH` 128, 30s idle. Do not
   weaken them. No ephemeral Jupyter mint unless a later prompt asks.
 - **Semantic default.** `delivery=virtual` stays opt-in per op.
