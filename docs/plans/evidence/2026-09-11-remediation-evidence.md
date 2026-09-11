@@ -8,7 +8,7 @@ CI package set: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui
 
 fontconfig: round-1 evidence claimed `libfontconfig1-dev` install + `cargo check -p todo` succeeded. Round 2 on this VM records **`BLOCKED-ENV`** (see T0 round 2): apt has no `libfontconfig1-dev` (only runtime `libfontconfig1`); `cargo check -p todo` exits 101 (`fontconfig.pc` missing). Every later task that touches `apps/todo` is listed under `## macOS handoff`.
 
-`Commit:` fields below are the reachable `git log` SHAs (round 2 rewrite). Reviewer can `git show <sha>`.
+`Commit:` fields below are reachable `git log` SHAs (round-1 rewrite in T0 round 2; round-2 fields filled in the HANDOFF docs commit, not by amending). Reviewer can `git show <sha>`.
 
 ---
 
@@ -1194,7 +1194,7 @@ Deviations: R11b skipped (D5). R7 already added `mailbox_hello_auth_matches_serv
 ## T0 (round 2) — Record `BLOCKED-ENV` for `apps/todo` / fontconfig
 
 Task: T0 (round 2) record BLOCKED-ENV for `cargo check -p todo` when `libfontconfig1-dev` is not installable; rewrite every `Commit:` field to a reachable git-log SHA
-Commit: *(filled after this commit)*
+Commit: 623080ef089ce2417489487e9947d775a2b7ca4f
 Red: n/a — documentation/evidence correction; no new failing test.
 Green: n/a
 Verify:
@@ -1281,7 +1281,7 @@ Round-2 `apps/todo` edits (listed as they land):
 ## R2 (round 2) — P2 table host `from_env` is not optional
 
 Task: R2 (round 2) leftover P2 table row in `docs/NO_BRAINER_PLAN.md` still said host `from_env` is optional
-Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Commit: 49eefab057b68bfe0dbd82fd2c3ea29464c231ff
 Red: added `no_brainer_host_from_env_is_not_optional` before editing the table (not stash). Command:
 
 `cargo test -p todo-core --lib tests::no_brainer_host_from_env_is_not_optional -- --exact --nocapture`
@@ -1344,7 +1344,7 @@ Deviations: none. Assertion message shortened after red so green does not dump t
 ## R1 (round 2) — hide token env values on `--help`
 
 Task: R1 (round 2) `hide_env_values` on `--token` / `GPUI_AGENT_TOKEN`; spawn-binary canary test
-Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Commit: abfdfd74e733cd295e197a4a1069d47ec6d190f1
 Red: added `cli_help_hides_token_env_canary` (spawns `gpui-agent --help` with canary env) before `hide_env_values` (not stash). Command:
 
 `cargo test -p gpui-agent-cli --test recipe_mcp_token cli_help_hides_token_env_canary -- --exact --nocapture`
@@ -1411,7 +1411,7 @@ Deviations: none. Test lives in `recipe_mcp_token.rs` because that crate already
 ## R3 (round 2) — confine before `screenshot_unavailable`
 
 Task: R3 (round 2) `TodoStore::screenshot` / `todo-headless` reject unconfined paths before `screenshot_unavailable`
-Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Commit: 5b79ae870749b70440c208499036a5a5d4976a26
 Red: added `screenshot_unconfined_path_fails_before_unavailable` while `TodoStore::screenshot` still ignored `path` (not stash). Command:
 
 `cargo test -p todo-core --lib tests::screenshot_unconfined_path_fails_before_unavailable -- --exact --nocapture`
@@ -1475,7 +1475,7 @@ Deviations: also confined in `apps/todo` `screenshot_this_window` so a live GUI 
 ## R5 (round 2) — `write_png` is atomic, not only the stub
 
 Task: R5 (round 2) assert `write_png` / `write_png_in` no longer `fs::write`s dest in place; keep the atomic-write test; live `-Sc.png` fails at confine (R3 round 2)
-Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Commit: f958d2996b26d703e8dfa481eebdeabade452c0e
 Red: named source test inserted onto parent `037eb4e` (pre-R5 `write_png_in` still `fs::write(&dest, png)`; worktree `/tmp/r5-red-wt`, not stash). Command:
 
 `CARGO_TARGET_DIR=/tmp/r5-red-target cargo test -p gpui-agent --lib screenshot::tests::write_png_in_source_does_not_fs_write_dest_in_place -- --exact --nocapture`
@@ -1543,7 +1543,7 @@ Deviations: red reconstructed on reachable parent `037eb4e` (R5 production alrea
 ## R4 (round 2) — raw-token red, close on bad JSON, Broken pipe, hmac/sha2
 
 Task: R4 (round 2) named red fails because v1 `authorize_request` accepts `Request.token`; `Broken pipe` is auth-close; HTTP/non-JSON closes; SECURITY.md lists `hmac`/`sha2`
-Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Commit: d36ac7ebfbfa87013807ab78d0836a226238debc
 
 ### Named red (v1 accepts `Request.token`)
 
@@ -1640,7 +1640,7 @@ Deviations: grouped R4 follow-ups (named red, EPIPE, HTTP close, hmac/sha2 docs)
 ## R10 (round 2) — thread `--schema` into MCP recipe tools
 
 Task: R10 (round 2) MCP accepts `--schema` like `recipe`; recipe MCP tools honor those paths (not env-only)
-Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Commit: 78df9c1a04521905d528d6734dbaec6309299d7a
 Red: added `mcp_schema_flag_parses_like_recipe` while `Command::Mcp` had no schema field (not stash). Command:
 
 `cargo test -p gpui-agent-cli --bin gpui-agent tests::mcp_schema_flag_parses_like_recipe -- --exact --nocapture`
@@ -1713,7 +1713,7 @@ Deviations: chose threading `--schema` (not env-only docs). Tool arg `schema` (s
 ## R11 (round 2) — `plan_click` fail-closed on duplicate ids
 
 Task: R11 (round 2) `virtual_input::plan_click` uses `require_id` (click-id resolution is in scope; not first-match)
-Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Commit: 69ebbf953ad519142ec3c6dc39df56cfffdd16e0
 Red: added `plan_click_duplicate_id_is_error` while `plan_click` still used `tree.find` (not stash). Two nodes share id `dup` with non-zero bounds so first-match would succeed. Command:
 
 `cargo test -p gpui-agent --lib virtual_input::tests::plan_click_duplicate_id_is_error -- --exact --nocapture`
@@ -1774,7 +1774,7 @@ Deviations: none. Title’s click-id resolution treated as in scope (did not onl
 ## R15 (round 2) — checklist test requires HMAC / default-deny / confine
 
 Task: R15 (round 2) `integrating_md_lists_mailbox_and_screenshot` requires HMAC / default-deny / confine lines, not only `spawn_mailbox` + `GPUI_AGENT_SCREENSHOT_DIR`
-Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Commit: ad5b80833180b4bf5fe0bff9df736052b7aad8b4
 Red: original two asserts kept. Three new asserts added. Reconstructed on reachable R15 `3ad6241` (worktree `/tmp/r15-hmac-wt`, not stash): production `INTEGRATING.md` still had `spawn_mailbox` and `GPUI_AGENT_SCREENSHOT_DIR`; `HMAC-SHA256` was replaced with `hmac` so the new assert is what fails. Command:
 
 `CARGO_TARGET_DIR=/tmp/r15-hmac-target cargo test --manifest-path /tmp/r15-hmac-wt/Cargo.toml -p todo-core --lib tests::integrating_md_lists_mailbox_and_screenshot -- --exact --nocapture`
