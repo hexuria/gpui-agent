@@ -1769,3 +1769,64 @@ Diff:
 
 Deviations: none. Title’s click-id resolution treated as in scope (did not only document first-match).
 
+---
+
+## R15 (round 2) — checklist test requires HMAC / default-deny / confine
+
+Task: R15 (round 2) `integrating_md_lists_mailbox_and_screenshot` requires HMAC / default-deny / confine lines, not only `spawn_mailbox` + `GPUI_AGENT_SCREENSHOT_DIR`
+Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+Red: original two asserts kept. Three new asserts added. Reconstructed on reachable R15 `3ad6241` (worktree `/tmp/r15-hmac-wt`, not stash): production `INTEGRATING.md` still had `spawn_mailbox` and `GPUI_AGENT_SCREENSHOT_DIR`; `HMAC-SHA256` was replaced with `hmac` so the new assert is what fails. Command:
+
+`CARGO_TARGET_DIR=/tmp/r15-hmac-target cargo test --manifest-path /tmp/r15-hmac-wt/Cargo.toml -p todo-core --lib tests::integrating_md_lists_mailbox_and_screenshot -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'tests::integrating_md_lists_mailbox_and_screenshot' (37721) panicked at crates/todo-core/src/lib.rs:646:9:
+adapter checklist must name HMAC-SHA256
+test tests::integrating_md_lists_mailbox_and_screenshot ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+```
+
+Also reconstructed on pre-R15 `0464504` (checklist absent): first failure is the original `GPUI_AGENT_SCREENSHOT_DIR` assert; `git grep HMAC-SHA256` / `Confined screenshots` / `GPUI_AGENT_SCREENSHOT_DIR` on that tree is empty.
+
+Green: same command on this tree (checklist already lists HMAC-SHA256, `GPUI_AGENT_INSECURE_NO_TOKEN`, confined relative `.png`). Exit: 0
+
+```
+running 1 test
+test tests::integrating_md_lists_mailbox_and_screenshot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+```
+
+Existing `spawn_mailbox` and `GPUI_AGENT_SCREENSHOT_DIR` asserts kept. `docs/INTEGRATING.md` section 8 unchanged.
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 91 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.09s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+Sum: 91+30+8+9+64+16+13+1 = **232** (same as R11; strengthened existing test, did not add a new `#[test]`). Caps unchanged. R11b skipped.
+
+Diff:
+
+```
+ crates/todo-core/src/lib.rs | 12 ++++++++++++
+```
+
+Deviations: red for the new HMAC assert reconstructed by stripping `HMAC-SHA256` from R15’s INTEGRATING.md so the original two asserts still pass (a parent-only checkout fails earlier on `GPUI_AGENT_SCREENSHOT_DIR`). Production INTEGRATING.md was not edited.
+

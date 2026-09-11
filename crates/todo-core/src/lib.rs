@@ -673,6 +673,18 @@ mod tests {
             text.contains("GPUI_AGENT_SCREENSHOT_DIR"),
             "INTEGRATING.md must mention GPUI_AGENT_SCREENSHOT_DIR"
         );
+        assert!(
+            text.contains("HMAC-SHA256"),
+            "adapter checklist must name HMAC-SHA256"
+        );
+        assert!(
+            text.contains("GPUI_AGENT_INSECURE_NO_TOKEN"),
+            "adapter checklist must name the default-deny opt-in"
+        );
+        assert!(
+            text.contains("Confined screenshots") && text.contains("relative `.png`"),
+            "adapter checklist must require confined relative .png paths"
+        );
     }
 
     #[test]
