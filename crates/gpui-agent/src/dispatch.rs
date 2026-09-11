@@ -325,13 +325,20 @@ mod tests {
     #[test]
     fn v2_raw_token_on_wire_is_rejected() {
         let req = Request::new("1", Op::Hello).with_token("secret");
+        assert_eq!(
+            req.v, PROTOCOL_VERSION,
+            "this red must not be a version mismatch"
+        );
         let nonce = [0x11u8; 32];
         let err = authorize_request(&req, Some("secret"), Some(&nonce)).unwrap_err();
+        let msg = err.error.as_deref().unwrap_or("");
         assert!(
-            err.error
-                .as_deref()
-                .is_some_and(|e| e.contains("token must not be sent on the wire")),
+            msg.contains("token must not be sent on the wire"),
             "{err:?}"
+        );
+        assert!(
+            !msg.contains("unsupported protocol version"),
+            "must reject the token field, not the version: {msg}"
         );
     }
 

@@ -102,9 +102,10 @@ and `mcp` require a client token before they connect.
 ### Request parsing / DoS
 
 Capped line reader, UTF-8 required, connection cap, idle timeout,
-mailbox depth cap. Invalid JSON still returns `bad json: …` (serde
-messages do not echo the line) and keeps the connection so a stray
-blank line is cheap. Oversized / non-UTF-8 close the connection so a
+mailbox depth cap. Invalid JSON returns `bad json: …` (serde
+messages do not echo the line) and **closes** the connection. Blank
+lines remain cheap (`continue`). Oversized / non-UTF-8 close the
+connection so a
 partial line cannot be interpreted as the next request.
 
 ### `invoke` / click / set-value / type / key
@@ -186,8 +187,8 @@ connections may finish one more request. Fine.
 
 ### Dependencies
 
-`gpui-agent` itself depends only on `serde`, `serde_json`, `thiserror`.
-The CLI adds `anyhow` + `clap`. P3 screenshot execs the system
+`gpui-agent` itself depends on `serde`, `serde_json`, `thiserror`, `hmac`, and
+`sha2`. The CLI adds `anyhow` + `clap`. P3 screenshot execs the system
 `screencapture` binary on macOS only (fixed argv). `cargo audit` at review time reported
 **no yanked crates and no vulnerability advisories** on a generated
 lockfile. Six *unmaintained* warnings appear in the GPUI Kit /

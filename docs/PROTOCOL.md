@@ -34,7 +34,10 @@ gets a new nonce (replay on a later session fails). Untokened servers
 
 If a v2 request includes a non-empty `token` field while the host has a
 token, the host rejects with `"token must not be sent on the wire"`
-and closes.
+and closes. After a challenge (tokened host), a non-JSON / HTTP line
+gets `"bad json: …"` and the connection **closes**; a later valid HMAC
+on that socket is not served. Blank lines are ignored. Untokened
+servers close on bad JSON the same way.
 
 ## Request
 

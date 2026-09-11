@@ -1538,3 +1538,100 @@ Diff:
 
 Deviations: red reconstructed on reachable parent `037eb4e` (R5 production already used `atomic_write_png`; this follow-up is the missing `write_png` assertion). Original stub test kept.
 
+---
+
+## R4 (round 2) — raw-token red, close on bad JSON, Broken pipe, hmac/sha2
+
+Task: R4 (round 2) named red fails because v1 `authorize_request` accepts `Request.token`; `Broken pipe` is auth-close; HTTP/non-JSON closes; SECURITY.md lists `hmac`/`sha2`
+Commit: *(this commit; SHA filled in HANDOFF — do not amend)*
+
+### Named red (v1 accepts `Request.token`)
+
+Reachable test: `docs/plans/evidence/r4-round2-red-v1-authorize-request.rs` (2-arg `authorize_request`). Applied onto parent `243ab78` (worktree `/tmp/r4-v1-wt`). Command:
+
+`CARGO_TARGET_DIR=/tmp/r4-v1-target cargo test -p gpui-agent --lib dispatch::tests::v2_raw_token_on_wire_is_rejected -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'dispatch::tests::v2_raw_token_on_wire_is_rejected' (24731) panicked at crates/gpui-agent/src/dispatch.rs:272:59:
+called `Result::unwrap_err()` on an `Ok` value: ()
+test dispatch::tests::v2_raw_token_on_wire_is_rejected ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 76 filtered out; finished in 0.00s
+```
+
+That is **token accepted**, not `unsupported protocol version 2 (want 1)`. HEAD keeps `v2_raw_token_on_wire_is_rejected` with `assert_eq!(req.v, PROTOCOL_VERSION)` and asserts the error is `token must not be sent on the wire` (not a version mismatch). v2 HMAC is not weakened.
+
+Green on HEAD: Exit: 0
+
+```
+running 1 test
+test dispatch::tests::v2_raw_token_on_wire_is_rejected ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.00s
+```
+
+### HTTP / non-JSON close
+
+Red: `bad_json_after_challenge_closes_connection` while host/mailbox loops `continue` on bad json (not stash). Command:
+
+`cargo test -p gpui-agent --lib server::tests::bad_json_after_challenge_closes_connection -- --exact --nocapture`
+
+Exit: 101
+
+```
+running 1 test
+
+thread 'server::tests::bad_json_after_challenge_closes_connection' (23541) panicked at crates/gpui-agent/src/server.rs:799:9:
+non-JSON after challenge must close; later HMAC must not be served: Ok(142) "{\"v\":2,\"id\":\"1\",\"ok\":true,\"hello\":{\"protocol\":2,\"app\":\"test\",\"platform\":\"headless\",\"ready\":true,\"deliveries\":[\"semantic\"],\"auth\":\"required\"}}\n"
+test server::tests::bad_json_after_challenge_closes_connection ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.06s
+```
+
+Green: same command after `break` on bad json (host + mailbox). Write-after-close `Broken pipe` counts as close. Exit: 0
+
+```
+running 1 test
+test server::tests::bad_json_after_challenge_closes_connection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.01s
+```
+
+`rpc_pipeline_wrong_token_fails_fast` now treats `Broken pipe` / `os error 32` as auth-close success (kept `token` / `connection closed` / `reset`).
+
+`docs/SECURITY.md` dependencies now include `hmac` and `sha2`. Invalid JSON **closes**. `docs/PROTOCOL.md` documents the close.
+
+Verify:
+
+Command: `cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe`
+Exit: 0
+
+```
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+```
+
+Sum: 90+28+8+9+64+16+13+1 = **229** (>= 228 + 1). Caps unchanged. No `tokio`. HMAC gate not loosened.
+
+Diff:
+
+```
+ crates/gpui-agent/src/dispatch.rs | 13 ++++++++---
+ crates/gpui-agent/src/server.rs   | 49 ++++++++++++++++++++++++++++++++++++---
+ docs/PROTOCOL.md                  |  5 +++-
+ docs/SECURITY.md                  | 11 +++++----
+ docs/plans/evidence/r4-round2-red-v1-authorize-request.rs | (new)
+```
+
+Deviations: grouped R4 follow-ups (named red, EPIPE, HTTP close, hmac/sha2 docs) in one round-2 commit. Green HTTP assertion also treats write-side `Broken pipe` as close (server already dropped the socket).
+

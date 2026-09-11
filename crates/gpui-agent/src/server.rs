@@ -246,7 +246,7 @@ fn handle_stream_host<H: AgentHost>(
                     &mut encode_buf,
                     &Response::err("?", format!("bad json: {err}")),
                 );
-                continue;
+                break;
             }
         };
         if let Err(resp) =
@@ -320,7 +320,7 @@ fn handle_stream_mailbox(
                     &mut encode_buf,
                     &Response::err("?", format!("bad json: {err}")),
                 );
-                continue;
+                break;
             }
         };
         // Authorize here so virtual ops (which skip handle_request on the
@@ -577,7 +577,9 @@ mod tests {
             Err(msg) => assert!(
                 msg.contains("token")
                     || msg.contains("connection closed")
-                    || msg.to_ascii_lowercase().contains("reset"),
+                    || msg.to_ascii_lowercase().contains("reset")
+                    || msg.contains("Broken pipe")
+                    || msg.contains("os error 32"),
                 "wrong token must not run the wave: {msg}"
             ),
         }
@@ -756,6 +758,47 @@ mod tests {
         reader.read_line(&mut resp).unwrap();
         assert!(resp.contains("\"ok\":true"), "{resp}");
         assert!(!resp.contains("challenge"), "{resp}");
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn bad_json_after_challenge_closes_connection() {
+        let (addr, shutdown) = spawn_test_host(
+            Some("secret".into()),
+            ServerLimits {
+                idle_timeout: Duration::from_secs(2),
+                ..ServerLimits::default()
+            },
+        );
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut challenge = String::new();
+        reader.read_line(&mut challenge).unwrap();
+        let nonce = crate::hmac_auth::parse_challenge_line(challenge.trim_end().as_bytes())
+            .expect("challenge");
+        writeln!(stream, "GET / HTTP/1.1").unwrap();
+        let mut err_line = String::new();
+        reader.read_line(&mut err_line).unwrap();
+        assert!(
+            err_line.contains("bad json"),
+            "HTTP line must be bad json, got {err_line}"
+        );
+        let auth = crate::hmac_auth::hmac_hex("secret", &nonce).unwrap();
+        let hello = format!(r#"{{"v":{PROTOCOL_VERSION},"id":"1","auth":"{auth}","op":"hello"}}"#);
+        let write_hello = writeln!(stream, "{hello}");
+        let mut second = String::new();
+        let n = reader.read_line(&mut second);
+        let closed = write_hello.is_err() || matches!(n, Ok(0) | Err(_)) || second.is_empty();
+        assert!(
+            closed && !second.contains("\"ok\":true"),
+            "non-JSON after challenge must close; later HMAC must not be served: write={write_hello:?} read={n:?} {second:?}"
+        );
         shutdown.store(true, Ordering::SeqCst);
     }
 }
