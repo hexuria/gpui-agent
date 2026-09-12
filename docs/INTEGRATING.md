@@ -99,11 +99,31 @@ No special “open page” op. Agents:
 ```bash
 gpui-agent click nav-settings
 gpui-agent assert --id page-settings
+gpui-agent click nav-toggle-sidebar
+gpui-agent wait-until --timeout-ms 1000 --id todo-nav --visible false
 ```
 
 Or register `invoke nav.go --arg page=settings` if a named command is
 clearer than clicking. Both are generic CLI; only the **ids / names**
 are yours.
+
+### Visible vs exists vs in_viewport
+
+| You want | Do this |
+| --- | --- |
+| Modal / alert / auth overlay | Keep a stable id (`auth-modal`), `role: dialog` (or `UiNode::dialog`), set `visible=false` when closed. Assert `--visible` / `--visible false`. |
+| Sidebar | Keep the sidebar node when collapsed; `visible=false` (and hide descendants). Sample todo: `todo-nav` + `nav-toggle-sidebar` / `invoke todo.toggle_sidebar`. |
+| Toast appeared then gone | Either drop the node (`exists=false`) or keep it with `visible=false`. Pick one and document it. |
+| Scrolled into the painted window | `assert --in-viewport` when bounds are real. Headless / zero bounds: `in_viewport_unavailable` — do not fake geometry. |
+
+Do **not** overload `states` with `"hidden"` / `"invisible"` as the only
+signal. Optional human-readable `states` is fine; PROTOCOL is `visible`.
+
+Mailbox drains: apply painted bounds onto the snapshot **before**
+`assert` / `wait_until` so `in_viewport` sees the same clip as
+`snapshot`. Zero leftover bounds for nodes you stopped painting.
+`wait_until` is polled on the TCP thread for `spawn_mailbox` so the UI
+thread can paint between tries. `wait` remains ready/paint only.
 
 ## 5. App-specific verbs
 
@@ -146,6 +166,8 @@ reuses a single TCP session across `tools/call`.
 - [ ] Server starts only with `GPUI_AGENT=1`, loopback bind
 - [ ] Desktop mailbox drain on the UI thread
 - [ ] Page roots assertable after nav clicks
+- [ ] Overlays/sidebar/modals: stable id + `visible` (keep the node when closed if agents must assert “known but hidden”)
+- [ ] Honest bounds for `in_viewport`; headless stays `in_viewport_unavailable`
 - [ ] Optional `invoke` map documented for agents
 - [ ] Optional: check in a JSON `recipe` of those ops so agents run one
       CLI invocation instead of one process per click

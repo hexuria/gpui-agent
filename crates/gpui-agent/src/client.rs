@@ -218,6 +218,14 @@ impl AgentClient {
             Op::Screenshot { mode, .. } if mode.is_scrolled() => {
                 self.timeout.max(Duration::from_secs(30))
             }
+            Op::WaitUntil { timeout_ms, .. } => self
+                .timeout
+                .max(Duration::from_millis(timeout_ms.saturating_add(2_000))),
+            Op::Wait {
+                timeout_ms: Some(ms),
+            } => self
+                .timeout
+                .max(Duration::from_millis(ms.saturating_add(2_000))),
             _ => self.timeout,
         }
     }
@@ -506,6 +514,10 @@ impl AgentClient {
 
     pub fn wait_ready(&mut self) -> Result<Response, String> {
         self.expect_ok(Op::Wait { timeout_ms: None })
+    }
+
+    pub fn wait_until(&mut self, spec: AssertSpec, timeout_ms: u64) -> Result<Response, String> {
+        self.expect_ok(Op::WaitUntil { timeout_ms, spec })
     }
 
     pub fn keybindings(&mut self) -> Result<Response, String> {

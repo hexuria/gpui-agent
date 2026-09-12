@@ -91,6 +91,14 @@ pub fn protocol_registry() -> Registry {
             &[],
         ),
         protocol(
+            "wait_until",
+            "Poll assert fields until they match or timeout_ms elapses.",
+            vec![Effect::Read],
+            true,
+            &["wait_until"],
+            &["target"],
+        ),
+        protocol(
             "snapshot",
             "Read the semantic UI tree.",
             vec![Effect::Read],
@@ -156,7 +164,7 @@ pub fn protocol_registry() -> Registry {
         ),
         protocol(
             "assert",
-            "Check snapshot fields on a stable id.",
+            "Check snapshot fields on a stable id (exists, visible, in_viewport, …).",
             vec![Effect::Read],
             true,
             &["assert", "check", "verify"],
@@ -255,6 +263,20 @@ fn todo_app_registry() -> Registry {
         args: BTreeMap::new(),
         result: Some(json!([{"id": "u64", "title": "string", "done": "bool"}])),
         keywords: vec!["list".into(), "todos".into(), "items".into()],
+    })
+    .unwrap();
+
+    reg.insert(OpSchema {
+        name: "todo.toggle_sidebar".into(),
+        kind: SchemaKind::Invoke,
+        description: "Toggle the nav sidebar (sets todo-nav visible).".into(),
+        effects: vec![Effect::Write],
+        idempotent: false,
+        verified: true,
+        required: vec![],
+        args: BTreeMap::new(),
+        result: Some(json!({"sidebar_open": "bool"})),
+        keywords: vec!["sidebar".into(), "nav".into()],
     })
     .unwrap();
 
@@ -361,6 +383,8 @@ mod tests {
         assert!(reg.get("click").is_some());
         assert!(reg.get("keybinding").unwrap().verified);
         assert!(reg.get("keybindings").unwrap().idempotent);
+        assert!(reg.get("wait_until").unwrap().idempotent);
+        assert!(reg.get("assert").unwrap().idempotent);
         assert!(reg.get("screenshot").unwrap().idempotent);
         assert!(reg.get("todo-input").is_some());
     }

@@ -6,7 +6,7 @@
 //! or [`spawn_mailbox`](crate::server::spawn_mailbox).
 
 pub use crate::client::AgentClient;
-pub use crate::dispatch::{DispatchResult, handle_request};
+pub use crate::dispatch::{DispatchResult, assert_tree, handle_request};
 pub use crate::host::AgentHost;
 pub use crate::keybinding::{
     KeybindingInfo, authorize_keybinding, complete_keybinding_action, keybinding_unavailable,
@@ -24,7 +24,10 @@ pub use crate::security::{
 pub use crate::server::{
     DEFAULT_ADDR_STR, MAX_CONNECTIONS, MAX_LINE_BYTES, default_addr, spawn_host, spawn_mailbox,
 };
-pub use crate::tree::{Bounds, UiNode, UiTree, role};
+pub use crate::tree::{
+    Bounds, IN_VIEWPORT_UNAVAILABLE, UiNode, UiTree, in_viewport_unavailable,
+    is_in_viewport_unavailable, role,
+};
 pub use crate::{
     MAX_MAILBOX_DEPTH, parse_numbered_id, screenshot_unavailable, virtual_unavailable,
 };

@@ -59,6 +59,33 @@ enum Command {
         #[arg(long)]
         timeout_ms: Option<u64>,
     },
+    /// Poll assert fields until they match or `timeout_ms` elapses.
+    WaitUntil {
+        /// How long the host polls the snapshot (milliseconds).
+        #[arg(long)]
+        timeout_ms: u64,
+        /// Stable id of the node (protocol field: `target`).
+        #[arg(long, visible_alias = "target")]
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        value: Option<String>,
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        checked: Option<bool>,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true", default_value_t = true)]
+        exists: bool,
+        #[arg(long)]
+        absent: bool,
+        /// `--visible` or `--visible true|false`. Host-declared visibility.
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        visible: Option<bool>,
+        /// `--in-viewport` or `--in-viewport true|false`. Geometry; fail closed if unknown.
+        #[arg(long = "in-viewport", num_args = 0..=1, default_missing_value = "true")]
+        in_viewport: Option<bool>,
+    },
     /// Handshake: protocol version, app name, platform, ready.
     Hello,
     /// Print the semantic UI tree as JSON.
@@ -147,6 +174,12 @@ enum Command {
         /// Invert `--exists` (node must be absent). Flag only; takes no value.
         #[arg(long)]
         absent: bool,
+        /// `--visible` or `--visible true|false`. Host-declared visibility.
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        visible: Option<bool>,
+        /// `--in-viewport` or `--in-viewport true|false`. Geometry; fail closed if unknown.
+        #[arg(long = "in-viewport", num_args = 0..=1, default_missing_value = "true")]
+        in_viewport: Option<bool>,
     },
     /// Call a named host command the app registered.
     Invoke {
@@ -229,6 +262,31 @@ fn run() -> Result<()> {
             }
             print_resp(rpc(client.expect_ok(Op::Wait { timeout_ms }))?)
         }
+        Command::WaitUntil {
+            timeout_ms,
+            id,
+            name,
+            value,
+            role,
+            checked,
+            exists,
+            absent,
+            visible,
+            in_viewport,
+        } => {
+            client = client.with_timeout(Duration::from_millis(timeout_ms.saturating_add(2_000)));
+            let spec = AssertSpec {
+                target: id,
+                name,
+                value,
+                role,
+                checked,
+                exists: Some(if absent { false } else { exists }),
+                visible,
+                in_viewport,
+            };
+            print_resp(rpc(client.wait_until(spec, timeout_ms))?)
+        }
         Command::Hello => print_resp(rpc(client.expect_ok(Op::Hello))?),
         Command::Snapshot { pretty } => {
             let resp = rpc(client.snapshot())?;
@@ -286,6 +344,8 @@ fn run() -> Result<()> {
             checked,
             exists,
             absent,
+            visible,
+            in_viewport,
         } => {
             let spec = AssertSpec {
                 target: id,
@@ -294,6 +354,8 @@ fn run() -> Result<()> {
                 role,
                 checked,
                 exists: Some(if absent { false } else { exists }),
+                visible,
+                in_viewport,
             };
             print_resp(rpc(client.assert(spec))?);
         }
@@ -342,6 +404,7 @@ mod tests {
             names,
             [
                 "wait",
+                "wait-until",
                 "hello",
                 "snapshot",
                 "screenshot",
@@ -536,6 +599,58 @@ mod tests {
         match bare_checked.command {
             Command::Assert { checked, .. } => assert_eq!(checked, Some(true)),
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assert_and_wait_until_parse_visible_and_in_viewport() {
+        let vis = Cli::try_parse_from([
+            "gpui-agent",
+            "assert",
+            "--id",
+            "todo-nav",
+            "--visible",
+            "false",
+        ])
+        .expect("visible false");
+        match vis.command {
+            Command::Assert {
+                visible,
+                in_viewport,
+                ..
+            } => {
+                assert_eq!(visible, Some(false));
+                assert!(in_viewport.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let wait = Cli::try_parse_from([
+            "gpui-agent",
+            "wait-until",
+            "--timeout-ms",
+            "1000",
+            "--id",
+            "todo-nav",
+            "--visible",
+            "--in-viewport",
+            "false",
+        ])
+        .expect("wait-until");
+        match wait.command {
+            Command::WaitUntil {
+                timeout_ms,
+                id,
+                visible,
+                in_viewport,
+                ..
+            } => {
+                assert_eq!(timeout_ms, 1000);
+                assert_eq!(id, "todo-nav");
+                assert_eq!(visible, Some(true));
+                assert_eq!(in_viewport, Some(false));
+            }
+            other => panic!("{other:?}"),
         }
     }
 

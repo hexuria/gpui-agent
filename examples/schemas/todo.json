@@ -54,6 +54,33 @@
       "keywords": ["list", "todos", "items"]
     },
     {
+      "name": "todo.toggle_sidebar",
+      "kind": "invoke",
+      "description": "Toggle the nav sidebar (sets todo-nav visible).",
+      "effects": ["write"],
+      "idempotent": false,
+      "verified": true,
+      "args": {},
+      "result": { "sidebar_open": "bool" },
+      "keywords": ["sidebar"]
+    },
+    {
+      "name": "todo-nav",
+      "kind": "id",
+      "description": "Nav sidebar. Keep the node and set visible=false when collapsed.",
+      "effects": ["write"],
+      "verified": true,
+      "keywords": ["nav", "sidebar"]
+    },
+    {
+      "name": "nav-toggle-sidebar",
+      "kind": "id",
+      "description": "Button that toggles todo-nav visible.",
+      "effects": ["write"],
+      "verified": true,
+      "keywords": ["toggle", "sidebar"]
+    },
+    {
       "name": "todo-input",
       "kind": "id",
       "description": "Draft text field for a new todo.",

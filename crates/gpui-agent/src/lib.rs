@@ -32,7 +32,7 @@ pub mod tree;
 pub mod virtual_input;
 
 pub use client::AgentClient;
-pub use dispatch::{DispatchResult, authorize_request, handle_request};
+pub use dispatch::{DispatchResult, assert_tree, authorize_request, handle_request};
 pub use hmac_auth::{
     Challenge, challenge_for_nonce, hex_decode, hex_encode, hmac_hex, hmac_verify,
 };
@@ -72,7 +72,10 @@ pub use server::{
     default_addr,
 };
 pub use testing::TestHost;
-pub use tree::{Bounds, UiNode, UiTree, role};
+pub use tree::{
+    Bounds, IN_VIEWPORT_UNAVAILABLE, UiNode, UiTree, in_viewport_unavailable,
+    is_in_viewport_unavailable, role,
+};
 pub use virtual_input::{
     AgentCursor, VIRTUAL_UNAVAILABLE, VirtualPointerClick, hit_point, keystroke_token, plan_click,
     text_keystrokes, virtual_unavailable,

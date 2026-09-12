@@ -100,6 +100,17 @@ echo "==> delete"
 echo "==> final list via invoke"
 "$CLI" --addr "$ADDR" invoke todo.list
 
+echo "==> sidebar visible / wait_until / in_viewport fail-closed"
+"$CLI" --addr "$ADDR" assert --id todo-nav --visible
+"$CLI" --addr "$ADDR" click nav-toggle-sidebar
+"$CLI" --addr "$ADDR" wait-until --timeout-ms 1000 --id todo-nav --visible false
+if "$CLI" --addr "$ADDR" assert --id todo-nav --in-viewport; then
+  echo "expected in_viewport_unavailable from headless" >&2
+  exit 1
+fi
+"$CLI" --addr "$ADDR" invoke todo.toggle_sidebar
+"$CLI" --addr "$ADDR" wait-until --timeout-ms 1000 --id todo-nav --visible
+
 echo "==> shutdown"
 "$CLI" --addr "$ADDR" shutdown
 wait "$HOST_PID" 2>/dev/null || true
@@ -117,6 +128,19 @@ echo "$receipt" | grep -F '"session_reused": true' >/dev/null
 wait "$HOST_PID" 2>/dev/null || true
 HOST_PID=""
 
+echo "==> recipe run todo-visible.json (wait_until visible)"
+"$HOST" &
+HOST_PID=$!
+"$CLI" --addr "$ADDR" wait
+visible_receipt="$("$CLI" --addr "$ADDR" recipe run examples/recipes/todo-visible.json --schema examples/schemas/todo.json)"
+echo "$visible_receipt"
+echo "$visible_receipt" | grep -F '"ok": true' >/dev/null
+echo "$visible_receipt" | grep -F '"session_reused": true' >/dev/null
+"$CLI" --addr "$ADDR" shutdown
+wait "$HOST_PID" 2>/dev/null || true
+HOST_PID=""
+
 echo
 echo "smoke ok: create / toggle / delete / assert via generic protocol ops"
 echo "smoke ok: recipe run with matching token (ok + session_reused)"
+echo "smoke ok: wait_until + visible + headless in_viewport_unavailable"

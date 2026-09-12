@@ -90,6 +90,26 @@ pub(crate) fn tools() -> Vec<Value> {
             }),
         ),
         tool(
+            "wait_until",
+            "Poll assert fields on a snapshot until they match or timeout_ms elapses. Distinct from wait (ready/paint only). in_viewport fails closed (in_viewport_unavailable) when bounds are zero or the host is headless.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "timeout_ms": { "type": "integer", "description": "Host poll budget in milliseconds." },
+                    "target": { "type": "string", "description": "Stable node id (alias: id)." },
+                    "id": { "type": "string", "description": "Alias for target." },
+                    "name": { "type": "string" },
+                    "value": { "type": "string" },
+                    "role": { "type": "string" },
+                    "checked": { "type": "boolean" },
+                    "exists": { "type": "boolean" },
+                    "visible": { "type": "boolean", "description": "Host-declared visibility (not exists, not in_viewport)." },
+                    "in_viewport": { "type": "boolean", "description": "Non-empty intersection with the painted window clip." }
+                },
+                "required": ["timeout_ms"]
+            }),
+        ),
+        tool(
             "hello",
             "Handshake: protocol version, app name, platform, ready.",
             json!({ "type": "object", "properties": {} }),
@@ -156,7 +176,7 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "assert",
-            "Assert name/value/role/checked/exists on a node from the current snapshot.",
+            "Assert name/value/role/checked/exists/visible/in_viewport on a node from the current snapshot. visible is host-declared; in_viewport is geometry and fails closed when bounds are dishonest.",
             json!({
                 "type": "object",
                 "properties": {
@@ -166,7 +186,9 @@ pub(crate) fn tools() -> Vec<Value> {
                     "value": { "type": "string" },
                     "role": { "type": "string" },
                     "checked": { "type": "boolean" },
-                    "exists": { "type": "boolean" }
+                    "exists": { "type": "boolean" },
+                    "visible": { "type": "boolean", "description": "Host-declared visibility." },
+                    "in_viewport": { "type": "boolean", "description": "Non-empty intersection with the painted window clip." }
                 },
                 "required": []
             }),
@@ -317,6 +339,14 @@ fn call_tool(
             }
             client.wait_ready()?
         }
+        "wait_until" => {
+            let timeout_ms = args
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "missing integer `timeout_ms`".to_string())?;
+            let spec = parse_assert_spec(&args)?;
+            client.wait_until(spec, timeout_ms)?
+        }
         "hello" => client.expect_ok(Op::Hello)?,
         "snapshot" => client.snapshot()?,
         "screenshot" => {
@@ -364,18 +394,7 @@ fn call_tool(
         }
         "keybindings" | "keybinding.list" => client.keybindings()?,
         "assert" => {
-            let target = args
-                .opt_string("target")
-                .or_else(|| args.opt_string("id"))
-                .ok_or_else(|| "missing string `target`".to_string())?;
-            let spec = AssertSpec {
-                target,
-                name: args.opt_string("name"),
-                value: args.opt_string("value"),
-                role: args.opt_string("role"),
-                checked: args.get("checked").and_then(Value::as_bool),
-                exists: args.get("exists").and_then(Value::as_bool),
-            };
+            let spec = parse_assert_spec(&args)?;
             client.assert(spec)?
         }
         "invoke" => {
@@ -521,6 +540,23 @@ fn recipe_resolve_tool(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, 
     serde_json::to_value(result).map_err(|err| err.to_string())
 }
 
+fn parse_assert_spec(args: &Value) -> Result<AssertSpec, String> {
+    let target = args
+        .opt_string("target")
+        .or_else(|| args.opt_string("id"))
+        .ok_or_else(|| "missing string `target`".to_string())?;
+    Ok(AssertSpec {
+        target,
+        name: args.opt_string("name"),
+        value: args.opt_string("value"),
+        role: args.opt_string("role"),
+        checked: args.get("checked").and_then(Value::as_bool),
+        exists: args.get("exists").and_then(Value::as_bool),
+        visible: args.get("visible").and_then(Value::as_bool),
+        in_viewport: args.get("in_viewport").and_then(Value::as_bool),
+    })
+}
+
 trait ArgsExt {
     fn string(&self, key: &str) -> Result<String, String>;
     fn opt_string(&self, key: &str) -> Option<String>;
@@ -554,6 +590,7 @@ mod tests {
             names,
             [
                 "wait",
+                "wait_until",
                 "hello",
                 "snapshot",
                 "screenshot",
@@ -592,6 +629,24 @@ mod tests {
             click["inputSchema"]["properties"]["delivery"]["enum"],
             json!(["semantic", "virtual"])
         );
+    }
+
+    #[test]
+    fn assert_and_wait_until_schemas_advertise_visible_and_in_viewport() {
+        for name in ["assert", "wait_until"] {
+            let tool = tools().into_iter().find(|t| t["name"] == name).unwrap();
+            let props = &tool["inputSchema"]["properties"];
+            assert!(props.get("visible").is_some(), "{name} missing visible");
+            assert!(
+                props.get("in_viewport").is_some(),
+                "{name} missing in_viewport"
+            );
+        }
+        let wait_until = tools()
+            .into_iter()
+            .find(|t| t["name"] == "wait_until")
+            .unwrap();
+        assert_eq!(wait_until["inputSchema"]["required"], json!(["timeout_ms"]));
     }
 
     #[test]

@@ -81,6 +81,23 @@ fn json_todo_crud_with_matching_token_reuses_session() {
 }
 
 #[test]
+fn json_todo_visible_wait_until_reuses_session() {
+    let json = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/recipes/todo-visible.json"),
+    )
+    .expect("visible recipe");
+    let recipe = gpui_agent_recipe::Recipe::from_json(&json).unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+
+    let (mut client, shutdown) = spawn_todo();
+    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    assert!(receipt.ok, "{receipt:?}");
+    assert!(receipt.session_reused);
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
 fn json_recipe_params_and_widget_ops() {
     let json = r#"{
         "name": "widget-crud",

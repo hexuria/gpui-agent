@@ -62,9 +62,10 @@ servers close on bad JSON the same way.
 | `key` | `target`, `key`, optional `delivery` | `Enter`, `Backspace`, … (no modifiers; SECURITY I1) |
 | `keybinding` | `binding` (Action id), `scope` (`focused` \| `global`), optional `chord`, `confirm`, `activate` | Fire the GPUI **Action** the keymap would. Never OS HID. |
 | `keybindings` | | List `{id, chord, scope, dangerous}`. Alias `keybinding.list`. |
-| `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists` | Check snapshot fields |
+| `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists`/`visible`/`in_viewport` | Check snapshot fields. `exists` is tree presence. `visible` is host-declared. `in_viewport` is geometry (see below). |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
 | `wait` | optional `timeout_ms` | `None`: immediate hello (even if `ready: false`). `Some(ms)`: poll `hello.ready` until true or `wait timed out` (sleep ≤ 10 ms between polls) |
+| `wait_until` | `timeout_ms`, same fields as `assert` | Poll `assert` until ok or `wait_until timed out: …`. **Not** a `wait` extension — `wait` stays ready/paint only. |
 | `screenshot` | optional `path`, optional `mode` (`viewport` \| `scrolled`, default **viewport**), optional `target`, optional `max_height_px` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Default `mode=viewport` is unchanged: the painted window. `mode=scrolled` requires `target` (stable scroll-view id): the host sets scroll offset, waits for paint, captures tiles, stitches, and restores the original offset (semantic scroll API — **not** OS HID / virtual wheel). Headless / daemon / default GUI client / Linux / Windows return `screenshot_unavailable` instead of a fake image (including scrolled). macOS `todo --features embedded-host` writes **this window** via `screencapture -l` (Screen Recording); scrolled stitches those tiles. Never the full desktop. Offscreen `render_to_image` is out of MVP. |
 | `shutdown` | | Ask the host to exit |
 
@@ -107,6 +108,7 @@ Each node:
   "checked": null,
   "enabled": true,
   "focused": false,
+  "visible": true,
   "bounds": { "x": 0, "y": 0, "w": 0, "h": 0 },
   "states": [],
   "children": []
@@ -117,8 +119,44 @@ Prefer **stable ids** over tree indices. The app chooses the scheme
 (`nav-settings`, `page-settings`, `row-3`). Numbered suffixes can be
 parsed with `gpui_agent::parse_numbered_id`.
 
-`bounds` are logical pixels. Headless hosts send zeros. The desktop todo
-host fills them from the last painted frame when `GPUI_AGENT=1`.
+`visible` is **host-declared** (sidebar collapsed, modal closed, toast
+dismissed). Omitted on the wire **deserializes as `true`**
+(`#[serde(default = "default_visible")]`) so old snapshots stay valid.
+Serializers omit `true` so compact trees look like v2 before this field.
+Hosts may also put `"hidden"` in `states` for humans; agents must assert
+`visible`, not a states convention.
+
+`exists` / `visible` / `in_viewport` are different predicates:
+
+| Field | Means | Fail closed |
+| --- | --- | --- |
+| `exists` | Node id is in the snapshot | Missing id / duplicate id |
+| `visible` | `UiNode.visible` as the host set it | Host must set the field (default true if omitted) |
+| `in_viewport` | Non-empty intersection of node `bounds` with the painted **window clip** (the ancestor `role=window` bounds, same coordinate space) | `in_viewport_unavailable: …` when `platform=headless`, node bounds have no area, or the window clip is zero. Never invent geometry. `in_viewport: false` with zero bounds is still unavailable, not “not in view”. |
+
+Modals: `role: dialog` (or app role) **plus** `visible`. Do not name the
+field `open` / `shown`. Sidebar collapsed: keep the node, `visible=false`
+(so agents can assert closed-but-known). Toast gone: `exists=false` or
+`visible=false` — pick one and document it; sample todo keeps the sidebar
+node.
+
+`bounds` are logical pixels in the same space as the window clip.
+Headless hosts send zeros. The desktop todo host fills them from the last
+painted frame when `GPUI_AGENT=1`. Window node bounds are the painted
+clip (`x=0,y=0` + window size), not the OS screen origin. bir / other
+apps own snapshot `visible` later — this protocol does not wire bir
+overlays.
+
+```bash
+gpui-agent assert --id todo-nav --visible
+gpui-agent assert --id todo-nav --visible false
+gpui-agent wait-until --timeout-ms 1000 --id todo-nav --visible false
+gpui-agent assert --id todo-add --in-viewport   # desktop with real bounds
+```
+
+```json
+{"v":2,"id":"1","op":"wait_until","timeout_ms":1000,"target":"todo-nav","visible":false}
+```
 
 ## Delivery modes (`click` / `type` / `key`)
 
@@ -254,7 +292,7 @@ Reuse `gpui-agent-cli` unchanged. Details: [INTEGRATING.md](INTEGRATING.md).
 
 `gpui-agent mcp` exposes the same generic tools over stdio:
 
-`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`,
+`wait`, `wait_until`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`,
 `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
@@ -278,6 +316,7 @@ reserve a vocabulary. The sample todo host implements:
 | `todo.toggle` | `{ "id": 1 }` | updated item |
 | `todo.delete` | `{ "id": 1 }` | deleted item |
 | `todo.list` | `{}` | array of items |
+| `todo.toggle_sidebar` | `{}` | `{ "sidebar_open": bool }` — demo of `visible` on `todo-nav` |
 
 Those names are demo-only. A settings app might expose `prefs.set`;
 a mail app might expose `mail.archive`. Agents call them with:

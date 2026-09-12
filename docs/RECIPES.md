@@ -112,7 +112,9 @@ Restart the host before a second run.
   quotes. An unterminated quote is an error.
 - `click` / `type` / `key` accept `--delivery semantic|virtual`.
 - `keybinding --id … --scope focused|global` (`--confirm` for quit; `--activate` for focused only). `keybindings` lists the catalog.
-- `assert` accepts a target plus `name=` / `checked=` / `--absent` / …
+- `assert` accepts a target plus `name=` / `checked=` / `--absent` / `--visible` / `--in-viewport` / …
+- `wait_until --timeout-ms N` uses the same assert fields. `wait` stays ready-only.
+  Sample: `examples/recipes/todo-visible.json` toggles `todo-nav` and waits until `visible`.
 - Unknown ops, missing required args, and bad assert fields fail parse.
 
 ## Commands (`validate` / `plan` / `run` / `resolve`)

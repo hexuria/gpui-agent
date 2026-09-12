@@ -16,6 +16,8 @@ use todo_core::TodoView;
 use todo_core::{Page, ids};
 
 #[cfg(feature = "embedded-host")]
+use gpui_agent::AgentHost;
+#[cfg(feature = "embedded-host")]
 use gpui_agent::mailbox::{AgentMailbox, MailboxRequest};
 #[cfg(feature = "embedded-host")]
 use gpui_agent::protocol::PlatformKind;
@@ -230,6 +232,31 @@ impl TodoApp {
         }
     }
 
+    fn sidebar_open(&self) -> bool {
+        #[cfg(feature = "embedded-host")]
+        {
+            self.store.sidebar_open()
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            self.view.sidebar_open
+        }
+    }
+
+    fn toggle_sidebar(&mut self) {
+        #[cfg(feature = "embedded-host")]
+        {
+            self.store.toggle_sidebar();
+            if !self.store.sidebar_open() {
+                self.forget_sidebar_bounds();
+            }
+        }
+        #[cfg(not(feature = "embedded-host"))]
+        {
+            self.bridge.click(ids::NAV_TOGGLE);
+        }
+    }
+
     fn go_page(&mut self, page: Page) {
         #[cfg(feature = "embedded-host")]
         {
@@ -371,6 +398,13 @@ impl TodoApp {
                         resp.result = result.value;
                         resp
                     }
+                    Err(error) => gpui_agent::Response::err(&posted.request.id, error),
+                }
+            } else if let gpui_agent::Op::Assert { spec } = &posted.request.op {
+                let mut tree = self.store.tree();
+                tree.apply_bounds_map(&self.layout_bounds);
+                match gpui_agent::assert_tree(&tree, spec) {
+                    Ok(()) => gpui_agent::Response::ok(&posted.request.id),
                     Err(error) => gpui_agent::Response::err(&posted.request.id, error),
                 }
             } else {
@@ -744,17 +778,29 @@ impl TodoApp {
     }
 
     #[cfg(feature = "embedded-host")]
+    fn forget_sidebar_bounds(&mut self) {
+        self.layout_bounds.remove(ids::NAV);
+        self.layout_bounds.remove(ids::NAV_TODOS);
+        self.layout_bounds.remove(ids::NAV_SETTINGS);
+    }
+
+    #[cfg(feature = "embedded-host")]
     fn record_window_bounds(&mut self, window: &Window) {
+        // Painted window clip in the same space as `on_prepaint` widget
+        // bounds (local origin). Screen origin is not a clip.
         let bounds = window.bounds();
         self.layout_bounds.insert(
             ids::WINDOW.into(),
             gpui_agent::Bounds {
-                x: f32::from(bounds.origin.x),
-                y: f32::from(bounds.origin.y),
+                x: 0.0,
+                y: 0.0,
                 w: f32::from(bounds.size.width),
                 h: f32::from(bounds.size.height),
             },
         );
+        if !self.store.sidebar_open() {
+            self.forget_sidebar_bounds();
+        }
     }
 
     #[cfg(feature = "embedded-host")]
@@ -867,7 +913,8 @@ impl TodoApp {
         {
             Ok(entry) => entry.clone(),
             Err(error) => {
-                posted.reply(gpui_agent::Response::err(&posted.request.id, error));
+                let id = posted.request.id.clone();
+                posted.reply(gpui_agent::Response::err(id, error));
                 self.sync_input_from_store(window, cx);
                 cx.notify();
                 return false;
@@ -878,8 +925,9 @@ impl TodoApp {
             _ => false,
         };
         let Some(action) = crate::keybindings::action_for_binding(&entry.id) else {
+            let id = posted.request.id.clone();
             posted.reply(gpui_agent::Response::err(
-                &posted.request.id,
+                id,
                 format!("unknown binding `{}`", entry.id),
             ));
             self.sync_input_from_store(window, cx);
@@ -1089,6 +1137,7 @@ impl Render for TodoApp {
         let theme = cx.theme().clone();
         let items = self.items();
         let page = self.page();
+        let sidebar_open = self.sidebar_open();
         let status = match items.len() {
             0 => "No todos".to_string(),
             n => {
@@ -1187,28 +1236,55 @@ impl Render for TodoApp {
             )
             .child(
                 h_flex()
-                    .id(ids::NAV)
                     .gap_2()
                     .child(
-                        Button::new(ids::NAV_TODOS)
-                            .when(page == Page::Todos, |b| b.primary())
-                            .when(page != Page::Todos, |b| b.ghost())
-                            .label("Todos")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.go_page(Page::Todos);
-                                cx.notify();
-                            })),
+                        self.track_as(
+                            ids::NAV_TOGGLE,
+                            cx,
+                            Button::new(ids::NAV_TOGGLE)
+                                .ghost()
+                                .label(if sidebar_open {
+                                    "Hide sidebar"
+                                } else {
+                                    "Show sidebar"
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.toggle_sidebar();
+                                    cx.notify();
+                                })),
+                        ),
                     )
-                    .child(
-                        Button::new(ids::NAV_SETTINGS)
-                            .when(page == Page::Settings, |b| b.primary())
-                            .when(page != Page::Settings, |b| b.ghost())
-                            .label("Settings")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.go_page(Page::Settings);
-                                cx.notify();
-                            })),
-                    ),
+                    .when(sidebar_open, |el| {
+                        el.child(
+                            self.track_as(
+                                ids::NAV,
+                                cx,
+                                h_flex()
+                                    .id(ids::NAV)
+                                    .gap_2()
+                                    .child(
+                                        Button::new(ids::NAV_TODOS)
+                                            .when(page == Page::Todos, |b| b.primary())
+                                            .when(page != Page::Todos, |b| b.ghost())
+                                            .label("Todos")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.go_page(Page::Todos);
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(ids::NAV_SETTINGS)
+                                            .when(page == Page::Settings, |b| b.primary())
+                                            .when(page != Page::Settings, |b| b.ghost())
+                                            .label("Settings")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.go_page(Page::Settings);
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                        )
+                    }),
             )
             .when(page == Page::Todos, |el| {
                 el.child(

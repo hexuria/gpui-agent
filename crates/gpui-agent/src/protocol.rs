@@ -258,6 +258,15 @@ pub enum Op {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Poll [`AssertSpec`] until it succeeds or `timeout_ms` elapses.
+    ///
+    /// Distinct from [`Op::Wait`], which only polls `hello.ready` / first
+    /// paint. Use this for toasts, overlays, and post-keybinding UI.
+    WaitUntil {
+        timeout_ms: u64,
+        #[serde(flatten)]
+        spec: AssertSpec,
+    },
     Shutdown,
     /// Observe-only PNG of the app surface (not the full desktop).
     ///
@@ -296,6 +305,15 @@ pub struct AssertSpec {
     pub checked: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exists: Option<bool>,
+    /// Host-declared visibility (`UiNode.visible`). Distinct from `exists`
+    /// (tree presence) and `in_viewport` (geometry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    /// Non-empty intersection of node bounds with the painted window clip.
+    /// Fail closed (`in_viewport_unavailable`) when bounds are zero or the
+    /// host is headless — never invent geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_viewport: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +480,10 @@ impl Op {
             target: Some(target.into()),
             max_height_px,
         }
+    }
+
+    pub fn wait_until(spec: AssertSpec, timeout_ms: u64) -> Self {
+        Self::WaitUntil { timeout_ms, spec }
     }
 
     pub fn delivery(&self) -> DeliveryMode {
@@ -706,5 +728,52 @@ mod tests {
             HelloAuth::from_token_configured(Some("s")),
             HelloAuth::Required
         );
+    }
+
+    #[test]
+    fn wait_until_op_roundtrip() {
+        let req = Request::new(
+            "7",
+            Op::wait_until(
+                AssertSpec {
+                    target: "todo-nav".into(),
+                    visible: Some(true),
+                    in_viewport: Some(true),
+                    ..Default::default()
+                },
+                1500,
+            ),
+        );
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["op"], "wait_until");
+        assert_eq!(json["timeout_ms"], 1500);
+        assert_eq!(json["target"], "todo-nav");
+        assert_eq!(json["visible"], true);
+        assert_eq!(json["in_viewport"], true);
+        assert!(json.get("exists").is_none());
+        let back: Request = serde_json::from_value(json).unwrap();
+        match back.op {
+            Op::WaitUntil { timeout_ms, spec } => {
+                assert_eq!(timeout_ms, 1500);
+                assert_eq!(spec.target, "todo-nav");
+                assert_eq!(spec.visible, Some(true));
+                assert_eq!(spec.in_viewport, Some(true));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn assert_omitted_visible_fields_are_none() {
+        let req: Request =
+            serde_json::from_str(r#"{"v":2,"id":"1","op":"assert","target":"todo-add"}"#).unwrap();
+        match req.op {
+            Op::Assert { spec } => {
+                assert_eq!(spec.target, "todo-add");
+                assert!(spec.visible.is_none());
+                assert!(spec.in_viewport.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

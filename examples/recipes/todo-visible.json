@@ -1,0 +1,45 @@
+{
+  "v": 1,
+  "name": "todo-visible",
+  "app": "todo",
+  "steps": [
+    { "id": "wait", "op": "wait" },
+    {
+      "id": "open",
+      "op": "assert",
+      "target": "todo-nav",
+      "exists": true,
+      "visible": true,
+      "needs": ["wait"]
+    },
+    {
+      "id": "hide",
+      "op": "click",
+      "target": "nav-toggle-sidebar",
+      "needs": ["open"]
+    },
+    {
+      "id": "closed",
+      "op": "wait_until",
+      "timeout_ms": 1000,
+      "target": "todo-nav",
+      "exists": true,
+      "visible": false,
+      "needs": ["hide"]
+    },
+    {
+      "id": "show",
+      "op": "invoke",
+      "name": "todo.toggle_sidebar",
+      "needs": ["closed"]
+    },
+    {
+      "id": "shown",
+      "op": "wait_until",
+      "timeout_ms": 1000,
+      "target": "todo-nav",
+      "visible": true,
+      "needs": ["show"]
+    }
+  ]
+}

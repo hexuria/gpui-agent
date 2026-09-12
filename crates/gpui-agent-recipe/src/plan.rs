@@ -139,6 +139,7 @@ fn annotate(op: &Op, registry: &Registry) -> (Option<String>, Vec<Effect>, bool)
     match op {
         Op::Hello => lookup("hello", registry),
         Op::Wait { .. } => lookup("wait", registry),
+        Op::WaitUntil { .. } => lookup("wait_until", registry),
         Op::Snapshot => lookup("snapshot", registry),
         Op::Click { .. } => lookup("click", registry),
         Op::Type { .. } => lookup("type", registry),

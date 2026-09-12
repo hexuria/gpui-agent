@@ -230,6 +230,18 @@ fn validate_placeholders_declared(op: &Op, params: &[String]) -> Result<(), Stri
 fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
     match op {
         Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } | Op::Keybindings => {}
+        Op::WaitUntil { spec, .. } | Op::Assert { spec } => {
+            collect_placeholders(&spec.target, out);
+            if let Some(name) = &spec.name {
+                collect_placeholders(name, out);
+            }
+            if let Some(value) = &spec.value {
+                collect_placeholders(value, out);
+            }
+            if let Some(role) = &spec.role {
+                collect_placeholders(role, out);
+            }
+        }
         Op::Click { target, .. } => collect_placeholders(target, out),
         Op::Type { target, text, .. } => {
             collect_placeholders(target, out);
@@ -247,18 +259,6 @@ fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
             collect_placeholders(binding, out);
             if let Some(chord) = chord {
                 collect_placeholders(chord, out);
-            }
-        }
-        Op::Assert { spec } => {
-            collect_placeholders(&spec.target, out);
-            if let Some(name) = &spec.name {
-                collect_placeholders(name, out);
-            }
-            if let Some(value) = &spec.value {
-                collect_placeholders(value, out);
-            }
-            if let Some(role) = &spec.role {
-                collect_placeholders(role, out);
             }
         }
         Op::Invoke { name, args } => {
@@ -357,6 +357,19 @@ fn is_ident(name: &str) -> bool {
 fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result<(), String> {
     match op {
         Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } | Op::Keybindings => Ok(()),
+        Op::WaitUntil { spec, .. } | Op::Assert { spec } => {
+            substitute_string_in_place(&mut spec.target, set)?;
+            if let Some(name) = &mut spec.name {
+                substitute_string_in_place(name, set)?;
+            }
+            if let Some(value) = &mut spec.value {
+                substitute_string_in_place(value, set)?;
+            }
+            if let Some(role) = &mut spec.role {
+                substitute_string_in_place(role, set)?;
+            }
+            Ok(())
+        }
         Op::Click { target, .. } => substitute_string_in_place(target, set),
         Op::Type { target, text, .. } => {
             substitute_string_in_place(target, set)?;
@@ -374,19 +387,6 @@ fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result
             substitute_string_in_place(binding, set)?;
             if let Some(chord) = chord {
                 substitute_string_in_place(chord, set)?;
-            }
-            Ok(())
-        }
-        Op::Assert { spec } => {
-            substitute_string_in_place(&mut spec.target, set)?;
-            if let Some(name) = &mut spec.name {
-                substitute_string_in_place(name, set)?;
-            }
-            if let Some(value) = &mut spec.value {
-                substitute_string_in_place(value, set)?;
-            }
-            if let Some(role) = &mut spec.role {
-                substitute_string_in_place(role, set)?;
             }
             Ok(())
         }
@@ -518,6 +518,7 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
     let op_name = tokens[0].replace('-', "_");
     let op = match op_name.as_str() {
         "wait" => Op::Wait { timeout_ms: None },
+        "wait_until" => parse_wait_until_op(&tokens[1..])?,
         "hello" => Op::Hello,
         "snapshot" => Op::Snapshot,
         "shutdown" => Op::Shutdown,
@@ -795,6 +796,10 @@ fn parse_assert_spec(tokens: &[String]) -> Result<AssertSpec, String> {
             }
         } else if token == "--absent" {
             spec.exists = Some(false);
+        } else if token == "--visible" {
+            spec.visible = Some(parse_optional_bool_flag(tokens, &mut i)?);
+        } else if token == "--in-viewport" || token == "--in_viewport" {
+            spec.in_viewport = Some(parse_optional_bool_flag(tokens, &mut i)?);
         } else if let Some((key, raw)) = token.split_once('=') {
             apply_assert_kv(&mut spec, key, raw)?;
         } else if spec.target.is_empty() && !token.starts_with('-') {
@@ -819,6 +824,8 @@ fn apply_assert_kv(spec: &mut AssertSpec, key: &str, raw: &str) -> Result<(), St
             spec.checked = Some(parse_bool(raw)?);
         }
         "exists" => spec.exists = Some(parse_bool(raw)?),
+        "visible" => spec.visible = Some(parse_bool(raw)?),
+        "in_viewport" | "in-viewport" => spec.in_viewport = Some(parse_bool(raw)?),
         "target" | "id" => spec.target = raw.into(),
         other => return Err(format!("unknown assert field `{other}`")),
     }
@@ -831,6 +838,49 @@ fn parse_bool(raw: &str) -> Result<bool, String> {
         "false" => Ok(false),
         other => Err(format!("expected true/false, got {other}")),
     }
+}
+
+fn parse_optional_bool_flag(tokens: &[String], i: &mut usize) -> Result<bool, String> {
+    if tokens.get(*i + 1).map(String::as_str) == Some("true") {
+        *i += 1;
+        Ok(true)
+    } else if tokens.get(*i + 1).map(String::as_str) == Some("false") {
+        *i += 1;
+        Ok(false)
+    } else {
+        Ok(true)
+    }
+}
+
+fn parse_wait_until_op(tokens: &[String]) -> Result<Op, String> {
+    let mut timeout_ms = None;
+    let mut rest = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "--timeout-ms" || tokens[i] == "--timeout_ms" {
+            i += 1;
+            let raw = tokens
+                .get(i)
+                .ok_or_else(|| "wait_until --timeout-ms needs a number".to_string())?;
+            timeout_ms = Some(
+                raw.parse::<u64>()
+                    .map_err(|_| format!("bad timeout_ms `{raw}`"))?,
+            );
+        } else if let Some(raw) = tokens[i].strip_prefix("timeout_ms=") {
+            timeout_ms = Some(
+                raw.parse::<u64>()
+                    .map_err(|_| format!("bad timeout_ms `{raw}`"))?,
+            );
+        } else {
+            rest.push(tokens[i].clone());
+        }
+        i += 1;
+    }
+    let timeout_ms = timeout_ms.ok_or_else(|| "wait_until needs --timeout-ms".to_string())?;
+    Ok(Op::WaitUntil {
+        timeout_ms,
+        spec: parse_assert_spec(&rest)?,
+    })
 }
 
 #[cfg(test)]
@@ -1270,6 +1320,32 @@ assert todo-item-1 name=$title checked=false
         assert!(err.contains("--delivery"), "{err}");
         let err = parse_wants("assert todo-item-1 foo=bar", "x").unwrap_err();
         assert!(err.contains("unknown assert field"), "{err}");
+    }
+
+    #[test]
+    fn wants_wait_until_visible_and_in_viewport() {
+        let recipe = parse_wants(
+            "wait_until --timeout-ms 1000 --id todo-nav --visible false\nassert todo-nav visible=false in_viewport=false",
+            "vis",
+        )
+        .unwrap();
+        match &recipe.steps[0].op {
+            Op::WaitUntil { timeout_ms, spec } => {
+                assert_eq!(*timeout_ms, 1000);
+                assert_eq!(spec.target, "todo-nav");
+                assert_eq!(spec.visible, Some(false));
+            }
+            other => panic!("{other:?}"),
+        }
+        match &recipe.steps[1].op {
+            Op::Assert { spec } => {
+                assert_eq!(spec.visible, Some(false));
+                assert_eq!(spec.in_viewport, Some(false));
+            }
+            other => panic!("{other:?}"),
+        }
+        let err = parse_wants("wait_until --id todo-nav --visible", "x").unwrap_err();
+        assert!(err.contains("timeout"), "{err}");
     }
 
     #[test]
