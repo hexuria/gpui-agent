@@ -32,3 +32,43 @@ Do not put tokens, passwords, or CI secrets in the painted window.
 same class of local observation. See [SECURITY.md](SECURITY.md).
 
 Laptop steps: [TRY_ON_MAC.md](TRY_ON_MAC.md#8-step-screenshots).
+
+## Scrolled screenshots (`mode=scrolled`)
+
+Default `screenshot` stays **viewport** (this window). Opt-in tall capture:
+
+```text
+screenshot
+  path?: relative.png
+  mode?: "viewport" | "scrolled"   # default viewport
+  target?: scroll-view id          # required when mode=scrolled
+  max_height_px?: number           # default and max 16384
+```
+
+The **host** does the work with a semantic scroll API (no OS HID, no
+virtual wheel):
+
+1. Resolve `target` to a scroll container
+2. Read viewport / content metrics
+3. Set offset → wait for paint → capture a tile (`screencapture -l` of
+   this window, then crop to the scroller clip)
+4. Stitch tiles into one PNG; restore the original offset even on error
+
+Result metadata may include `tiles`, `target`, `content_height`,
+`viewport_height`. The mode name is `scrolled` (not `full_content` /
+`stitched`). Virtualized lists only include the loaded range.
+
+Caps fail closed (clear error, not a silent truncated image): content
+taller than `max_height_px`, more than 32 tiles, or a huge encoded PNG.
+
+| Host | `mode=scrolled` |
+| --- | --- |
+| Headless / daemon / Linux / Windows | `screenshot_unavailable`, **no file** |
+| macOS embedded-host | Stitched PNG of `target` (todo demo: `todo-list-scroll`) |
+| Unknown / unscrollable `target` | `scroll_unavailable` (do not invent tiles) |
+
+Print / multi-page documents: prefer an app exporter (`form.pdf` /
+frozen HTML) for content identity. Scrolled PNG is for chrome + layout.
+Offscreen GPUI `render_to_image` is **out of MVP** (test-support only
+on this pin). Apps expose their own scroll-view ids; bir is not
+changed here.

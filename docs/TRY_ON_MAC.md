@@ -281,6 +281,10 @@ One-shot between **manual** clicks (same protocol):
 ```bash
 $CLI screenshot --out artifacts/steps/mid.png
 # headless: error screenshot_unavailable (no fake file)
+
+# opt-in tall capture (still unavailable on headless)
+$CLI screenshot --out artifacts/steps/tall.png --mode scrolled --target todo-list-scroll
+# headless: screenshot_unavailable (no fake file). Needs a named scroller.
 ```
 
 ### macOS embedded-host (real PNG of this window)
@@ -305,6 +309,10 @@ mkdir -p artifacts/steps
 $CLI screenshot --out artifacts/steps/mid.png
 # success: {"ok": true, "result": {"path": "…", "backend": "screencapture"}}
 # open artifacts/steps/mid.png — should be the Agent Todo window only
+
+$CLI screenshot --out artifacts/steps/tall.png --mode scrolled --target todo-list-scroll
+# success: { "mode": "scrolled", "target": "todo-list-scroll", "tiles": N, … }
+# the demo list is seeded taller than the window; scroll offset is restored
 ```
 
 If you see `screenshot_unavailable` mentioning Screen Recording, the

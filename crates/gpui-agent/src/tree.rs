@@ -12,6 +12,7 @@ pub mod role {
     pub const TEXTBOX: &str = "textbox";
     pub const LIST: &str = "list";
     pub const LIST_ITEM: &str = "listitem";
+    pub const SCROLL: &str = "scroll";
     pub const CHECKBOX: &str = "checkbox";
     pub const NOTE: &str = "note";
     pub const STATUS: &str = "status";
@@ -100,6 +101,10 @@ impl UiNode {
 
     pub fn listitem(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::LIST_ITEM, name)
+    }
+
+    pub fn scroll(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::SCROLL, name)
     }
 
     pub fn checkbox(id: impl Into<String>, name: impl Into<String>) -> Self {
@@ -334,6 +339,7 @@ mod tests {
         assert_eq!(UiNode::button("b", "B").role, role::BUTTON);
         assert_eq!(UiNode::textbox("t", "T").role, role::TEXTBOX);
         assert_eq!(UiNode::checkbox("c", "C").with_focused(true).focused, true);
+        assert_eq!(UiNode::scroll("s", "S").role, role::SCROLL);
         assert!(!UiNode::note("n", "N").with_enabled(false).enabled);
     }
 

@@ -24,6 +24,7 @@ pub mod ndjson;
 pub mod prelude;
 pub mod protocol;
 pub mod screenshot;
+pub mod scroll_capture;
 pub mod security;
 pub mod server;
 pub mod testing;
@@ -46,14 +47,20 @@ pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{line_is_blank, read_limited_line, read_limited_line_into, write_json_line};
 pub use protocol::{
     AssertSpec, DeliveryMode, HelloAuth, HelloInfo, KeybindingScope, Op, PROTOCOL_VERSION,
-    PlatformKind, Request, Response,
+    PlatformKind, Request, Response, ScreenshotMode,
 };
 pub use screenshot::{
     SCREENSHOT_BACKEND_SCREENCAPTURE, SCREENSHOT_UNAVAILABLE, TEST_PNG, accept_written_png,
-    atomic_write_png, capture_window_via_screencapture, confine_screenshot_path,
-    confine_screenshot_path_in, is_screenshot_unavailable, png_write_temp_path,
-    require_screenshot_path, screencapture_window_argv, screenshot_base_dir,
+    atomic_write_png, capture_window_png_bytes, capture_window_via_screencapture,
+    confine_screenshot_path, confine_screenshot_path_in, is_screenshot_unavailable,
+    png_write_temp_path, require_screenshot_path, screencapture_window_argv, screenshot_base_dir,
     screenshot_unavailable, write_png, write_png_in,
+};
+pub use scroll_capture::{
+    DEFAULT_MAX_HEIGHT_PX, MAX_SCROLL_TILES, MAX_SCROLLED_PNG_BYTES, RgbaImage, SCROLL_UNAVAILABLE,
+    ScreenshotSpec, ScrollMetrics, TileSpec, crop_window_png, decode_png_rgba, encode_png_rgba,
+    is_scroll_unavailable, plan_scroll_tiles, run_scrolled_capture_sync, scroll_unavailable,
+    scrolled_dispatch_result, stitch_tiles_vertically,
 };
 pub use security::{
     AgentConfig, INSECURE_NO_TOKEN_BANNER, SecurityError, authorize_bind,

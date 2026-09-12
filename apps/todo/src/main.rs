@@ -9,6 +9,9 @@ mod agent_bridge;
 #[cfg(feature = "embedded-host")]
 mod keybindings;
 
+#[cfg(feature = "embedded-host")]
+mod scrolled_shot;
+
 #[cfg(not(feature = "embedded-host"))]
 mod daemon_bridge;
 

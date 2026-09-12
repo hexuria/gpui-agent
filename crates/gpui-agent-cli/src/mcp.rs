@@ -101,11 +101,14 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "screenshot",
-            "Observe-only PNG of the app surface (not the full desktop). The host writes `path` on the same machine so the image does not ride NDJSON. Headless / Linux / Windows return screenshot_unavailable. macOS desktop writes this window via screencapture -l (Screen Recording permission).",
+            "Observe-only PNG of the app surface (not the full desktop). The host writes `path` on the same machine so the image does not ride NDJSON. Headless / Linux / Windows return screenshot_unavailable. macOS desktop writes this window via screencapture -l (Screen Recording permission). mode=scrolled requires target (named scroller) and stitches tiles; default mode is viewport.",
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Destination PNG path on the host machine." }
+                    "path": { "type": "string", "description": "Destination PNG path on the host machine." },
+                    "mode": { "type": "string", "enum": ["viewport", "scrolled"], "description": "viewport (default) captures the window. scrolled scrolls target and stitches tiles." },
+                    "target": { "type": "string", "description": "Stable scroll-view id. Required when mode=scrolled." },
+                    "max_height_px": { "type": "integer", "description": "Safety cap for scrolled capture (max 16384)." }
                 },
                 "required": ["path"]
             }),
@@ -289,6 +292,14 @@ fn parse_delivery(args: &Value) -> Result<DeliveryMode, String> {
     }
 }
 
+fn parse_screenshot_mode(args: &Value) -> Result<gpui_agent::ScreenshotMode, String> {
+    match args.get("mode") {
+        None => Ok(gpui_agent::ScreenshotMode::Viewport),
+        Some(Value::String(s)) => s.parse(),
+        Some(_) => Err("mode must be a string (`viewport` or `scrolled`)".into()),
+    }
+}
+
 fn call_tool(
     client: &mut AgentClient,
     params: &Value,
@@ -308,7 +319,19 @@ fn call_tool(
         }
         "hello" => client.expect_ok(Op::Hello)?,
         "snapshot" => client.snapshot()?,
-        "screenshot" => client.screenshot(args.string("path")?)?,
+        "screenshot" => {
+            let path = args.string("path")?;
+            let mode = parse_screenshot_mode(&args)?;
+            let target = args.opt_string("target");
+            let max_height_px = args
+                .get("max_height_px")
+                .and_then(Value::as_u64)
+                .map(|n| n as u32);
+            if mode.is_scrolled() && target.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                return Err("screenshot mode=scrolled requires target".into());
+            }
+            client.screenshot_with(path, mode, target, max_height_px)?
+        }
         "click" => client.click_with_delivery(args.string("target")?, parse_delivery(&args)?)?,
         "type" => client.type_with_delivery(
             args.string("target")?,

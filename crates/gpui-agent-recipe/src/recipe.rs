@@ -265,9 +265,12 @@ fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
             collect_placeholders(name, out);
             collect_placeholders_in_value(args, out);
         }
-        Op::Screenshot { path } => {
+        Op::Screenshot { path, target, .. } => {
             if let Some(path) = path {
                 collect_placeholders(path, out);
+            }
+            if let Some(target) = target {
+                collect_placeholders(target, out);
             }
         }
     }
@@ -391,9 +394,12 @@ fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result
             substitute_string_in_place(name, set)?;
             substitute_value(args, set)
         }
-        Op::Screenshot { path } => {
+        Op::Screenshot { path, target, .. } => {
             if let Some(path) = path {
                 substitute_string_in_place(path, set)?;
+            }
+            if let Some(target) = target {
+                substitute_string_in_place(target, set)?;
             }
             Ok(())
         }
@@ -559,9 +565,7 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         "assert" => Op::Assert {
             spec: parse_assert_spec(&tokens[1..])?,
         },
-        "screenshot" => Op::Screenshot {
-            path: parse_screenshot_path(&tokens[1..])?,
-        },
+        "screenshot" => parse_screenshot_op(&tokens[1..])?,
         "invoke" => {
             let name = tokens
                 .get(1)
@@ -662,20 +666,64 @@ fn parse_keybinding_wants(tokens: &[String]) -> Result<Op, String> {
     })
 }
 
-fn parse_screenshot_path(tokens: &[String]) -> Result<Option<String>, String> {
-    if tokens.is_empty() {
-        return Ok(None);
+fn parse_screenshot_op(tokens: &[String]) -> Result<Op, String> {
+    use gpui_agent::protocol::ScreenshotMode;
+    let mut path = None;
+    let mut mode = ScreenshotMode::Viewport;
+    let mut target = None;
+    let mut max_height_px = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "--out" => {
+                i += 1;
+                let value = tokens
+                    .get(i)
+                    .ok_or_else(|| "--out needs a path".to_string())?;
+                path = Some(value.clone());
+            }
+            "--mode" => {
+                i += 1;
+                let value = tokens
+                    .get(i)
+                    .ok_or_else(|| "--mode needs viewport or scrolled".to_string())?;
+                mode = value.parse()?;
+            }
+            "--target" => {
+                i += 1;
+                let value = tokens
+                    .get(i)
+                    .ok_or_else(|| "--target needs a scroll-view id".to_string())?;
+                target = Some(value.clone());
+            }
+            "--max-height-px" => {
+                i += 1;
+                let value = tokens
+                    .get(i)
+                    .ok_or_else(|| "--max-height-px needs a number".to_string())?;
+                max_height_px = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("bad max_height_px `{value}`"))?,
+                );
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("bad screenshot token `{other}`"));
+            }
+            other if path.is_none() => path = Some(other.to_string()),
+            other => return Err(format!("bad screenshot token `{other}`")),
+        }
+        i += 1;
     }
-    if tokens[0] == "--out" {
-        let path = tokens
-            .get(1)
-            .ok_or_else(|| "--out needs a path".to_string())?;
-        return Ok(Some(path.clone()));
+    if mode.is_scrolled() && target.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        return Err("screenshot mode=scrolled requires --target".into());
     }
-    if tokens[0].starts_with('-') {
-        return Err(format!("bad screenshot token `{}`", tokens[0]));
-    }
-    Ok(Some(tokens[0].clone()))
+    Ok(Op::Screenshot {
+        path,
+        mode,
+        target,
+        max_height_px,
+    })
 }
 
 fn take_delivery(tokens: &[String]) -> Result<(DeliveryMode, &[String]), String> {
@@ -1234,8 +1282,9 @@ assert todo-item-1 name=$title checked=false
         assert!(recipe.steps[0].screenshot);
         assert!(matches!(recipe.steps[0].op, Op::Wait { .. }));
         match &recipe.steps[1].op {
-            Op::Screenshot { path } => {
+            Op::Screenshot { path, mode, .. } => {
                 assert_eq!(path.as_deref(), Some("artifacts/steps/one.png"));
+                assert!(mode.is_viewport());
             }
             other => panic!("{other:?}"),
         }
@@ -1245,6 +1294,31 @@ assert todo-item-1 name=$title checked=false
             other => panic!("{other:?}"),
         }
         assert!(recipe.steps[2].screenshot);
+    }
+
+    #[test]
+    fn wants_screenshot_scrolled_mode_and_target() {
+        let recipe = parse_wants(
+            "screenshot --out tall.png --mode scrolled --target todo-list-scroll --max-height-px 4096",
+            "tall",
+        )
+        .unwrap();
+        match &recipe.steps[0].op {
+            Op::Screenshot {
+                path,
+                mode,
+                target,
+                max_height_px,
+            } => {
+                assert_eq!(path.as_deref(), Some("tall.png"));
+                assert!(mode.is_scrolled());
+                assert_eq!(target.as_deref(), Some("todo-list-scroll"));
+                assert_eq!(*max_height_px, Some(4096));
+            }
+            other => panic!("{other:?}"),
+        }
+        let err = parse_wants("screenshot --out tall.png --mode scrolled", "x").unwrap_err();
+        assert!(err.contains("--target"), "{err}");
     }
 
     #[test]

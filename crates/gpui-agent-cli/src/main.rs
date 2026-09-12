@@ -69,10 +69,20 @@ enum Command {
     /// Observe-only PNG of the **app surface**. Host writes `--out`.
     /// Headless / Linux / Windows: `screenshot_unavailable` (no fake file).
     /// macOS desktop: PNG of **this window** via `screencapture -l`.
+    /// `--mode scrolled` requires `--target` (named scroller); stitches tiles.
     Screenshot {
         /// Destination PNG on this machine so the image does not ride NDJSON.
         #[arg(long)]
         out: std::path::PathBuf,
+        /// `viewport` (default) or `scrolled`.
+        #[arg(long, default_value = "viewport")]
+        mode: gpui_agent::ScreenshotMode,
+        /// Stable scroll-view id. Required when `--mode scrolled`.
+        #[arg(long)]
+        target: Option<String>,
+        /// Safety cap for scrolled capture (max 16384).
+        #[arg(long)]
+        max_height_px: Option<u32>,
     },
     /// Activate a widget by stable id (`nav-settings`, `submit`, …).
     Click {
@@ -228,8 +238,23 @@ fn run() -> Result<()> {
                 print_resp(resp);
             }
         }
-        Command::Screenshot { out } => {
-            print_resp(rpc(client.screenshot(out.to_string_lossy().into_owned()))?)
+        Command::Screenshot {
+            out,
+            mode,
+            target,
+            max_height_px,
+        } => {
+            if mode.is_scrolled() && target.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                return Err(anyhow!(
+                    "screenshot --mode scrolled requires --target <scroll-view-id>"
+                ));
+            }
+            print_resp(rpc(client.screenshot_with(
+                out.to_string_lossy().into_owned(),
+                mode,
+                target,
+                max_height_px,
+            ))?)
         }
         Command::Click { target, delivery } => {
             print_resp(rpc(client.click_with_delivery(target, delivery))?)
@@ -693,8 +718,44 @@ mod tests {
         ])
         .unwrap();
         match shot.command {
-            Command::Screenshot { out } => {
+            Command::Screenshot {
+                out,
+                mode,
+                target,
+                max_height_px,
+            } => {
                 assert_eq!(out.as_os_str(), "artifacts/steps/001-wait.png");
+                assert!(mode.is_viewport());
+                assert!(target.is_none());
+                assert!(max_height_px.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let scrolled = Cli::try_parse_from([
+            "gpui-agent",
+            "screenshot",
+            "--out",
+            "tall.png",
+            "--mode",
+            "scrolled",
+            "--target",
+            "todo-list-scroll",
+            "--max-height-px",
+            "4096",
+        ])
+        .unwrap();
+        match scrolled.command {
+            Command::Screenshot {
+                out,
+                mode,
+                target,
+                max_height_px,
+            } => {
+                assert_eq!(out.as_os_str(), "tall.png");
+                assert!(mode.is_scrolled());
+                assert_eq!(target.as_deref(), Some("todo-list-scroll"));
+                assert_eq!(max_height_px, Some(4096));
             }
             other => panic!("unexpected {other:?}"),
         }

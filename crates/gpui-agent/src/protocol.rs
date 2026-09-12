@@ -145,10 +145,59 @@ impl std::str::FromStr for KeybindingScope {
     }
 }
 
+/// How `screenshot` captures pixels.
+///
+/// `viewport` (default) is the painted window. `scrolled` scrolls a named
+/// target and stitches tiles — it does **not** mean offscreen
+/// `render_to_image` or “full content including unloaded virtualized rows”.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenshotMode {
+    #[default]
+    Viewport,
+    Scrolled,
+}
+
+impl ScreenshotMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Viewport => "viewport",
+            Self::Scrolled => "scrolled",
+        }
+    }
+
+    pub fn is_viewport(&self) -> bool {
+        matches!(self, Self::Viewport)
+    }
+
+    pub fn is_scrolled(&self) -> bool {
+        matches!(self, Self::Scrolled)
+    }
+}
+
+impl std::fmt::Display for ScreenshotMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ScreenshotMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "viewport" | "" => Ok(Self::Viewport),
+            "scrolled" => Ok(Self::Scrolled),
+            other => Err(format!(
+                "unknown screenshot mode `{other}` (want viewport or scrolled)"
+            )),
+        }
+    }
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
@@ -217,9 +266,20 @@ pub enum Op {
     /// `screenshot_unavailable` instead of a fake image. macOS desktop
     /// writes **this window** via `screencapture -l`. Linux/Windows
     /// desktop stays unavailable (no full-desktop capture).
+    ///
+    /// `mode=scrolled` is opt-in: the host scrolls `target` (stable
+    /// scroll-view id), captures tiles, stitches, and restores the
+    /// original offset. Default `mode` is `viewport` (unchanged).
     Screenshot {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        #[serde(default, skip_serializing_if = "ScreenshotMode::is_viewport")]
+        mode: ScreenshotMode,
+        /// Required when `mode` is `scrolled`. Ignored for viewport.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_height_px: Option<u32>,
     },
 }
 
@@ -382,6 +442,28 @@ impl Op {
         matches!(self, Self::Keybinding { .. } | Self::Keybindings)
     }
 
+    pub fn screenshot(path: impl Into<String>) -> Self {
+        Self::Screenshot {
+            path: Some(path.into()),
+            mode: ScreenshotMode::Viewport,
+            target: None,
+            max_height_px: None,
+        }
+    }
+
+    pub fn screenshot_scrolled(
+        path: impl Into<String>,
+        target: impl Into<String>,
+        max_height_px: Option<u32>,
+    ) -> Self {
+        Self::Screenshot {
+            path: Some(path.into()),
+            mode: ScreenshotMode::Scrolled,
+            target: Some(target.into()),
+            max_height_px,
+        }
+    }
+
     pub fn delivery(&self) -> DeliveryMode {
         match self {
             Self::Click { delivery, .. }
@@ -431,21 +513,83 @@ mod tests {
 
     #[test]
     fn screenshot_op_roundtrip() {
-        let req = Request::new(
-            "4",
-            Op::Screenshot {
-                path: Some("artifacts/steps/001-wait.png".into()),
-            },
-        );
+        let req = Request::new("4", Op::screenshot("artifacts/steps/001-wait.png"));
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["op"], "screenshot");
         assert_eq!(json["path"], "artifacts/steps/001-wait.png");
+        assert!(
+            json.get("mode").is_none(),
+            "default viewport must omit mode so v2 clients stay valid: {json}"
+        );
+        assert!(json.get("target").is_none());
+        assert!(json.get("max_height_px").is_none());
         let back: Request = serde_json::from_value(json).unwrap();
         match back.op {
-            Op::Screenshot { path } => {
+            Op::Screenshot {
+                path,
+                mode,
+                target,
+                max_height_px,
+            } => {
                 assert_eq!(path.as_deref(), Some("artifacts/steps/001-wait.png"));
+                assert_eq!(mode, ScreenshotMode::Viewport);
+                assert!(target.is_none());
+                assert!(max_height_px.is_none());
             }
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn screenshot_scrolled_roundtrip() {
+        let req = Request::new(
+            "5",
+            Op::screenshot_scrolled("tall.png", "todo-list-scroll", Some(4096)),
+        );
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["op"], "screenshot");
+        assert_eq!(json["mode"], "scrolled");
+        assert_eq!(json["target"], "todo-list-scroll");
+        assert_eq!(json["max_height_px"], 4096);
+        assert!(json.get("stitched").is_none());
+        let back: Request = serde_json::from_value(json).unwrap();
+        match back.op {
+            Op::Screenshot {
+                mode,
+                target,
+                max_height_px,
+                ..
+            } => {
+                assert_eq!(mode, ScreenshotMode::Scrolled);
+                assert_eq!(target.as_deref(), Some("todo-list-scroll"));
+                assert_eq!(max_height_px, Some(4096));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn screenshot_legacy_json_is_viewport() {
+        let req: Request =
+            serde_json::from_str(r#"{"v":2,"id":"1","op":"screenshot","path":"a.png"}"#).unwrap();
+        match req.op {
+            Op::Screenshot { mode, target, .. } => {
+                assert_eq!(mode, ScreenshotMode::Viewport);
+                assert!(target.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn screenshot_mode_from_str_rejects_overpromises() {
+        assert_eq!(
+            "scrolled".parse::<ScreenshotMode>().unwrap(),
+            ScreenshotMode::Scrolled
+        );
+        for bad in ["full_content", "stitched", "full"] {
+            let err = bad.parse::<ScreenshotMode>().unwrap_err();
+            assert!(err.contains("viewport or scrolled"), "{err}");
         }
     }
 

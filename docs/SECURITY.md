@@ -186,7 +186,8 @@ Optional `--screenshot-dir` asks the host for an app-surface PNG after
 steps (receipt lists paths). Headless / Linux / Windows return
 `screenshot_unavailable` and do not invent a file. macOS
 `todo --features embedded-host` writes **this window** via
-`screencapture -l` (Screen Recording). The default GUI client does not
+`screencapture -l` (Screen Recording). `mode=scrolled` is the same
+honesty plus a `max_height_px` cap (default/max 16384). The default GUI client does not
 host the agent port. Do not put tokens or CI secrets on the painted
 window. See [RECORDING.md](RECORDING.md).
 

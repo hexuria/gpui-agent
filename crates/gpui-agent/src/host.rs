@@ -14,15 +14,20 @@ pub trait AgentHost: Send {
 
     /// Observe-only PNG of the **app surface** (not the desktop).
     ///
-    /// Write `path` on this machine. Headless hosts must return
-    /// [`crate::screenshot_unavailable`] instead of inventing pixels.
-    /// Desktop GPUI should intercept `Op::Screenshot` on the UI thread
-    /// (real `Window`) and call
-    /// [`crate::capture_window_via_screencapture`] on macOS. Linux /
-    /// Windows desktop stays unavailable: `Window::render_to_image` is
-    /// `test-support` only on this gpui-kit pin.
-    fn screenshot(&self, path: Option<&str>) -> Result<DispatchResult, String> {
-        let _ = path;
+    /// Write `spec.path` on this machine. Headless hosts must return
+    /// [`crate::screenshot_unavailable`] instead of inventing pixels —
+    /// including `mode=scrolled`. Desktop GPUI should intercept
+    /// `Op::Screenshot` on the UI thread (real `Window`) and call
+    /// [`crate::capture_window_via_screencapture`] on macOS (viewport)
+    /// or the semantic scroll API (scrolled: set offset → wait paint →
+    /// tile → stitch → restore). Linux / Windows desktop stays
+    /// unavailable: `Window::render_to_image` is `test-support` only
+    /// on this gpui-kit pin. Offscreen render is out of MVP.
+    fn screenshot(
+        &self,
+        spec: crate::scroll_capture::ScreenshotSpec<'_>,
+    ) -> Result<DispatchResult, String> {
+        let _ = spec;
         Err(crate::screenshot_unavailable(
             "this host has no pixel surface",
         ))

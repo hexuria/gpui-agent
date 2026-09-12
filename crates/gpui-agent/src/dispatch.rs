@@ -1,6 +1,7 @@
 use crate::hmac_auth::{NONCE_LEN, hmac_verify};
 use crate::host::AgentHost;
 use crate::protocol::{AssertSpec, Op, PROTOCOL_VERSION, Request, Response};
+use crate::scroll_capture::ScreenshotSpec;
 use crate::tree::UiTree;
 
 /// Optional structured payload returned by `invoke` / mutating ops.
@@ -92,14 +93,25 @@ pub fn handle_request(
             resp.tree = Some(host.snapshot());
             resp
         }
-        Op::Screenshot { path } => match host.screenshot(path.as_deref()) {
-            Ok(result) => {
-                let mut resp = Response::ok(req.id);
-                resp.result = result.value;
-                resp
+        Op::Screenshot {
+            path,
+            mode,
+            target,
+            max_height_px,
+        } => {
+            let spec = ScreenshotSpec::from_op(&path, mode, &target, max_height_px);
+            if let Err(error) = spec.validate_request() {
+                return Response::err(req.id, error);
             }
-            Err(error) => Response::err(req.id, error),
-        },
+            match host.screenshot(spec) {
+                Ok(result) => {
+                    let mut resp = Response::ok(req.id);
+                    resp.result = result.value;
+                    resp
+                }
+                Err(error) => Response::err(req.id, error),
+            }
+        }
         Op::Assert { spec } => match assert_tree(&host.snapshot(), &spec) {
             Ok(()) => Response::ok(req.id),
             Err(error) => Response::err(req.id, error),
@@ -292,12 +304,7 @@ mod tests {
         let dest =
             std::env::temp_dir().join(format!("gpui-agent-empty-shot-{}", std::process::id()));
         let _ = std::fs::remove_file(&dest);
-        let req = Request::new(
-            "1",
-            Op::Screenshot {
-                path: Some(dest.to_string_lossy().into_owned()),
-            },
-        );
+        let req = Request::new("1", Op::screenshot(dest.to_string_lossy().into_owned()));
         let resp = handle_request(&mut host, req, None, None);
         assert!(!resp.ok);
         let err = resp.error.unwrap();
@@ -306,6 +313,77 @@ mod tests {
             !dest.exists(),
             "unavailable must not invent a PNG at {}",
             dest.display()
+        );
+    }
+
+    #[test]
+    fn scrolled_without_target_is_request_error() {
+        let mut host = EmptyHost;
+        let req = Request::new(
+            "1",
+            Op::Screenshot {
+                path: Some("tall.png".into()),
+                mode: crate::protocol::ScreenshotMode::Scrolled,
+                target: None,
+                max_height_px: None,
+            },
+        );
+        let resp = handle_request(&mut host, req, None, None);
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(err.contains("requires target"), "{err}");
+        assert!(
+            !crate::is_screenshot_unavailable(&err),
+            "missing target is not unavailable: {err}"
+        );
+    }
+
+    #[test]
+    fn scrolled_on_empty_host_is_still_unavailable() {
+        let mut host = EmptyHost;
+        let dest = std::env::temp_dir().join(format!(
+            "gpui-agent-empty-scrolled-{}.png",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&dest);
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::screenshot_scrolled("tall.png", "todo-list-scroll", None),
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(crate::is_screenshot_unavailable(&err), "{err}");
+        assert!(!dest.exists(), "must not invent {}", dest.display());
+    }
+
+    #[test]
+    fn scrolled_max_height_too_large_is_request_error() {
+        let mut host = EmptyHost;
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::Screenshot {
+                    path: Some("tall.png".into()),
+                    mode: crate::protocol::ScreenshotMode::Scrolled,
+                    target: Some("todo-list-scroll".into()),
+                    max_height_px: Some(crate::DEFAULT_MAX_HEIGHT_PX + 1),
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(err.contains("exceeds"), "{err}");
+        assert!(
+            !crate::is_screenshot_unavailable(&err),
+            "cap must fail closed as a request error: {err}"
         );
     }
 

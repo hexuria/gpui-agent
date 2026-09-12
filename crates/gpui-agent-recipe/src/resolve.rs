@@ -105,7 +105,15 @@ fn materialize(
             "hello" => Ok((Op::Hello, fills)),
             "wait" => Ok((Op::Wait { timeout_ms: None }, fills)),
             "snapshot" => Ok((Op::Snapshot, fills)),
-            "screenshot" => Ok((Op::Screenshot { path: None }, fills)),
+            "screenshot" => Ok((
+                Op::Screenshot {
+                    path: None,
+                    mode: gpui_agent::ScreenshotMode::Viewport,
+                    target: None,
+                    max_height_px: None,
+                },
+                fills,
+            )),
             "shutdown" => Ok((Op::Shutdown, fills)),
             "click" => {
                 let target = required_target(intent, &mut fills)?;
