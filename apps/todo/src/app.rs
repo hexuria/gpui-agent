@@ -16,6 +16,8 @@ use todo_core::TodoView;
 use todo_core::{Page, ids};
 
 #[cfg(feature = "embedded-host")]
+use gpui_agent::AgentHost;
+#[cfg(feature = "embedded-host")]
 use gpui_agent::mailbox::{AgentMailbox, MailboxRequest};
 #[cfg(feature = "embedded-host")]
 use gpui_agent::protocol::PlatformKind;
@@ -911,7 +913,8 @@ impl TodoApp {
         {
             Ok(entry) => entry.clone(),
             Err(error) => {
-                posted.reply(gpui_agent::Response::err(&posted.request.id, error));
+                let id = posted.request.id.clone();
+                posted.reply(gpui_agent::Response::err(id, error));
                 self.sync_input_from_store(window, cx);
                 cx.notify();
                 return false;
@@ -922,8 +925,9 @@ impl TodoApp {
             _ => false,
         };
         let Some(action) = crate::keybindings::action_for_binding(&entry.id) else {
+            let id = posted.request.id.clone();
             posted.reply(gpui_agent::Response::err(
-                &posted.request.id,
+                id,
                 format!("unknown binding `{}`", entry.id),
             ));
             self.sync_input_from_store(window, cx);
