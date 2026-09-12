@@ -588,6 +588,42 @@ mod tests {
         assert_eq!(&out.pixels[8..12], [40, 50, 60, 255]);
     }
 
+    /// A macOS `screencapture -l` PNG is the whole window: title bar included.
+    /// Hosts pass the **content** size, and the title bar is whatever is left
+    /// over; a host that passed the frame size instead would zero that
+    /// difference and crop every tile a title bar too high.
+    #[test]
+    fn crop_skips_the_title_bar_when_the_png_is_taller_than_the_window() {
+        // 100×132 PNG for a 100×100 content area: 32 rows of title bar on top.
+        // Row y is painted with red = y so a crop can be located exactly.
+        let mut pixels = Vec::with_capacity(100 * 132 * 4);
+        for y in 0..132u32 {
+            for _x in 0..100u32 {
+                pixels.extend_from_slice(&[y as u8, 0, 0, 255]);
+            }
+        }
+        let img = RgbaImage::new(100, 132, pixels).unwrap();
+        let png = encode_png_rgba(&img).unwrap();
+        let clip = Bounds {
+            x: 0.0,
+            y: 10.0,
+            w: 100.0,
+            h: 50.0,
+        };
+        let tile = crop_window_png(&png, 100.0, 100.0, clip, 0.0, 50.0).unwrap();
+        assert_eq!((tile.width, tile.height), (100, 50));
+        assert_eq!(
+            tile.pixels[0], 42,
+            "content y=10 sits under a 32px title bar"
+        );
+        assert_eq!(tile.pixels[(49 * 100) * 4], 91, "last row is content y=59");
+
+        // The same clip against the frame size (the bug): no title bar
+        // compensation, tile starts 32 px too high.
+        let wrong = crop_window_png(&png, 100.0, 132.0, clip, 0.0, 50.0).unwrap();
+        assert_eq!(wrong.pixels[0], 10);
+    }
+
     #[test]
     fn png_roundtrip_rgba() {
         let img = solid(3, 2, [1, 2, 3, 4]);
