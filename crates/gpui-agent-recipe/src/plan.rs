@@ -315,6 +315,15 @@ mod tests {
     }
 
     #[test]
+    fn quit_keybinding_requires_yes() {
+        let recipe =
+            parse_wants("keybinding --id app.quit --scope global --confirm", "quit").unwrap();
+        let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+        assert!(plan.requires_yes);
+        assert!(plan.effects.contains(&Effect::Exit));
+    }
+
+    #[test]
     fn compile_plan_missing_params_fail_closed() {
         let recipe = crate::recipe::Recipe::from_json(
             r#"{

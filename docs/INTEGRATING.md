@@ -59,8 +59,13 @@ Desktop GPUI: spawn `spawn_mailbox` and drain `AgentMailbox` on the UI
 thread (the TCP thread must not touch GPUI objects). Intercept
 `delivery=virtual` there and call `Window::dispatch_event` /
 `dispatch_keystroke` — never OS HID. Intercept `Op::Keybinding` the
-same way: resolve the Action id, then `Window::dispatch_action` (or the
-same handler the keymap listener uses). `scope=focused` must not
+same way: resolve the Action id, then `Window::dispatch_action` only
+(the same path the keymap uses). Listeners / `on_action` handlers own
+store mutation. **Do not** call the Action body from the intercept as a
+fallback — a no-op `dispatch_action` must fail closed
+(`keybinding_unavailable: Action handler did not run`), not look green.
+Reply after GPUI has run the handler (`cx.defer` / next effect if
+`Window::dispatch_action` defers). `scope=focused` must not
 auto-activate; `scope=global` is this app’s global map only — fail
 closed if you cannot dispatch without focus (`keybinding_unavailable`).
 Never synthesize OS HID. Intercept `Op::Screenshot` the
@@ -155,7 +160,7 @@ reuses a single TCP session across `tools/call`.
 - [ ] `hello.auth` is `"required"` when `GPUI_AGENT_TOKEN` is set on the host (`"none"` otherwise)
 - [ ] Recipe / MCP clients export the **same** `GPUI_AGENT_TOKEN` as the host
 - [ ] Virtual click/type/key go through the mailbox → UI thread → `Window::dispatch_event` / `dispatch_keystroke` (never OS HID)
-- [ ] `keybinding` fire goes through the mailbox → UI thread → the **Action** the keymap would dispatch (never OS HID). `scope=focused` does not auto-activate. `scope=global` is this app’s global map only.
+- [ ] `keybinding` fire goes through the mailbox → UI thread → the **Action** the keymap would dispatch (never OS HID). Listeners own mutation; no intercept fallback. `scope=focused` does not auto-activate. `scope=global` is this app’s global map only.
 - [ ] Destructive bindings (`app.quit`, …) require `confirm=true` and list as `dangerous: true`
 - [ ] Free-form `key` stays modifier-free (`keystroke_token` rejects `cmd-q`)
 - [ ] Headless returns `virtual_unavailable` / `screenshot_unavailable`
@@ -170,7 +175,7 @@ Do **not** add `gpui-kit` to `gpui-agent`. Copy this into the app crate:
 
 1. **Mailbox drain (desktop).** `spawn_mailbox` on a background thread; drain `AgentMailbox` on the GPUI UI thread. Never touch GPUI objects from the TCP thread.
 2. **Virtual dispatch.** On the UI thread, intercept `delivery=virtual` and call `Window::dispatch_event` / `dispatch_keystroke`. Never OS HID.
-3. **Keybinding dispatch.** On the UI thread, intercept `Op::Keybinding`, authorize against the host catalog (`confirm` for dangerous, no silent scope promote), then dispatch the GPUI Action the keymap would. `scope=global` must not activate. If the kit pin cannot dispatch a global Action without focus, return `keybinding_unavailable`.
+3. **Keybinding dispatch.** On the UI thread, intercept `Op::Keybinding`, authorize against the host catalog (`confirm` for dangerous, no silent scope promote), then dispatch the GPUI Action the keymap would. Do **not** mutate the store from the intercept as a fallback if Action dispatch is a no-op — reply after the handler runs, or fail closed (`keybinding_unavailable: Action handler did not run`). `scope=global` must not activate. If the kit pin cannot dispatch a global Action without focus, return `keybinding_unavailable`.
 4. **macOS screenshot intercept.** On the UI thread, intercept `Op::Screenshot` and call `capture_window_via_screencapture` with this window’s `CGWindowID`. Other OSes: `screenshot_unavailable`.
 5. **`spawn_mailbox` vs `spawn_host`.** Painted GPUI: mailbox. Headless / tests: `spawn_host(Arc<Mutex<Store>>)`.
 6. **Default-deny token.** Bind via `from_env` requires `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`.

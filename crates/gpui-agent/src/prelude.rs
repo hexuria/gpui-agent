@@ -9,7 +9,8 @@ pub use crate::client::AgentClient;
 pub use crate::dispatch::{DispatchResult, handle_request};
 pub use crate::host::AgentHost;
 pub use crate::keybinding::{
-    KeybindingInfo, authorize_keybinding, keybinding_unavailable, op_is_confirmed_quit,
+    KeybindingInfo, authorize_keybinding, complete_keybinding_action, keybinding_unavailable,
+    op_is_confirmed_quit,
 };
 pub use crate::mailbox::AgentMailbox;
 pub use crate::protocol::{

@@ -121,14 +121,16 @@ Free-form `key` still rejects `cmd-q`. Modifier chords use `keybinding`.
 Allow-listed GPUI **Action** dispatch (PROTOCOL option B). The host
 resolves `binding` against its catalog and runs the **same** Action
 handler the keymap uses. Never OS HID, never Accessibility injection
-into another process, never a shell.
+into another process, never a shell. Desktop intercepts must
+`dispatch_action` only and reply after the handler runs; they must not
+mutate the store as a fallback when Action dispatch is a no-op.
 
 | Gate | Behavior |
 | --- | --- |
 | Catalog | Unknown ids fail (`unknown binding`). Scope mismatch does **not** promote a window-only Action to “global OS” quit. |
 | `scope=focused` | Requires the app to be focused. Default: **no** auto-activate (`keybinding_unavailable: app not focused`). Optional `activate: true` is a host GPUI activate of **this** window. |
 | `scope=global` | This app’s global map only. Must not require focus and must not activate. If the kit pin cannot dispatch a global Action without faking focus, fail closed (`keybinding_unavailable`). |
-| Destructive | Quit / discard / file-submit always need `confirm=true` and appear `dangerous: true` in the list. Token auth is not enough. `app.quit` is gated even if the host forgot the flag. |
+| Destructive | Quit / discard / file-submit always need `confirm=true` and appear `dangerous: true` in the list (`keybinding_list_json` serializes `binding_is_dangerous`, so a host that forgot the flag still lists quit/`cmd-q` as dangerous). Token auth is not enough. `app.quit` is gated even if the host forgot the flag. |
 | Free-form `key` | Still modifier-free (I1). |
 
 Apps that stay semantic-only (bir) may later ship `invoke app.quit` /

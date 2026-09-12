@@ -207,7 +207,11 @@ impl TodoStore {
         ]
     }
 
-    /// Same bodies the GPUI keymap Action listeners call (not a side-door quit).
+    /// Same bodies the GPUI keymap Action listeners call.
+    ///
+    /// Headless hosts *are* the handler (no GPUI). Desktop `embedded-host`
+    /// must not call this from the mailbox intercept as a fallback after
+    /// `dispatch_action` — listeners own mutation, or the fire fails closed.
     pub fn perform_keybinding(&mut self, binding: &str) -> Result<DispatchResult, String> {
         match binding {
             ids::KEY_FOCUS_INPUT => {
@@ -257,6 +261,7 @@ impl TodoStore {
             }
             _ => return Err("not a keybinding fire op".into()),
         };
+        // Headless: this *is* the Action body (no Window / keymap).
         self.perform_keybinding(binding)
     }
 
@@ -827,6 +832,10 @@ mod tests {
             integrating.contains("keybinding") && integrating.contains("dispatch"),
             "INTEGRATING.md must tell apps to dispatch the Action the keymap would"
         );
+        assert!(
+            integrating.contains("must not") && integrating.contains("fallback"),
+            "INTEGRATING.md must forbid intercept store fallback after dispatch_action"
+        );
     }
 
     #[test]
@@ -1002,6 +1011,95 @@ mod tests {
             .unwrap_err();
         assert!(gpui_agent::is_keybinding_unavailable(&err), "{err}");
         assert!(err.contains("UI thread"), "{err}");
+    }
+
+    #[test]
+    fn action_no_op_does_not_green_via_store_side_door() {
+        let mut store = TodoStore::new(PlatformKind::Desktop);
+        store.set_app_focused(true);
+
+        let err = gpui_agent::intercept_keybinding_action(|slot| {
+            // Window::dispatch_action was a no-op (listener never ran).
+            // Dual-write would call perform_keybinding here and stuff `Some`
+            // into `slot` so the mailbox still looked like `path: gpui.action`.
+            let _ = slot;
+        })
+        .unwrap_err();
+        assert!(gpui_agent::is_keybinding_unavailable(&err), "{err}");
+        assert!(err.contains("Action handler did not run"), "{err}");
+        assert_eq!(
+            store.page(),
+            Page::Todos,
+            "no-op Action must not mutate the store from the intercept"
+        );
+        assert!(!store.wants_shutdown());
+    }
+
+    #[test]
+    fn action_listener_owns_mutation_and_reply() {
+        let mut store = TodoStore::new(PlatformKind::Desktop);
+        store.set_app_focused(true);
+        let result = gpui_agent::intercept_keybinding_action(|slot| {
+            *slot = Some(store.perform_keybinding(ids::KEY_GO_SETTINGS));
+        })
+        .unwrap();
+        assert_eq!(store.page(), Page::Settings);
+        assert_eq!(result.value.unwrap()["path"], "gpui.action");
+    }
+
+    #[test]
+    fn dual_write_after_no_op_is_what_the_guard_rejects() {
+        let mut store = TodoStore::new(PlatformKind::Desktop);
+        store.set_app_focused(true);
+
+        // Production intercept: dispatch_action only. Keep DUAL_WRITE false.
+        // Enabling it (the old apps/todo intercept) must fail this test.
+        const DUAL_WRITE: bool = false;
+        let action_ran = false;
+        let mut listener_result = None;
+        if action_ran {
+            listener_result = Some(store.perform_keybinding(ids::KEY_GO_SETTINGS));
+        }
+        if DUAL_WRITE {
+            listener_result = Some(store.perform_keybinding(ids::KEY_GO_SETTINGS));
+        }
+        let result = gpui_agent::complete_keybinding_action(listener_result);
+        assert!(
+            result.is_err(),
+            "no-op Action must not look green: {result:?}"
+        );
+        assert_eq!(store.page(), Page::Todos);
+    }
+
+    #[test]
+    fn embedded_host_dispatch_keybinding_does_not_dual_write() {
+        let src = include_str!("../../../apps/todo/src/app.rs");
+        let start = src
+            .find("fn start_keybinding_fire")
+            .expect("start_keybinding_fire in apps/todo");
+        let rest = &src[start..];
+        let end = rest[1..]
+            .find("\n    fn ")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            !body.contains("perform_keybinding"),
+            "start_keybinding_fire must not call perform_keybinding* \
+             (that dual-write masks a no-op dispatch_action):\n{body}"
+        );
+        assert!(
+            body.contains("dispatch_action"),
+            "start_keybinding_fire must dispatch_action:\n{body}"
+        );
+        assert!(
+            src.contains("complete_keybinding_action"),
+            "embedded-host must complete the mailbox reply from listener state"
+        );
+        assert!(
+            src.contains("defer_in"),
+            "embedded-host must wait until after deferred Window::dispatch_action"
+        );
     }
 
     #[test]

@@ -215,9 +215,11 @@ List result:
 Sample todo: focused `todo.focus_input` (`cmd-n`), global `todo.go_settings`
 (`cmd-shift-s`), dangerous `app.quit` (`cmd-q`). Desktop
 `embedded-host` binds those GPUI Actions and intercepts fire on the UI
-thread. Headless runs the **same Action bodies**. Semantic-only apps
-(bir) may later add `invoke` shims that call those same handlers — not
-in this crate.
+thread: **Action dispatch only**, then the mailbox reply after the
+handler runs (or `keybinding_unavailable: Action handler did not run`).
+Headless runs the **same Action bodies** (it *is* the handler).
+Semantic-only apps (bir) may later add `invoke` shims that call those
+same handlers — not in this crate.
 
 `gpui-agent key --delivery virtual … cmd-q` still fails (I1).
 

@@ -1,8 +1,9 @@
 //! Sample GPUI Actions + keymap for the todo embedded-host.
 //!
 //! `todo.focus_input` is window-scoped (`cmd-n`). `todo.go_settings` and
-//! `app.quit` are on the app global map. Agent `Op::Keybinding` fires the
-//! **same** handlers these listeners call — never OS HID.
+//! `app.quit` are on the app global map. Agent `Op::Keybinding` fires those
+//! Actions through `Window::dispatch_action` / `App::dispatch_action` —
+//! never OS HID and never a store fallback in the intercept.
 
 use gpui_kit::*;
 use todo_core::ids;

@@ -105,7 +105,40 @@ pub fn op_is_confirmed_quit(op: &Op) -> bool {
 }
 
 pub fn keybinding_list_json(catalog: &[KeybindingInfo]) -> serde_json::Value {
-    serde_json::json!({ "keybindings": catalog })
+    let keybindings: Vec<KeybindingInfo> = catalog
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            row.dangerous = binding_is_dangerous(&row);
+            row
+        })
+        .collect();
+    serde_json::json!({ "keybindings": keybindings })
+}
+
+/// Mailbox reply after `dispatch_action`. `listener_result` is `Some` only if
+/// a keymap / `on_action` handler actually ran.
+///
+/// A no-op Action (wrong context, deferred drop, kit gap) must fail closed.
+/// Do **not** call Action bodies from the intercept to synthesize `Some`.
+pub fn complete_keybinding_action(
+    listener_result: Option<Result<crate::dispatch::DispatchResult, String>>,
+) -> Result<crate::dispatch::DispatchResult, String> {
+    match listener_result {
+        Some(result) => result,
+        None => Err(keybinding_unavailable("Action handler did not run")),
+    }
+}
+
+/// Testable intercept: `dispatch_action` may invoke listeners, which record
+/// `Some(result)` into the slot. The intercept itself must not run Action
+/// bodies when the slot stays `None`.
+pub fn intercept_keybinding_action(
+    dispatch_action: impl FnOnce(&mut Option<Result<crate::dispatch::DispatchResult, String>>),
+) -> Result<crate::dispatch::DispatchResult, String> {
+    let mut listener_result = None;
+    dispatch_action(&mut listener_result);
+    complete_keybinding_action(listener_result)
 }
 
 /// Shared gates every host must apply before dispatching an Action.
@@ -388,5 +421,53 @@ mod tests {
         assert_eq!(json["keybindings"][2]["id"], "app.quit");
         assert_eq!(json["keybindings"][2]["dangerous"], true);
         assert_eq!(json["keybindings"][0]["scope"], "focused");
+    }
+
+    #[test]
+    fn list_json_uses_binding_is_dangerous_not_stored_flag() {
+        let cat = [KeybindingInfo::new(
+            "app.quit",
+            "cmd-q",
+            KeybindingScope::Global,
+            false,
+        )];
+        let json = keybinding_list_json(&cat);
+        assert_eq!(json["keybindings"][0]["dangerous"], true);
+        assert_eq!(json["keybindings"][0]["id"], "app.quit");
+    }
+
+    #[test]
+    fn no_op_action_fails_closed_without_listener_result() {
+        let err = complete_keybinding_action(None).unwrap_err();
+        assert!(is_keybinding_unavailable(&err), "{err}");
+        assert!(err.contains("Action handler did not run"), "{err}");
+    }
+
+    #[test]
+    fn intercept_no_op_does_not_succeed_via_side_door_slot() {
+        use crate::dispatch::DispatchResult;
+
+        let mut mutated = false;
+        let err = intercept_keybinding_action(|slot| {
+            // Action dispatch is a no-op: listener never records `Some`.
+            // Dual-write would be: mutated = true; *slot = Some(Ok(...)).
+            let _ = slot;
+        })
+        .unwrap_err();
+        assert!(is_keybinding_unavailable(&err), "{err}");
+        assert!(
+            !mutated,
+            "no-op Action must not mutate via intercept fallback"
+        );
+
+        let ok = intercept_keybinding_action(|slot| {
+            mutated = true;
+            *slot = Some(Ok(DispatchResult::json(serde_json::json!({
+                "path": "gpui.action"
+            }))));
+        })
+        .unwrap();
+        assert!(mutated);
+        assert_eq!(ok.value.unwrap()["path"], "gpui.action");
     }
 }
