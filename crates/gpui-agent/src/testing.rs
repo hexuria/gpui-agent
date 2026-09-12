@@ -72,6 +72,7 @@ mod tests {
     impl AgentHost for PingHost {
         fn hello(&self) -> HelloInfo {
             HelloInfo {
+                os: crate::protocol::host_os(),
                 protocol: PROTOCOL_VERSION,
                 app: "ping".into(),
                 platform: PlatformKind::Headless,

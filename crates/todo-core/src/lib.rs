@@ -547,6 +547,7 @@ impl AgentHost for TodoStore {
             protocol: PROTOCOL_VERSION,
             app: "todo".into(),
             platform: self.platform,
+            os: gpui_agent::protocol::host_os(),
             ready: true,
             deliveries: match self.platform {
                 PlatformKind::Desktop => vec![DeliveryMode::Semantic, DeliveryMode::Virtual],

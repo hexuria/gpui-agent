@@ -185,7 +185,9 @@ pub fn authorize_keybinding<'a>(
     }
 
     if request.scope == KeybindingScope::Focused && !app_focused && !request.activate {
-        return Err(keybinding_unavailable("app not focused"));
+        return Err(keybinding_unavailable(
+            "app not focused (a focused-scope binding needs the OS-focused window; pass activate=true / `--activate` to bring it to front first)",
+        ));
     }
 
     if binding_is_dangerous(entry) && !request.confirm {

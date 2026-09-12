@@ -19,6 +19,7 @@ struct EmptyHost;
 impl AgentHost for EmptyHost {
     fn hello(&self) -> HelloInfo {
         HelloInfo {
+            os: gpui_agent::protocol::host_os(),
             protocol: PROTOCOL_VERSION,
             app: "bench".into(),
             platform: PlatformKind::Headless,

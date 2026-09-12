@@ -443,6 +443,7 @@ mod tests {
     impl AgentHost for EmptyHost {
         fn hello(&self) -> HelloInfo {
             HelloInfo {
+                os: crate::protocol::host_os(),
                 protocol: PROTOCOL_VERSION,
                 app: "test".into(),
                 platform: PlatformKind::Headless,

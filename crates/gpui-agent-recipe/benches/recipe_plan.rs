@@ -143,6 +143,7 @@ impl AgentHost for EmptyHost {
             protocol: PROTOCOL_VERSION,
             app: "bench".into(),
             platform: PlatformKind::Headless,
+            os: gpui_agent::protocol::host_os(),
             ready: true,
             deliveries: vec![DeliveryMode::Semantic],
             auth: gpui_agent::HelloAuth::None,
