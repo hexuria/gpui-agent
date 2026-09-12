@@ -40,11 +40,12 @@ Numbered ids: `gpui_agent::parse_numbered_id("thread-", target)`.
 impl AgentHost for MyStore {
     fn hello(&self) -> HelloInfo { /* app, platform, ready */ }
     fn snapshot(&self) -> UiTree { self.tree() }
+    fn keybindings(&self) -> Vec<KeybindingInfo> { /* Action catalog */ }
     fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
         if op.is_virtual_input() {
             return Err(virtual_unavailable("no GPUI pipeline on this host"));
         }
-        // click / set_value / invoke …
+        // click / set_value / keybinding / invoke …
         Ok(DispatchResult::empty())
     }
 }
@@ -81,7 +82,8 @@ loopback default, remote only with token + `GPUI_AGENT_REMOTE=1`.
 Recipe/MCP still require a client token.
 
 Caps: 1 MiB line, 32 connections, 128 mailbox. No OS HID. No wire
-`batch`. Semantic default.
+`batch`. Semantic default. `keybinding` is Action-id dispatch (never
+HID); free-form `key` stays modifier-free.
 
 ## 5. Sample
 

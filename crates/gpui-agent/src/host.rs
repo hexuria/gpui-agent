@@ -1,4 +1,5 @@
 use crate::DispatchResult;
+use crate::keybinding::KeybindingInfo;
 use crate::protocol::{HelloInfo, Op};
 use crate::tree::UiTree;
 
@@ -25,5 +26,20 @@ pub trait AgentHost: Send {
         Err(crate::screenshot_unavailable(
             "this host has no pixel surface",
         ))
+    }
+
+    /// Action-id keymap rows this host will fire. Empty means no `keybinding`
+    /// fire will succeed (`unknown binding`).
+    fn keybindings(&self) -> Vec<KeybindingInfo> {
+        Vec::new()
+    }
+
+    /// Whether this app currently has OS / window focus.
+    ///
+    /// Used for `scope=focused`. Default fail-closed (`false`). Desktop
+    /// mailbox intercepts should pass `Window::is_window_active` instead of
+    /// this when they dispatch GPUI Actions themselves.
+    fn is_app_focused(&self) -> bool {
+        false
     }
 }

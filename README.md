@@ -4,7 +4,7 @@ An experimental control plane for GPUI Kit apps that **embed** an `AgentHost`, p
 
 GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and CDP have nothing to attach to. This repo is a smaller, in-process alternative: the app publishes a **semantic UI tree** and accepts **scripted actions** over localhost JSON — the same idea as [Vercel Native SDK automation](https://native-sdk.dev/automation), purpose-built for GPUI Kit.
 
-The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set-value`, `key`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
+The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set-value`, `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
 
 **Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md).
 
@@ -38,6 +38,9 @@ gpui-agent set-value search-input "query"
 gpui-agent type composer "hello"
 gpui-agent type --delivery virtual composer "hello"
 gpui-agent key composer Enter
+gpui-agent keybindings
+gpui-agent keybinding --id todo.go_settings --scope global
+gpui-agent keybinding --id app.quit --scope global --confirm
 gpui-agent invoke prefs.set --arg theme=dark
 gpui-agent shutdown
 ```
@@ -111,7 +114,7 @@ Thin wrappers for that demo live in [`examples/todo.sh`](examples/todo.sh). Do n
 A scripted agent (or `gpui-agent` CLI) can, without a human mouse or keyboard:
 
 1. Read a **structured snapshot** (ids, roles, names, checked state) — pixels are optional
-2. **Act** with `click` / `type` / `set-value` / `key` / `invoke`
+2. **Act** with `click` / `type` / `set-value` / `key` / `keybinding` / `invoke`
 3. **Assert** the resulting tree (and optionally inspect a step PNG)
 
 The desktop app is a real `gpui-kit = "0.6"` window. The same protocol runs against a headless host so CI and display-less VMs can still prove the loop.
@@ -196,7 +199,7 @@ This is the Flutter `ai_flutter_agent` / semantics-tree loop, adapted to GPUI Ki
 
 1. **Perceive.** `gpui-agent snapshot` (or MCP tool `snapshot`). You get widgets with **stable ids the app assigned**, plus roles, names, and state. Do **not** scrape pixels to decide what to click.
 2. **Plan.** Choose an action against those ids. Prefer `invoke` when the host exposes a named command; use `set-value` + `click` (`delivery=semantic`, the default) for CI. Use `--delivery virtual` only when you need the real GPUI pointer/key path (hover, hit-test, focus, IME).
-3. **Act.** `click`, `type`, `set-value`, `key`, or `invoke`. Virtual delivery never shares the host HID — it synthesizes events inside the app window and paints an agent cursor overlay.
+3. **Act.** `click`, `type`, `set-value`, `key`, `keybinding`, or `invoke`. Virtual delivery never shares the host HID — it synthesizes events inside the app window and paints an agent cursor overlay. `keybinding` fires GPUI Actions (keymap path); free-form `key` has no modifiers.
 4. **Verify.** `assert --id page-root` (or re-snapshot and inspect JSON). Optionally `screenshot --out FILE.png` between steps so an agent can see the app surface. Headless, the daemon, and Linux/Windows return `screenshot_unavailable` instead of a fake image. A real PNG is macOS **embedded-host** only (`screencapture -l` of that window). If the node is missing or the field is wrong, the CLI exits non-zero.
 
 To change screens: click a nav control, then assert the destination root id is present.
@@ -205,7 +208,7 @@ To change screens: click a nav control, then assert the destination root id is p
 
 The CLI includes a tiny MCP stdio server with the **same generic tools** (no app-specific `todo_*` tools):
 
-`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`, `key`, `assert`, `invoke`, `shutdown`
+`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`, `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; see [docs/RECIPES.md](docs/RECIPES.md)).
@@ -247,7 +250,7 @@ Start the target app with `GPUI_AGENT=1` first. Teach the agent your app’s ids
 | Target | Chromium DOM / WebView | Native + canvas widgets | GPUI Kit semantic tree |
 | How it attaches | Browser debug port | Embedded file-queue server | Embedded localhost NDJSON |
 | Snapshot | DOM / a11y | Widget id, role, name, bounds | Same shape: id, role, name, bounds, state |
-| Actions | click / type / evaluate JS | widget-click / key / assert | click / type / key / invoke / assert |
+| Actions | click / type / evaluate JS | widget-click / key / assert | click / type / key / keybinding / invoke / assert |
 | GPU-native GPUI | Cannot attach | N/A | Designed for it |
 | CDP compatible | Yes | No | **No — do not claim this** |
 

@@ -144,6 +144,15 @@ fn annotate(op: &Op, registry: &Registry) -> (Option<String>, Vec<Effect>, bool)
         Op::Type { .. } => lookup("type", registry),
         Op::SetValue { .. } => lookup("set_value", registry),
         Op::Key { .. } => lookup("key", registry),
+        Op::Keybinding { binding, .. } => {
+            let (name, effects, idempotent) = lookup("keybinding", registry);
+            if gpui_agent::is_quit_binding(binding) {
+                (name, vec![Effect::Exit], idempotent)
+            } else {
+                (name, effects, idempotent)
+            }
+        }
+        Op::Keybindings => lookup("keybindings", registry),
         Op::Assert { .. } => lookup("assert", registry),
         Op::Screenshot { .. } => lookup("screenshot", registry),
         Op::Shutdown => lookup("shutdown", registry),

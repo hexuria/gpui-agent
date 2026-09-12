@@ -132,11 +132,27 @@ pub fn protocol_registry() -> Registry {
         ),
         protocol(
             "key",
-            "Send a key to a widget.",
+            "Send a key to a widget (no modifiers).",
             vec![Effect::Write],
             false,
             &["key", "enter", "backspace"],
             &["target", "key"],
+        ),
+        protocol(
+            "keybinding",
+            "Fire a GPUI Action by id (keymap path, never OS HID).",
+            vec![Effect::Write],
+            false,
+            &["keybinding", "shortcut", "chord"],
+            &["binding", "scope"],
+        ),
+        protocol(
+            "keybindings",
+            "List registered Action-id keybindings.",
+            vec![Effect::Read],
+            true,
+            &["keybindings", "shortcuts"],
+            &[],
         ),
         protocol(
             "assert",
@@ -343,6 +359,8 @@ mod tests {
         assert_eq!(reg.get("todo.add").unwrap().effects, vec![Effect::Write]);
         assert!(reg.get("shutdown").unwrap().effects.contains(&Effect::Exit));
         assert!(reg.get("click").is_some());
+        assert!(reg.get("keybinding").unwrap().verified);
+        assert!(reg.get("keybindings").unwrap().idempotent);
         assert!(reg.get("screenshot").unwrap().idempotent);
         assert!(reg.get("todo-input").is_some());
     }

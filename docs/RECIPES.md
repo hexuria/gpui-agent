@@ -111,6 +111,7 @@ Restart the host before a second run.
   `set-value todo-input "Buy milk"` are both valid. `\"` escapes inside
   quotes. An unterminated quote is an error.
 - `click` / `type` / `key` accept `--delivery semantic|virtual`.
+- `keybinding --id … --scope focused|global` (`--confirm` for quit; `--activate` for focused only). `keybindings` lists the catalog.
 - `assert` accepts a target plus `name=` / `checked=` / `--absent` / …
 - Unknown ops, missing required args, and bad assert fields fail parse.
 

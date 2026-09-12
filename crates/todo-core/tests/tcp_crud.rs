@@ -65,3 +65,78 @@ fn agent_can_create_toggle_delete_over_tcp() {
             || store.lock().unwrap().wants_shutdown()
     );
 }
+
+#[test]
+fn agent_can_list_and_fire_keybindings_over_tcp() {
+    use gpui_agent::protocol::KeybindingScope;
+
+    let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+    let (addr, shutdown) =
+        spawn_host("127.0.0.1:0".parse().unwrap(), None, store.clone()).expect("bind");
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
+    client.wait_ready().expect("hello");
+
+    let list = client.keybindings().expect("list");
+    let rows = list.result.unwrap()["keybindings"]
+        .as_array()
+        .cloned()
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["id"], ids::KEY_FOCUS_INPUT);
+    assert_eq!(rows[1]["scope"], "global");
+    assert_eq!(rows[2]["dangerous"], true);
+
+    let unfocused = client.rpc(Op::keybinding(
+        ids::KEY_FOCUS_INPUT,
+        KeybindingScope::Focused,
+    ));
+    let unfocused = unfocused.expect("rpc");
+    assert!(!unfocused.ok);
+    assert!(
+        unfocused
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("app not focused")
+    );
+
+    client
+        .keybinding(
+            ids::KEY_GO_SETTINGS,
+            KeybindingScope::Global,
+            None,
+            false,
+            false,
+        )
+        .expect("global");
+    assert_eq!(store.lock().unwrap().page(), todo_core::Page::Settings);
+
+    client
+        .keybinding(
+            ids::KEY_FOCUS_INPUT,
+            KeybindingScope::Focused,
+            None,
+            false,
+            true,
+        )
+        .expect("focused+activate");
+    assert_eq!(store.lock().unwrap().page(), todo_core::Page::Todos);
+
+    let denied = client.rpc(Op::keybinding(ids::KEY_QUIT, KeybindingScope::Global));
+    assert!(!denied.expect("rpc").ok);
+
+    client
+        .keybinding(
+            ids::KEY_QUIT,
+            KeybindingScope::Global,
+            Some(ids::KEY_QUIT_CHORD.into()),
+            true,
+            false,
+        )
+        .expect("quit");
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(
+        shutdown.load(std::sync::atomic::Ordering::SeqCst)
+            || store.lock().unwrap().wants_shutdown()
+    );
+}

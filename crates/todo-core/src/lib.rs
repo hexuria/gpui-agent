@@ -5,7 +5,10 @@
 
 use gpui_agent::dispatch::DispatchResult;
 use gpui_agent::host::AgentHost;
-use gpui_agent::protocol::{DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind};
+use gpui_agent::keybinding::{KeybindingInfo, keybinding_unavailable};
+use gpui_agent::protocol::{
+    DeliveryMode, HelloInfo, KeybindingScope, Op, PROTOCOL_VERSION, PlatformKind,
+};
 use gpui_agent::tree::{UiNode, UiTree};
 use gpui_agent::virtual_unavailable;
 use serde::{Deserialize, Serialize};
@@ -24,6 +27,17 @@ pub mod ids {
     pub const PAGE_TODOS: &str = "page-todos";
     pub const PAGE_SETTINGS: &str = "page-settings";
     pub const SETTINGS_CONFIRM_DELETE: &str = "settings-confirm-delete";
+
+    /// Focused keymap Action: go to Todos and focus the draft field.
+    pub const KEY_FOCUS_INPUT: &str = "todo.focus_input";
+    /// Global keymap Action: open Settings (no window focus required).
+    pub const KEY_GO_SETTINGS: &str = "todo.go_settings";
+    /// Destructive global Action: quit. Requires `confirm=true`.
+    pub const KEY_QUIT: &str = "app.quit";
+
+    pub const KEY_FOCUS_INPUT_CHORD: &str = "cmd-n";
+    pub const KEY_GO_SETTINGS_CHORD: &str = "cmd-shift-s";
+    pub const KEY_QUIT_CHORD: &str = "cmd-q";
 
     pub fn item(id: u64) -> String {
         format!("todo-item-{id}")
@@ -105,6 +119,8 @@ pub struct TodoStore {
     confirm_delete: bool,
     platform: PlatformKind,
     shutdown: bool,
+    /// Headless stand-in for OS window focus. Desktop uses `Window::is_window_active`.
+    app_focused: bool,
 }
 
 impl Default for TodoStore {
@@ -123,6 +139,7 @@ impl TodoStore {
             confirm_delete: false,
             platform,
             shutdown: false,
+            app_focused: false,
         }
     }
 
@@ -156,6 +173,91 @@ impl TodoStore {
 
     pub fn wants_shutdown(&self) -> bool {
         self.shutdown
+    }
+
+    pub fn set_app_focused(&mut self, focused: bool) {
+        self.app_focused = focused;
+    }
+
+    pub fn is_app_focused(&self) -> bool {
+        self.app_focused
+    }
+
+    /// Sample Action-id catalog: one focused, one global, one destructive.
+    pub fn keybinding_catalog() -> Vec<KeybindingInfo> {
+        vec![
+            KeybindingInfo::new(
+                ids::KEY_FOCUS_INPUT,
+                ids::KEY_FOCUS_INPUT_CHORD,
+                KeybindingScope::Focused,
+                false,
+            ),
+            KeybindingInfo::new(
+                ids::KEY_GO_SETTINGS,
+                ids::KEY_GO_SETTINGS_CHORD,
+                KeybindingScope::Global,
+                false,
+            ),
+            KeybindingInfo::new(
+                ids::KEY_QUIT,
+                ids::KEY_QUIT_CHORD,
+                KeybindingScope::Global,
+                true,
+            ),
+        ]
+    }
+
+    /// Same bodies the GPUI keymap Action listeners call (not a side-door quit).
+    pub fn perform_keybinding(&mut self, binding: &str) -> Result<DispatchResult, String> {
+        match binding {
+            ids::KEY_FOCUS_INPUT => {
+                self.page = Page::Todos;
+                Ok(DispatchResult::json(serde_json::json!({
+                    "id": ids::KEY_FOCUS_INPUT,
+                    "scope": "focused",
+                    "path": "gpui.action"
+                })))
+            }
+            ids::KEY_GO_SETTINGS => {
+                self.page = Page::Settings;
+                Ok(DispatchResult::json(serde_json::json!({
+                    "id": ids::KEY_GO_SETTINGS,
+                    "scope": "global",
+                    "path": "gpui.action"
+                })))
+            }
+            ids::KEY_QUIT => {
+                self.shutdown = true;
+                Ok(DispatchResult::json(serde_json::json!({
+                    "id": ids::KEY_QUIT,
+                    "scope": "global",
+                    "path": "gpui.action",
+                    "dangerous": true
+                })))
+            }
+            other => Err(format!("unknown binding `{other}`")),
+        }
+    }
+
+    fn fire_keybinding(&mut self, op: &Op) -> Result<DispatchResult, String> {
+        if self.platform == PlatformKind::Desktop {
+            return Err(keybinding_unavailable(
+                "desktop keybinding fire must run on the GPUI UI thread \
+                 (Action / keymap dispatch). Mailbox intercept missing?",
+            ));
+        }
+        let binding = match op {
+            Op::Keybinding {
+                binding, activate, ..
+            } => {
+                if *activate {
+                    self.app_focused = true;
+                }
+                binding.as_str()
+            }
+            _ => return Err("not a keybinding fire op".into()),
+        };
+        self.perform_keybinding(binding)
     }
 
     pub fn add(&mut self, title: impl Into<String>) -> Result<Todo, String> {
@@ -391,6 +493,14 @@ impl AgentHost for TodoStore {
         self.tree()
     }
 
+    fn keybindings(&self) -> Vec<KeybindingInfo> {
+        Self::keybinding_catalog()
+    }
+
+    fn is_app_focused(&self) -> bool {
+        self.app_focused
+    }
+
     fn screenshot(&self, path: Option<&str>) -> Result<DispatchResult, String> {
         let path = gpui_agent::require_screenshot_path(path)?;
         let _dest = gpui_agent::confine_screenshot_path(path)?;
@@ -419,6 +529,10 @@ impl AgentHost for TodoStore {
             Op::Type { target, text, .. } => self.type_into(target, text),
             Op::SetValue { target, value } => self.set_value(target, value),
             Op::Key { target, key, .. } => self.key(target, key),
+            Op::Keybinding { .. } => self.fire_keybinding(op),
+            Op::Keybindings => Ok(DispatchResult::json(gpui_agent::keybinding_list_json(
+                &Self::keybinding_catalog(),
+            ))),
             Op::Invoke { name, args } => self.invoke(name, args),
             Op::Screenshot { path } => AgentHost::screenshot(self, path.as_deref()),
             Op::Shutdown => {
@@ -685,6 +799,209 @@ mod tests {
             text.contains("Confined screenshots") && text.contains("relative `.png`"),
             "adapter checklist must require confined relative .png paths"
         );
+    }
+
+    #[test]
+    fn docs_document_keybinding_op_and_confirm() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let protocol = std::fs::read_to_string(root.join("docs/PROTOCOL.md")).unwrap();
+        assert!(
+            protocol.contains("`keybinding`"),
+            "PROTOCOL.md must document the keybinding op"
+        );
+        assert!(
+            protocol.contains("`keybindings`"),
+            "PROTOCOL.md must document the keybindings list"
+        );
+        let security = std::fs::read_to_string(root.join("docs/SECURITY.md")).unwrap();
+        assert!(
+            security.contains("confirm=true") || security.contains("`confirm=true`"),
+            "SECURITY.md must require confirm=true for destructive keybindings"
+        );
+        assert!(
+            security.contains("keybinding"),
+            "SECURITY.md must mention keybinding"
+        );
+        let integrating = std::fs::read_to_string(root.join("docs/INTEGRATING.md")).unwrap();
+        assert!(
+            integrating.contains("keybinding") && integrating.contains("dispatch"),
+            "INTEGRATING.md must tell apps to dispatch the Action the keymap would"
+        );
+    }
+
+    #[test]
+    fn keybinding_catalog_has_focused_global_and_dangerous() {
+        let cat = TodoStore::keybinding_catalog();
+        assert_eq!(cat.len(), 3);
+        assert_eq!(cat[0].id, ids::KEY_FOCUS_INPUT);
+        assert_eq!(cat[0].scope, KeybindingScope::Focused);
+        assert!(!cat[0].dangerous);
+        assert_eq!(cat[1].id, ids::KEY_GO_SETTINGS);
+        assert_eq!(cat[1].scope, KeybindingScope::Global);
+        assert_eq!(cat[2].id, ids::KEY_QUIT);
+        assert!(cat[2].dangerous);
+    }
+
+    #[test]
+    fn keybindings_list_over_handle_request() {
+        let mut store = TodoStore::default();
+        let resp = handle_request(&mut store, Request::new("1", Op::Keybindings), None, None);
+        assert!(resp.ok, "{resp:?}");
+        let rows = resp.result.unwrap()["keybindings"]
+            .as_array()
+            .cloned()
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["id"], ids::KEY_FOCUS_INPUT);
+        assert_eq!(rows[2]["dangerous"], true);
+    }
+
+    #[test]
+    fn focused_keybinding_errors_when_app_not_focused() {
+        let mut store = TodoStore::default();
+        let resp = handle_request(
+            &mut store,
+            Request::new(
+                "1",
+                Op::keybinding(ids::KEY_FOCUS_INPUT, KeybindingScope::Focused),
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(gpui_agent::is_keybinding_unavailable(&err), "{err}");
+        assert!(err.contains("app not focused"), "{err}");
+        assert_eq!(store.page(), Page::Todos);
+    }
+
+    #[test]
+    fn focused_keybinding_activate_then_fires() {
+        let mut store = TodoStore::default();
+        store.go(Page::Settings);
+        let resp = handle_request(
+            &mut store,
+            Request::new(
+                "1",
+                Op::Keybinding {
+                    binding: ids::KEY_FOCUS_INPUT.into(),
+                    chord: None,
+                    scope: KeybindingScope::Focused,
+                    confirm: false,
+                    activate: true,
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(store.page(), Page::Todos);
+        assert!(store.is_app_focused());
+        assert_eq!(resp.result.unwrap()["path"], "gpui.action");
+    }
+
+    #[test]
+    fn global_keybinding_fires_without_focus() {
+        let mut store = TodoStore::default();
+        assert!(!store.is_app_focused());
+        let resp = handle_request(
+            &mut store,
+            Request::new(
+                "1",
+                Op::keybinding(ids::KEY_GO_SETTINGS, KeybindingScope::Global),
+            ),
+            None,
+            None,
+        );
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(store.page(), Page::Settings);
+        assert!(!store.is_app_focused(), "global must not activate");
+    }
+
+    #[test]
+    fn window_only_binding_requested_as_global_fails() {
+        let mut store = TodoStore::default();
+        store.set_app_focused(true);
+        let resp = handle_request(
+            &mut store,
+            Request::new(
+                "1",
+                Op::keybinding(ids::KEY_FOCUS_INPUT, KeybindingScope::Global),
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(err.contains("registered as focused"), "{err}");
+        assert!(err.contains("not global"), "{err}");
+    }
+
+    #[test]
+    fn quit_keybinding_requires_confirm_and_sets_shutdown() {
+        let mut store = TodoStore::default();
+        let denied = handle_request(
+            &mut store,
+            Request::new("1", Op::keybinding(ids::KEY_QUIT, KeybindingScope::Global)),
+            None,
+            None,
+        );
+        assert!(!denied.ok, "{denied:?}");
+        assert!(
+            denied
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("confirm=true")),
+            "{denied:?}"
+        );
+        assert!(!store.wants_shutdown());
+
+        let ok = handle_request(
+            &mut store,
+            Request::new(
+                "2",
+                Op::Keybinding {
+                    binding: ids::KEY_QUIT.into(),
+                    chord: Some(ids::KEY_QUIT_CHORD.into()),
+                    scope: KeybindingScope::Global,
+                    confirm: true,
+                    activate: false,
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(ok.ok, "{ok:?}");
+        assert!(store.wants_shutdown());
+    }
+
+    #[test]
+    fn free_form_key_still_rejects_cmd_q() {
+        let err = gpui_agent::keystroke_token("cmd-q").unwrap_err();
+        assert!(err.contains("modifiers"), "{err}");
+        let mut store = TodoStore::default();
+        store.set_app_focused(true);
+        let resp = store.dispatch(&Op::key(ids::INPUT, "cmd-q"));
+        assert!(resp.is_err());
+        let virt = store.dispatch(&Op::key_virtual(ids::INPUT, "cmd-q"));
+        assert!(
+            virt.unwrap_err()
+                .starts_with(gpui_agent::VIRTUAL_UNAVAILABLE)
+        );
+    }
+
+    #[test]
+    fn desktop_store_refuses_to_side_door_keybinding_fire() {
+        let mut store = TodoStore::new(PlatformKind::Desktop);
+        store.set_app_focused(true);
+        let err = store
+            .dispatch(&Op::keybinding(
+                ids::KEY_GO_SETTINGS,
+                KeybindingScope::Global,
+            ))
+            .unwrap_err();
+        assert!(gpui_agent::is_keybinding_unavailable(&err), "{err}");
+        assert!(err.contains("UI thread"), "{err}");
     }
 
     #[test]

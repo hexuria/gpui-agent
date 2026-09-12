@@ -30,6 +30,8 @@ if let Ok(Some(config)) = gpui_agent::from_env() {
 impl AgentHost for MyStore {
     fn hello(&self) -> HelloInfo { /* app name, platform, ready; server fills hello.auth */ }
     fn snapshot(&self) -> UiTree { /* nodes with stable ids */ }
+    fn keybindings(&self) -> Vec<gpui_agent::KeybindingInfo> { /* Action catalog */ }
+    fn is_app_focused(&self) -> bool { false }
     fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
         if op.is_virtual_input() {
             return Err(gpui_agent::virtual_unavailable(
@@ -41,6 +43,10 @@ impl AgentHost for MyStore {
             Op::SetValue { target, value } => self.set_value(target, value),
             Op::Type { target, text, .. } => self.type_into(target, text),
             Op::Key { target, key, .. } => self.key(target, key),
+            Op::Keybinding { .. } => self.fire_keybinding(op),
+            Op::Keybindings => Ok(DispatchResult::json(
+                gpui_agent::keybinding_list_json(&self.keybindings()),
+            )),
             Op::Invoke { name, args } => self.invoke(name, args),
             Op::Shutdown => { self.shutdown = true; Ok(DispatchResult::empty()) }
             _ => Ok(DispatchResult::empty()),
@@ -52,7 +58,12 @@ impl AgentHost for MyStore {
 Desktop GPUI: spawn `spawn_mailbox` and drain `AgentMailbox` on the UI
 thread (the TCP thread must not touch GPUI objects). Intercept
 `delivery=virtual` there and call `Window::dispatch_event` /
-`dispatch_keystroke` — never OS HID. Intercept `Op::Screenshot` the
+`dispatch_keystroke` — never OS HID. Intercept `Op::Keybinding` the
+same way: resolve the Action id, then `Window::dispatch_action` (or the
+same handler the keymap listener uses). `scope=focused` must not
+auto-activate; `scope=global` is this app’s global map only — fail
+closed if you cannot dispatch without focus (`keybinding_unavailable`).
+Never synthesize OS HID. Intercept `Op::Screenshot` the
 same way: on macOS call `gpui_agent::capture_window_via_screencapture`
 with this window’s `CGWindowID`; on other OSes return
 `screenshot_unavailable`. Headless / tests: `spawn_host`
@@ -144,6 +155,9 @@ reuses a single TCP session across `tools/call`.
 - [ ] `hello.auth` is `"required"` when `GPUI_AGENT_TOKEN` is set on the host (`"none"` otherwise)
 - [ ] Recipe / MCP clients export the **same** `GPUI_AGENT_TOKEN` as the host
 - [ ] Virtual click/type/key go through the mailbox → UI thread → `Window::dispatch_event` / `dispatch_keystroke` (never OS HID)
+- [ ] `keybinding` fire goes through the mailbox → UI thread → the **Action** the keymap would dispatch (never OS HID). `scope=focused` does not auto-activate. `scope=global` is this app’s global map only.
+- [ ] Destructive bindings (`app.quit`, …) require `confirm=true` and list as `dangerous: true`
+- [ ] Free-form `key` stays modifier-free (`keystroke_token` rejects `cmd-q`)
 - [ ] Headless returns `virtual_unavailable` / `screenshot_unavailable`
       instead of pretending
 - [ ] Desktop screenshot runs on the UI thread with a real `Window`
@@ -156,8 +170,9 @@ Do **not** add `gpui-kit` to `gpui-agent`. Copy this into the app crate:
 
 1. **Mailbox drain (desktop).** `spawn_mailbox` on a background thread; drain `AgentMailbox` on the GPUI UI thread. Never touch GPUI objects from the TCP thread.
 2. **Virtual dispatch.** On the UI thread, intercept `delivery=virtual` and call `Window::dispatch_event` / `dispatch_keystroke`. Never OS HID.
-3. **macOS screenshot intercept.** On the UI thread, intercept `Op::Screenshot` and call `capture_window_via_screencapture` with this window’s `CGWindowID`. Other OSes: `screenshot_unavailable`.
-4. **`spawn_mailbox` vs `spawn_host`.** Painted GPUI: mailbox. Headless / tests: `spawn_host(Arc<Mutex<Store>>)`.
-5. **Default-deny token.** Bind via `from_env` requires `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`.
-6. **Confined screenshots.** Host writes relative `.png` names under `GPUI_AGENT_SCREENSHOT_DIR` (default `{temp_dir}/gpui-agent-screenshots/`). Clients send a file name, not an absolute path.
-7. **Protocol v2 HMAC.** After accept the host sends a challenge nonce; clients send `auth` = hex(`HMAC-SHA256(token, nonce)`). Do not put the raw token on the wire.
+3. **Keybinding dispatch.** On the UI thread, intercept `Op::Keybinding`, authorize against the host catalog (`confirm` for dangerous, no silent scope promote), then dispatch the GPUI Action the keymap would. `scope=global` must not activate. If the kit pin cannot dispatch a global Action without focus, return `keybinding_unavailable`.
+4. **macOS screenshot intercept.** On the UI thread, intercept `Op::Screenshot` and call `capture_window_via_screencapture` with this window’s `CGWindowID`. Other OSes: `screenshot_unavailable`.
+5. **`spawn_mailbox` vs `spawn_host`.** Painted GPUI: mailbox. Headless / tests: `spawn_host(Arc<Mutex<Store>>)`.
+6. **Default-deny token.** Bind via `from_env` requires `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`.
+7. **Confined screenshots.** Host writes relative `.png` names under `GPUI_AGENT_SCREENSHOT_DIR` (default `{temp_dir}/gpui-agent-screenshots/`). Clients send a file name, not an absolute path.
+8. **Protocol v2 HMAC.** After accept the host sends a challenge nonce; clients send `auth` = hex(`HMAC-SHA256(token, nonce)`). Do not put the raw token on the wire.

@@ -6,6 +6,9 @@ mod app;
 #[cfg(feature = "embedded-host")]
 mod agent_bridge;
 
+#[cfg(feature = "embedded-host")]
+mod keybindings;
+
 #[cfg(not(feature = "embedded-host"))]
 mod daemon_bridge;
 
@@ -25,6 +28,9 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+
+            #[cfg(feature = "embedded-host")]
+            crate::keybindings::bind_app_keys(cx);
 
             #[cfg(feature = "embedded-host")]
             let mailbox = mailbox.clone();

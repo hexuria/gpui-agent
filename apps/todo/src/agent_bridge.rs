@@ -43,6 +43,10 @@ pub fn maybe_start() -> Option<AgentMailbox> {
                         "delivery: semantic (default) or virtual (in-window GPUI events, no OS HID)"
                     );
                     eprintln!(
+                        "keybinding: Action ids via the keymap (focused/global). Never OS HID. \
+                         Destructive ids need confirm=true."
+                    );
+                    eprintln!(
                         "screenshot: macOS writes this window via screencapture -l (Screen Recording); \
                          other OSes and headless stay screenshot_unavailable"
                     );

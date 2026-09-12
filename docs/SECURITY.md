@@ -73,7 +73,7 @@ Grok Bot pairing UX, ephemeral minted tokens.
 | L4 | **Low** | Bug | Desktop mailbox path authorized the token in the TCP thread, then `delivery=virtual` skipped `handle_request` entirely — so **protocol version was not checked** for virtual click/type/key. | `apps/todo/src/app.rs` `apply_agent` + former `handle_stream_mailbox` | A `v: 99` virtual click still ran if it reached the mailbox. Not a privilege bypass; it would break a future v2 security field. | **Patched.** Mailbox stream calls `authorize_request` (version + token) before `mailbox.wait`. Host path already went through `handle_request`. |
 | L5 | **Low** | Design | Token lives in the process environment (`GPUI_AGENT_TOKEN`), visible via `/proc/<pid>/environ` and some `ps` invocations. | `from_env`, clap `env = "GPUI_AGENT_TOKEN"` | Local attacker with the same or root uid reads the secret. Same class as H1/M2. | **Documented.** Unix-socket + file secret (0600) or an ephemeral printed token is the real fix. |
 | L6 | **Low** | Leftover | No request-rate limit beyond connection/line/mailbox caps. `Wait.timeout_ms` polls `hello.ready` (R9). serde_json nesting is capped by serde’s recursion limit (~128). | `dispatch.rs` `Op::Wait`, `server.rs` | Slowloris is mitigated by idle timeout; CPU spam of small valid ops is still possible. | Acceptable. Add a simple per-connection QPS cap if this becomes a real host. |
-| I1 | **Info** | Positive | `gpui-agent` still has no `unsafe`. Recipe/CLI never map ops onto a shell. `invoke` is an in-process host callback (sample todo: CRUD only). Virtual keys have **no modifiers** (no synthetic ⌘Q). P3: desktop macOS may exec **`screencapture`** with a host-chosen `-l<CGWindowID>` and a client `path` (same write as `write_png`). Argv is otherwise fixed — not a shell. Tiny `unsafe` lives in `apps/todo` (`objc` `windowNumber` only). | repo-wide `unsafe` grep; `todo-core` `invoke`; `virtual_input.rs` `keystroke_token`; `screenshot.rs` `screencapture_window_argv` | — | Keep `invoke` allow-listed in each app. Never map protocol ops onto a shell. Do not add an env override for the `screencapture` binary. |
+| I1 | **Info** | Positive | `gpui-agent` still has no `unsafe`. Recipe/CLI never map ops onto a shell. `invoke` is an in-process host callback (sample todo: CRUD only). Virtual keys have **no modifiers** (no synthetic ⌘Q on free-form `Op::Key`). Modifier chords go through allow-listed `keybinding` Action ids with `confirm=true` for quit. P3: desktop macOS may exec **`screencapture`** with a host-chosen `-l<CGWindowID>` and a client `path` (same write as `write_png`). Argv is otherwise fixed — not a shell. Tiny `unsafe` lives in `apps/todo` (`objc` `windowNumber` only). | repo-wide `unsafe` grep; `todo-core` `invoke`; `virtual_input.rs` `keystroke_token`; `keybinding.rs` confirm gate; `screenshot.rs` `screencapture_window_argv` | — | Keep `invoke` allow-listed in each app. Never map protocol ops onto a shell. Do not add an env override for the `screencapture` binary. Keep `keystroke_token` modifier-free. |
 | I2 | **Info** | Design | Release gate is `cfg!(debug_assertions)`, not `cfg!(feature = …)`. `cargo run` (dev) does not need `GPUI_AGENT_ALLOW_RELEASE`. | `security.rs` | Shipping a **debug** binary with `GPUI_AGENT=1` baked into a wrapper skips the release latch. | Product builds: release profile + feature off + no env. |
 | I3 | **Info** | Design | Sample `todo` feature `embedded-host` defaults **off**. Copy-paste of an older `default = ["agent"]` snippet would compile the in-process bridge into a product. Runtime still needs `GPUI_AGENT=1`. | `apps/todo/Cargo.toml` | Developer runs a product with leftover env from a test session. | Templates should default the in-process host **off**. This repo already does. |
 | I4 | **Info** | Product | Bind check is IP-literal only (`SocketAddr`). `localhost` as a hostname is not accepted — safer than DNS. CLI and server share `authorize_*`. | `from_env`, `authorize_bind` | — | Keep it this way. |
@@ -114,6 +114,26 @@ No path traversal or command injection in the crate. The sample host
 maps ids onto in-memory CRUD. Virtual delivery is in-process GPUI only;
 `keystroke_token` / `text_keystrokes` reject modifiers and non-ASCII
 (except `\n`/`\t`/` `). Headless returns `virtual_unavailable`.
+Free-form `key` still rejects `cmd-q`. Modifier chords use `keybinding`.
+
+### `keybinding` / `keybindings`
+
+Allow-listed GPUI **Action** dispatch (PROTOCOL option B). The host
+resolves `binding` against its catalog and runs the **same** Action
+handler the keymap uses. Never OS HID, never Accessibility injection
+into another process, never a shell.
+
+| Gate | Behavior |
+| --- | --- |
+| Catalog | Unknown ids fail (`unknown binding`). Scope mismatch does **not** promote a window-only Action to “global OS” quit. |
+| `scope=focused` | Requires the app to be focused. Default: **no** auto-activate (`keybinding_unavailable: app not focused`). Optional `activate: true` is a host GPUI activate of **this** window. |
+| `scope=global` | This app’s global map only. Must not require focus and must not activate. If the kit pin cannot dispatch a global Action without faking focus, fail closed (`keybinding_unavailable`). |
+| Destructive | Quit / discard / file-submit always need `confirm=true` and appear `dangerous: true` in the list. Token auth is not enough. `app.quit` is gated even if the host forgot the flag. |
+| Free-form `key` | Still modifier-free (I1). |
+
+Apps that stay semantic-only (bir) may later ship `invoke app.quit` /
+`window.minimize` that call those **same** Action handlers. That is an
+app contract, not a gpui-agent C shim.
 
 Apps that register `invoke` names are responsible for not exposing a
 shell, filesystem, or privileged IPC. Treat `invoke` as **code you
@@ -142,7 +162,7 @@ They do **not** add privilege and do **not** bypass PR #3 caps:
 | `invoke` | Names must be `SchemaKind::Invoke` on the local registry. Unknown names and protocol names used as invoke (`click`) fail closed. Schema names are `[A-Za-z0-9_.-]`. |
 | Resolve | Keyword score, fail closed. Shell-like / unknown / ambiguous intents do nothing. Never `Command`. |
 | Shutdown | `Effect::Exit` requires CLI `--yes` or MCP `yes: true`. The run does not start without it. |
-| Delivery | Default `semantic`. `virtual` is still in-process GPUI (never OS HID). |
+| Delivery | Default `semantic`. `virtual` is still in-process GPUI (never OS HID). `keybinding` is allow-listed Action dispatch (confirm for quit). |
 
 Session reuse is a client convenience (`AgentClient::rpc` keeps the
 socket; `rpc_once` reconnects for benches). `rpc_pipeline` writes
@@ -235,9 +255,12 @@ intentionally **not** half-implemented in this patch.
 5. **`wait.timeout_ms` should wait.** Today `Wait` is immediate hello.
    Poll `ready` / first painted frame (desktop bounds non-zero) until
    the budget expires. Fixes a real agent flake.
-6. **Virtual delivery completeness.** Scroll, drag, modifier chords,
-   IME composition, `set_value` via the event path, double-click. Keep
-   the “no OS HID” rule. Headless stays `virtual_unavailable`.
+6. **Virtual delivery completeness.** Scroll, drag, modifier chords
+   on **free-form** `key`/`type`, IME composition, `set_value` via the
+   event path, double-click. Keep the “no OS HID” rule. Allow-listed
+   Action-id `keybinding` (focused/global, confirm for quit) shipped in
+   [#36](https://github.com/hexuria/gpui-agent/issues/36). Headless
+   stays `virtual_unavailable` for pointer/key synthesis.
 7. **Stable `error_code` field.** Agents already branch on the
    `virtual_unavailable:` prefix. Promote that to
    `error_code: "virtual_unavailable" | "unauthorized" | "mailbox_full" | …`

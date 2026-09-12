@@ -59,7 +59,9 @@ servers close on bad JSON the same way.
 | `click` | `target`, optional `delivery` | Activate a widget by stable id |
 | `type` | `target`, `text`, optional `delivery` | Append to an editable widget |
 | `set_value` | `target`, `value` | Replace editable value (semantic only) |
-| `key` | `target`, `key`, optional `delivery` | `Enter`, `Backspace`, … |
+| `key` | `target`, `key`, optional `delivery` | `Enter`, `Backspace`, … (no modifiers; SECURITY I1) |
+| `keybinding` | `binding` (Action id), `scope` (`focused` \| `global`), optional `chord`, `confirm`, `activate` | Fire the GPUI **Action** the keymap would. Never OS HID. |
+| `keybindings` | | List `{id, chord, scope, dangerous}`. Alias `keybinding.list`. |
 | `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists` | Check snapshot fields |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
 | `wait` | optional `timeout_ms` | `None`: immediate hello (even if `ready: false`). `Some(ms)`: poll `hello.ready` until true or `wait timed out` (sleep ≤ 10 ms between polls) |
@@ -161,6 +163,64 @@ closed from that field. CLI `recipe run` and `mcp` still require a
 client token even when `auth` is `"none"` — set the same token on the
 host for those workflows.
 
+## Keybindings (Action ids)
+
+Issue [#36](https://github.com/hexuria/gpui-agent/issues/36) **option B**:
+a first-class `keybinding` op fires a GPUI **Action** by stable id (the
+same handler the keymap would). Free-form `Op::Key` stays
+modifier-free. This is **not** OS HID and not a generic “send any
+chord” pipe.
+
+Wire field is `binding` so it does not collide with the RPC correlation
+`id`. CLI/MCP `--id` maps to `binding`. List alias: `keybinding.list`.
+
+```json
+{"v":2,"id":"1","op":"keybinding","binding":"todo.go_settings","scope":"global"}
+{"v":2,"id":"2","op":"keybindings"}
+{"v":2,"id":"3","op":"keybinding.list"}
+{"v":2,"id":"4","op":"keybinding","binding":"app.quit","scope":"global","confirm":true}
+```
+
+```bash
+gpui-agent keybindings
+gpui-agent keybinding --id todo.go_settings --scope global
+gpui-agent keybinding --id todo.focus_input --scope focused
+gpui-agent keybinding --id todo.focus_input --scope focused --activate
+gpui-agent keybinding --id app.quit --scope global --confirm
+```
+
+| Field | Meaning |
+| --- | --- |
+| `binding` | Stable Action id (`app.quit`, `todo.focus_input`). Preferred over the chord. |
+| `chord` | Optional metadata / resolve aid (`cmd-q`). Must match the catalog when set. |
+| `scope` | `focused` (this window’s map) or `global` (**this app’s** global map only). |
+| `confirm` | Required for destructive Actions (quit, discard, file-submit). |
+| `activate` | `scope=focused` only. Default **false**. Host GPUI activate, not HID into another app. |
+
+| `scope` | Preconditions | Failure |
+| --- | --- | --- |
+| `focused` | App window is focused, or `activate: true` | `keybinding_unavailable: app not focused` |
+| `global` | Action is on the global map. Does **not** require focus and must **not** activate. | `unknown binding` / scope mismatch; `keybinding_unavailable` if the host cannot dispatch without faking OS focus |
+
+List result:
+
+```json
+{ "keybindings": [
+  { "id": "todo.focus_input", "chord": "cmd-n", "scope": "focused", "dangerous": false },
+  { "id": "todo.go_settings", "chord": "cmd-shift-s", "scope": "global", "dangerous": false },
+  { "id": "app.quit", "chord": "cmd-q", "scope": "global", "dangerous": true }
+]}
+```
+
+Sample todo: focused `todo.focus_input` (`cmd-n`), global `todo.go_settings`
+(`cmd-shift-s`), dangerous `app.quit` (`cmd-q`). Desktop
+`embedded-host` binds those GPUI Actions and intercepts fire on the UI
+thread. Headless runs the **same Action bodies**. Semantic-only apps
+(bir) may later add `invoke` shims that call those same handlers — not
+in this crate.
+
+`gpui-agent key --delivery virtual … cmd-q` still fails (I1).
+
 ## Navigation
 
 There is no `goto` / `open-page` op. Agents change screens the same way
@@ -176,7 +236,7 @@ not part of this protocol.
 
 ## Integrating any app
 
-1. Implement `AgentHost` (`hello`, `snapshot`, `dispatch`).
+1. Implement `AgentHost` (`hello`, `snapshot`, `dispatch`, `keybindings`).
 2. Give every actionable widget a **stable id** and include it in the
    snapshot.
 3. Feature-gate the bridge; at runtime require `GPUI_AGENT=1`.
@@ -191,7 +251,7 @@ Reuse `gpui-agent-cli` unchanged. Details: [INTEGRATING.md](INTEGRATING.md).
 `gpui-agent mcp` exposes the same generic tools over stdio:
 
 `wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`,
-`key`, `assert`, `invoke`, `shutdown`
+`key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; client-side batching; see

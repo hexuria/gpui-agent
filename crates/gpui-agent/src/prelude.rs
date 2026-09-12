@@ -8,10 +8,13 @@
 pub use crate::client::AgentClient;
 pub use crate::dispatch::{DispatchResult, handle_request};
 pub use crate::host::AgentHost;
+pub use crate::keybinding::{
+    KeybindingInfo, authorize_keybinding, keybinding_unavailable, op_is_confirmed_quit,
+};
 pub use crate::mailbox::AgentMailbox;
 pub use crate::protocol::{
-    AssertSpec, DeliveryMode, HelloAuth, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request,
-    Response,
+    AssertSpec, DeliveryMode, HelloAuth, HelloInfo, KeybindingScope, Op, PROTOCOL_VERSION,
+    PlatformKind, Request, Response,
 };
 pub use crate::security::{
     AgentConfig, authorize_bind, authorize_client, from_env, is_loopback_addr,
