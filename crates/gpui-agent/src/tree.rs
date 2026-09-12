@@ -16,6 +16,7 @@ pub mod role {
     pub const CHECKBOX: &str = "checkbox";
     pub const NOTE: &str = "note";
     pub const STATUS: &str = "status";
+    pub const DIALOG: &str = "dialog";
 }
 
 /// Axis-aligned bounds in logical pixels. Hosts that cannot measure
@@ -28,6 +29,21 @@ pub struct Bounds {
     pub h: f32,
 }
 
+/// Stable error prefix for geometry-based `in_viewport` asserts.
+///
+/// Headless hosts and zero bounds must use this instead of inventing a clip.
+pub const IN_VIEWPORT_UNAVAILABLE: &str = "in_viewport_unavailable";
+
+pub fn in_viewport_unavailable(detail: impl Into<String>) -> String {
+    format!("{IN_VIEWPORT_UNAVAILABLE}: {}", detail.into())
+}
+
+pub fn is_in_viewport_unavailable(error: &str) -> bool {
+    error == IN_VIEWPORT_UNAVAILABLE
+        || error.starts_with(IN_VIEWPORT_UNAVAILABLE)
+            && error.as_bytes().get(IN_VIEWPORT_UNAVAILABLE.len()) == Some(&b':')
+}
+
 impl Bounds {
     pub fn has_area(self) -> bool {
         self.w > 0.0 && self.h > 0.0
@@ -35,6 +51,18 @@ impl Bounds {
 
     pub fn center(self) -> (f32, f32) {
         (self.x + self.w / 2.0, self.y + self.h / 2.0)
+    }
+
+    /// Non-empty overlap of two axis-aligned rects. Zero-area rects never
+    /// intersect (callers should treat that as unavailable, not `false`).
+    pub fn intersects(self, other: Self) -> bool {
+        if !self.has_area() || !other.has_area() {
+            return false;
+        }
+        self.x < other.x + other.w
+            && other.x < self.x + self.w
+            && self.y < other.y + other.h
+            && other.y < self.y + self.h
     }
 }
 
@@ -51,12 +79,25 @@ pub struct UiNode {
     pub enabled: bool,
     #[serde(default)]
     pub focused: bool,
+    /// Host-declared visibility. Omitted on the wire deserializes as
+    /// `true` so old snapshots stay valid (`serde` default). Serializers
+    /// omit `true` to keep trees compact.
+    #[serde(default = "default_visible", skip_serializing_if = "is_visible")]
+    pub visible: bool,
     #[serde(default)]
     pub bounds: Bounds,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<UiNode>,
+}
+
+fn default_visible() -> bool {
+    true
+}
+
+fn is_visible(value: &bool) -> bool {
+    *value
 }
 
 impl UiNode {
@@ -69,6 +110,7 @@ impl UiNode {
             checked: None,
             enabled: true,
             focused: false,
+            visible: true,
             bounds: Bounds::default(),
             states: Vec::new(),
             children: Vec::new(),
@@ -119,6 +161,10 @@ impl UiNode {
         Self::new(id, role::STATUS, name)
     }
 
+    pub fn dialog(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new(id, role::DIALOG, name)
+    }
+
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = Some(value.into());
         self
@@ -131,6 +177,27 @@ impl UiNode {
 
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
+    }
+
+    /// Set `visible` on this node and, when hiding, on every descendant.
+    ///
+    /// Prefer keeping a closed sidebar/modal in the tree with
+    /// `visible=false` so agents can assert “known but not showing”.
+    pub fn with_visible_deep(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        if !visible {
+            self.children = self
+                .children
+                .into_iter()
+                .map(|child| child.with_visible_deep(false))
+                .collect();
+        }
         self
     }
 
@@ -341,11 +408,15 @@ mod tests {
         assert_eq!(UiNode::checkbox("c", "C").with_focused(true).focused, true);
         assert_eq!(UiNode::scroll("s", "S").role, role::SCROLL);
         assert!(!UiNode::note("n", "N").with_enabled(false).enabled);
+        assert_eq!(UiNode::dialog("d", "About").role, role::DIALOG);
+        assert!(UiNode::button("b", "B").visible);
+        assert!(!UiNode::button("b", "B").with_visible(false).visible);
     }
 
     #[test]
     fn uinode_layout_stays_compact() {
         // AoS + String fields: 168 bytes on 64-bit with current field order.
+        // `visible` sits in the existing bool padding before Bounds.
         // Reordering bools vs Bounds did not shrink this (see docs/PERF.md).
         assert_eq!(std::mem::size_of::<UiNode>(), 168);
         assert_eq!(std::mem::size_of::<Bounds>(), 16);
@@ -394,5 +465,60 @@ mod tests {
         assert!(err.contains("duplicate id"), "{err}");
         assert!(err.contains('2') || err.contains("2 nodes"), "{err}");
         assert_eq!(tree.require_id("root").unwrap().name, "Root");
+    }
+
+    #[test]
+    fn omitted_visible_deserializes_as_true() {
+        let json = serde_json::json!({
+            "id": "legacy",
+            "role": "button",
+            "name": "Old"
+        });
+        let node: UiNode = serde_json::from_value(json).unwrap();
+        assert!(node.visible);
+        let hidden = UiNode::button("h", "Hidden").with_visible(false);
+        let value = serde_json::to_value(&hidden).unwrap();
+        assert_eq!(value["visible"], false);
+        let shown = UiNode::button("s", "Shown");
+        let shown_json = serde_json::to_value(&shown).unwrap();
+        assert!(
+            shown_json.get("visible").is_none(),
+            "visible=true must omit on the wire: {shown_json}"
+        );
+    }
+
+    #[test]
+    fn with_visible_deep_hides_descendants() {
+        let node = UiNode::navigation("nav", "Nav")
+            .with_child(UiNode::button("nav-a", "A"))
+            .with_visible_deep(false);
+        assert!(!node.visible);
+        assert!(!node.children[0].visible);
+    }
+
+    #[test]
+    fn bounds_intersect_requires_area() {
+        let a = Bounds {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        let b = Bounds {
+            x: 5.0,
+            y: 5.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        let c = Bounds {
+            x: 20.0,
+            y: 20.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        assert!(a.intersects(b));
+        assert!(!a.intersects(c));
+        assert!(!Bounds::default().intersects(a));
+        assert!(!a.intersects(Bounds::default()));
     }
 }

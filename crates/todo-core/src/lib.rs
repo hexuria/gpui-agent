@@ -26,6 +26,8 @@ pub mod ids {
     pub const NAV: &str = "todo-nav";
     pub const NAV_TODOS: &str = "nav-todos";
     pub const NAV_SETTINGS: &str = "nav-settings";
+    /// Collapse/expand the nav sidebar (`visible` on `todo-nav`).
+    pub const NAV_TOGGLE: &str = "nav-toggle-sidebar";
     pub const PAGE_TODOS: &str = "page-todos";
     pub const PAGE_SETTINGS: &str = "page-settings";
     pub const SETTINGS_CONFIRM_DELETE: &str = "settings-confirm-delete";
@@ -69,12 +71,25 @@ pub struct Todo {
 }
 
 /// GUI / client projection of a snapshot. The daemon `TodoStore` remains SoT.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TodoView {
     pub items: Vec<Todo>,
     pub draft: String,
     pub page: Page,
     pub confirm_delete: bool,
+    pub sidebar_open: bool,
+}
+
+impl Default for TodoView {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            draft: String::new(),
+            page: Page::default(),
+            confirm_delete: false,
+            sidebar_open: true,
+        }
+    }
 }
 
 impl TodoView {
@@ -92,6 +107,7 @@ impl TodoView {
             .find(ids::SETTINGS_CONFIRM_DELETE)
             .and_then(|node| node.checked)
             .unwrap_or(false);
+        let sidebar_open = tree.find(ids::NAV).map(|node| node.visible).unwrap_or(true);
         let mut items = Vec::new();
         tree.visit(&mut |node| {
             if let Some(id) = gpui_agent::parse_numbered_id("todo-item-", &node.id) {
@@ -108,6 +124,7 @@ impl TodoView {
             draft,
             page,
             confirm_delete,
+            sidebar_open,
         }
     }
 }
@@ -119,6 +136,7 @@ pub struct TodoStore {
     draft: String,
     page: Page,
     confirm_delete: bool,
+    sidebar_open: bool,
     platform: PlatformKind,
     shutdown: bool,
     /// Headless stand-in for OS window focus. Desktop uses `Window::is_window_active`.
@@ -139,6 +157,7 @@ impl TodoStore {
             draft: String::new(),
             page: Page::Todos,
             confirm_delete: false,
+            sidebar_open: true,
             platform,
             shutdown: false,
             app_focused: false,
@@ -159,6 +178,14 @@ impl TodoStore {
 
     pub fn toggle_confirm_delete(&mut self) {
         self.confirm_delete = !self.confirm_delete;
+    }
+
+    pub fn sidebar_open(&self) -> bool {
+        self.sidebar_open
+    }
+
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_open = !self.sidebar_open;
     }
 
     pub fn seed_overflow_demo(&mut self, count: usize) {
@@ -316,13 +343,25 @@ impl TodoStore {
         let nav = UiNode::navigation(ids::NAV, "Todo")
             .with_child(UiNode::button(ids::NAV_TODOS, "Todos"))
             .with_child(UiNode::button(ids::NAV_SETTINGS, "Settings"));
+        let nav = if self.sidebar_open {
+            nav
+        } else {
+            nav.with_visible_deep(false)
+        };
 
         let page = match self.page {
             Page::Todos => self.todos_page(),
             Page::Settings => self.settings_page(),
         };
 
+        let toggle_name = if self.sidebar_open {
+            "Hide sidebar"
+        } else {
+            "Show sidebar"
+        };
+
         let window = UiNode::window(ids::WINDOW, "Agent Todo")
+            .with_child(UiNode::button(ids::NAV_TOGGLE, toggle_name))
             .with_child(nav)
             .with_child(page);
 
@@ -383,6 +422,12 @@ impl TodoStore {
     }
 
     fn click(&mut self, target: &str) -> Result<DispatchResult, String> {
+        if target == ids::NAV_TOGGLE {
+            self.toggle_sidebar();
+            return Ok(DispatchResult::json(serde_json::json!({
+                "sidebar_open": self.sidebar_open
+            })));
+        }
         if target == ids::NAV_TODOS {
             self.page = Page::Todos;
             return Ok(DispatchResult::empty());
@@ -475,6 +520,12 @@ impl TodoStore {
                 }
                 Ok(DispatchResult::empty())
             }
+            "todo.toggle_sidebar" => {
+                self.toggle_sidebar();
+                Ok(DispatchResult::json(serde_json::json!({
+                    "sidebar_open": self.sidebar_open
+                })))
+            }
             other => Err(format!("unknown invoke `{other}`")),
         }
     }
@@ -563,9 +614,11 @@ impl AgentHost for TodoStore {
                 self.shutdown = true;
                 Ok(DispatchResult::empty())
             }
-            Op::Hello | Op::Snapshot | Op::Assert { .. } | Op::Wait { .. } => {
-                Ok(DispatchResult::empty())
-            }
+            Op::Hello
+            | Op::Snapshot
+            | Op::Assert { .. }
+            | Op::Wait { .. }
+            | Op::WaitUntil { .. } => Ok(DispatchResult::empty()),
         }
     }
 }
@@ -620,6 +673,8 @@ mod tests {
         assert!(tree.find(ids::ADD).is_some());
         assert!(tree.find(ids::NAV_TODOS).is_some());
         assert!(tree.find(ids::NAV_SETTINGS).is_some());
+        assert!(tree.find(ids::NAV_TOGGLE).is_some());
+        assert!(tree.find(ids::NAV).unwrap().visible);
         assert!(tree.find(ids::PAGE_TODOS).is_some());
         assert!(tree.find(&ids::item(id)).is_some());
         assert!(tree.find(&ids::toggle(id)).is_some());
@@ -676,6 +731,7 @@ mod tests {
         assert_eq!(view.items.len(), 1);
         assert_eq!(view.items[0].title, "Milk");
         assert!(view.items[0].done);
+        assert!(view.sidebar_open);
         store.go(Page::Settings);
         let settings = TodoView::from_tree(&store.tree());
         assert_eq!(settings.page, Page::Settings);
@@ -814,6 +870,105 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_toggle_assert_visible_and_wait_until() {
+        let mut store = TodoStore::default();
+        assert!(store.sidebar_open());
+        assert!(store.tree().find(ids::NAV).unwrap().visible);
+
+        store.dispatch(&Op::click(ids::NAV_TOGGLE)).unwrap();
+        assert!(!store.sidebar_open());
+        let tree = store.tree();
+        let nav = tree.find(ids::NAV).unwrap();
+        assert!(!nav.visible);
+        assert!(!nav.children[0].visible);
+
+        let hidden = handle_request(
+            &mut store,
+            Request::new(
+                "v1",
+                Op::Assert {
+                    spec: AssertSpec {
+                        target: ids::NAV.into(),
+                        exists: Some(true),
+                        visible: Some(false),
+                        ..Default::default()
+                    },
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(hidden.ok, "{hidden:?}");
+
+        let wait = handle_request(
+            &mut store,
+            Request::new(
+                "w1",
+                Op::wait_until(
+                    AssertSpec {
+                        target: ids::NAV.into(),
+                        visible: Some(false),
+                        ..Default::default()
+                    },
+                    200,
+                ),
+            ),
+            None,
+            None,
+        );
+        assert!(wait.ok, "{wait:?}");
+
+        store
+            .dispatch(&Op::Invoke {
+                name: "todo.toggle_sidebar".into(),
+                args: serde_json::json!({}),
+            })
+            .unwrap();
+        assert!(store.sidebar_open());
+        assert!(store.tree().find(ids::NAV).unwrap().visible);
+
+        let timeout = handle_request(
+            &mut store,
+            Request::new(
+                "w2",
+                Op::wait_until(
+                    AssertSpec {
+                        target: ids::NAV.into(),
+                        visible: Some(false),
+                        ..Default::default()
+                    },
+                    40,
+                ),
+            ),
+            None,
+            None,
+        );
+        assert!(!timeout.ok, "{timeout:?}");
+        let err = timeout.error.unwrap();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(err.contains("visible"), "{err}");
+
+        let geo = handle_request(
+            &mut store,
+            Request::new(
+                "vp",
+                Op::Assert {
+                    spec: AssertSpec {
+                        target: ids::NAV_TOGGLE.into(),
+                        in_viewport: Some(true),
+                        ..Default::default()
+                    },
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(!geo.ok, "{geo:?}");
+        let err = geo.error.unwrap();
+        assert!(gpui_agent::is_in_viewport_unavailable(&err), "{err}");
+    }
+
+    #[test]
     fn docs_protocol_mentions_remote_triple() {
         let path =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/PROTOCOL.md");
@@ -821,6 +976,10 @@ mod tests {
         assert!(
             text.contains("GPUI_AGENT_REMOTE"),
             "PROTOCOL.md must document remote bind with GPUI_AGENT_REMOTE"
+        );
+        assert!(
+            text.contains("wait_until") && text.contains("in_viewport"),
+            "PROTOCOL.md must document wait_until and in_viewport"
         );
     }
 
@@ -894,6 +1053,10 @@ mod tests {
         assert!(
             integrating.contains("must not") && integrating.contains("fallback"),
             "INTEGRATING.md must forbid intercept store fallback after dispatch_action"
+        );
+        assert!(
+            integrating.contains("visible") && integrating.contains("sidebar"),
+            "INTEGRATING.md must tell apps how to mark sidebar/modal visible"
         );
     }
 

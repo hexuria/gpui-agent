@@ -340,9 +340,13 @@ fn handle_stream_mailbox(
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
         let confirmed_quit = crate::op_is_confirmed_quit(&req.op);
-        let mut resp = mailbox
-            .wait(req, timeout)
-            .unwrap_or_else(|err| Response::err("?", err));
+        let mut resp = if matches!(req.op, Op::WaitUntil { .. }) {
+            wait_until_via_mailbox(&mailbox, &req, timeout)
+        } else {
+            mailbox
+                .wait(req, timeout)
+                .unwrap_or_else(|err| Response::err("?", err))
+        };
         if let Some(hello) = resp.hello.as_mut() {
             hello.auth = crate::protocol::HelloAuth::from_token_configured(token);
         }
@@ -351,6 +355,50 @@ fn handle_stream_mailbox(
             shutdown.store(true, Ordering::SeqCst);
             break;
         }
+    }
+}
+
+/// Poll assert on the UI thread from the TCP thread so `wait_until` does
+/// not sleep inside `render` (toasts / overlays can paint between polls).
+fn wait_until_via_mailbox(
+    mailbox: &AgentMailbox,
+    req: &Request,
+    drain_timeout: Duration,
+) -> Response {
+    let (timeout_ms, spec) = match &req.op {
+        Op::WaitUntil { timeout_ms, spec } => (*timeout_ms, spec.clone()),
+        _ => {
+            return Response::err(
+                req.id.clone(),
+                "wait_until_via_mailbox requires op wait_until",
+            );
+        }
+    };
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let poll = Request {
+            v: req.v,
+            id: req.id.clone(),
+            token: req.token.clone(),
+            auth: req.auth.clone(),
+            op: Op::Assert { spec: spec.clone() },
+        };
+        let resp = match mailbox.wait(poll, drain_timeout) {
+            Ok(resp) => resp,
+            Err(err) => return Response::err(req.id.clone(), err),
+        };
+        if resp.ok {
+            return resp;
+        }
+        let last_err = resp.error.unwrap_or_else(|| "assert failed".into());
+        if crate::is_in_viewport_unavailable(&last_err) && last_err.contains("headless") {
+            return Response::err(req.id.clone(), last_err);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Response::err(req.id.clone(), format!("wait_until timed out: {last_err}"));
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        thread::sleep(remaining.min(Duration::from_millis(10)));
     }
 }
 

@@ -4,7 +4,7 @@ An experimental control plane for GPUI Kit apps that **embed** an `AgentHost`, p
 
 GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and CDP have nothing to attach to. This repo is a smaller, in-process alternative: the app publishes a **semantic UI tree** and accepts **scripted actions** over localhost JSON — the same idea as [Vercel Native SDK automation](https://native-sdk.dev/automation), purpose-built for GPUI Kit.
 
-The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set-value`, `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
+The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `wait-until`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set-value`, `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
 
 **Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md).
 
@@ -28,6 +28,7 @@ flowchart LR
 
 ```bash
 gpui-agent wait
+gpui-agent wait-until --timeout-ms 1000 --id todo-nav --visible false
 gpui-agent hello
 gpui-agent snapshot --pretty
 gpui-agent screenshot --out artifacts/steps/mid.png
@@ -70,6 +71,9 @@ cargo run -p gpui-agent-cli -- click todo-toggle-1
 cargo run -p gpui-agent-cli -- assert --id todo-item-1 --checked true
 cargo run -p gpui-agent-cli -- click todo-delete-1
 cargo run -p gpui-agent-cli -- assert --id todo-item-1 --absent
+cargo run -p gpui-agent-cli -- assert --id todo-nav --visible
+cargo run -p gpui-agent-cli -- click nav-toggle-sidebar
+cargo run -p gpui-agent-cli -- wait-until --timeout-ms 1000 --id todo-nav --visible false
 cargo run -p gpui-agent-cli -- shutdown
 ```
 

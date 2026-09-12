@@ -30,7 +30,13 @@ UiNode::window("app-window", "Mail")
 
 Roles live in `gpui_agent::role`. Wire format is still a string so you
 can add app-specific roles. Focus/value: `with_focused`, `with_value`,
-`with_enabled`, `with_bounds`.
+`with_enabled`, `with_bounds`, `with_visible` / `with_visible_deep`.
+
+Keep closed overlays in the tree: `UiNode::dialog("auth-modal", "Sign in").with_visible(false)`.
+Collapsed sidebar: `nav.with_visible_deep(false)` so descendants are not
+still `visible=true`. Agents assert `visible`, not `open`/`shown`.
+`in_viewport` needs honest non-zero bounds on a **desktop** snapshot;
+headless must return `in_viewport_unavailable` (the SDK assert does this).
 
 Numbered ids: `gpui_agent::parse_numbered_id("thread-", target)`.
 

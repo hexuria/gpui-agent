@@ -1,8 +1,8 @@
 use crate::hmac_auth::{NONCE_LEN, hmac_verify};
 use crate::host::AgentHost;
-use crate::protocol::{AssertSpec, Op, PROTOCOL_VERSION, Request, Response};
+use crate::protocol::{AssertSpec, Op, PROTOCOL_VERSION, PlatformKind, Request, Response};
 use crate::scroll_capture::ScreenshotSpec;
-use crate::tree::UiTree;
+use crate::tree::{UiNode, UiTree, in_viewport_unavailable, is_in_viewport_unavailable, role};
 
 /// Optional structured payload returned by `invoke` / mutating ops.
 #[derive(Debug, Clone, Default)]
@@ -88,6 +88,7 @@ pub fn handle_request(
         Op::Wait {
             timeout_ms: Some(ms),
         } => wait_until_ready(host, &req.id, expected_token, ms),
+        Op::WaitUntil { timeout_ms, spec } => wait_until_assert(host, &req.id, spec, timeout_ms),
         Op::Snapshot => {
             let mut resp = Response::ok(&req.id);
             resp.tree = Some(host.snapshot());
@@ -185,6 +186,31 @@ fn wait_until_ready(
     }
 }
 
+fn wait_until_assert(
+    host: &dyn AgentHost,
+    id: &str,
+    spec: AssertSpec,
+    timeout_ms: u64,
+) -> Response {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let tree = host.snapshot();
+        match assert_tree(&tree, &spec) {
+            Ok(()) => return Response::ok(id),
+            Err(error) => {
+                if is_in_viewport_unavailable(&error) && tree.platform == PlatformKind::Headless {
+                    return Response::err(id, error);
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Response::err(id, format!("wait_until timed out: {error}"));
+                }
+            }
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+    }
+}
+
 pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
     let exists = spec.exists.unwrap_or(true);
     if exists {
@@ -221,6 +247,23 @@ pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
                 ));
             }
         }
+        if let Some(visible) = spec.visible {
+            if node.visible != visible {
+                return Err(format!(
+                    "node `{}` visible: expected {visible}, got {}",
+                    spec.target, node.visible
+                ));
+            }
+        }
+        if let Some(expected) = spec.in_viewport {
+            let actual = node_in_viewport(tree, node)?;
+            if actual != expected {
+                return Err(format!(
+                    "node `{}` in_viewport: expected {expected}, got {actual}",
+                    spec.target
+                ));
+            }
+        }
         Ok(())
     } else {
         match tree.find_all(&spec.target).len() {
@@ -232,6 +275,74 @@ pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
             n => Err(format!("duplicate id `{}` ({n} nodes)", spec.target)),
         }
     }
+}
+
+/// Honest geometry check: non-empty intersection of `node.bounds` with the
+/// painted window clip (the ancestor `role=window` bounds, same coordinate
+/// space as descendants).
+///
+/// Headless hosts and zero-area bounds return [`in_viewport_unavailable`] —
+/// never `Ok(false)` from missing geometry.
+pub fn node_in_viewport(tree: &UiTree, node: &UiNode) -> Result<bool, String> {
+    if tree.platform == PlatformKind::Headless {
+        return Err(in_viewport_unavailable(
+            "headless hosts have no painted window clip",
+        ));
+    }
+    if !node.bounds.has_area() {
+        return Err(in_viewport_unavailable(format!(
+            "node `{}` bounds are zero",
+            node.id
+        )));
+    }
+    let clip = window_clip(tree, node)?;
+    if !clip.has_area() {
+        return Err(in_viewport_unavailable(format!(
+            "window clip for `{}` has zero bounds",
+            node.id
+        )));
+    }
+    Ok(node.bounds.intersects(clip))
+}
+
+fn window_clip(tree: &UiTree, target: &UiNode) -> Result<crate::tree::Bounds, String> {
+    if let Some(window) = find_window_for(tree, &target.id) {
+        return Ok(window.bounds);
+    }
+    Err(in_viewport_unavailable(format!(
+        "no window clip for `{}`",
+        target.id
+    )))
+}
+
+fn find_window_for<'a>(tree: &'a UiTree, target_id: &str) -> Option<&'a UiNode> {
+    for root in &tree.nodes {
+        if let Some(window) = window_for_target(root, target_id, None) {
+            return Some(window);
+        }
+    }
+    None
+}
+
+fn window_for_target<'a>(
+    node: &'a UiNode,
+    target_id: &str,
+    current_window: Option<&'a UiNode>,
+) -> Option<&'a UiNode> {
+    let window = if node.role == role::WINDOW {
+        Some(node)
+    } else {
+        current_window
+    };
+    if node.id == target_id {
+        return window;
+    }
+    for child in &node.children {
+        if let Some(found) = window_for_target(child, target_id, window) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -607,11 +718,7 @@ mod tests {
         };
         let spec = AssertSpec {
             target: "dup".into(),
-            name: None,
-            value: None,
-            role: None,
-            checked: None,
-            exists: None,
+            ..Default::default()
         };
         let err = assert_tree(&tree, &spec).unwrap_err();
         assert!(err.contains("duplicate id"), "{err}");
@@ -644,6 +751,307 @@ mod tests {
                 .as_deref()
                 .is_some_and(|e| e.contains("unknown binding")),
             "{resp:?}"
+        );
+    }
+
+    fn sample_tree(platform: PlatformKind, visible: bool, bounds: crate::tree::Bounds) -> UiTree {
+        UiTree {
+            app: "test".into(),
+            platform,
+            ready: true,
+            nodes: vec![
+                UiNode::window("test-window", "Test")
+                    .with_bounds(crate::tree::Bounds {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 800.0,
+                        h: 600.0,
+                    })
+                    .with_child(
+                        UiNode::button("panel", "Panel")
+                            .with_visible(visible)
+                            .with_bounds(bounds),
+                    ),
+            ],
+        }
+    }
+
+    #[test]
+    fn assert_visible_matches_host_field() {
+        let tree = sample_tree(
+            PlatformKind::Headless,
+            false,
+            crate::tree::Bounds::default(),
+        );
+        let spec = AssertSpec {
+            target: "panel".into(),
+            visible: Some(false),
+            ..Default::default()
+        };
+        assert_tree(&tree, &spec).expect("hidden");
+        let err = assert_tree(
+            &tree,
+            &AssertSpec {
+                target: "panel".into(),
+                visible: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("visible"), "{err}");
+    }
+
+    #[test]
+    fn in_viewport_fails_closed_on_headless() {
+        let tree = sample_tree(
+            PlatformKind::Headless,
+            true,
+            crate::tree::Bounds {
+                x: 10.0,
+                y: 10.0,
+                w: 40.0,
+                h: 20.0,
+            },
+        );
+        let err = assert_tree(
+            &tree,
+            &AssertSpec {
+                target: "panel".into(),
+                in_viewport: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(crate::is_in_viewport_unavailable(&err), "{err}");
+        assert!(err.contains("headless"), "{err}");
+    }
+
+    #[test]
+    fn in_viewport_fails_closed_on_zero_bounds() {
+        let tree = sample_tree(PlatformKind::Desktop, true, crate::tree::Bounds::default());
+        let err = assert_tree(
+            &tree,
+            &AssertSpec {
+                target: "panel".into(),
+                in_viewport: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(crate::is_in_viewport_unavailable(&err), "{err}");
+        assert!(err.contains("zero"), "{err}");
+        let err_false = assert_tree(
+            &tree,
+            &AssertSpec {
+                target: "panel".into(),
+                in_viewport: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            crate::is_in_viewport_unavailable(&err_false),
+            "must not invent not-in-viewport from zero bounds: {err_false}"
+        );
+    }
+
+    #[test]
+    fn in_viewport_intersects_window_clip() {
+        let inside = sample_tree(
+            PlatformKind::Desktop,
+            true,
+            crate::tree::Bounds {
+                x: 10.0,
+                y: 10.0,
+                w: 40.0,
+                h: 20.0,
+            },
+        );
+        assert_tree(
+            &inside,
+            &AssertSpec {
+                target: "panel".into(),
+                in_viewport: Some(true),
+                ..Default::default()
+            },
+        )
+        .expect("inside clip");
+
+        let outside = sample_tree(
+            PlatformKind::Desktop,
+            true,
+            crate::tree::Bounds {
+                x: 900.0,
+                y: 10.0,
+                w: 40.0,
+                h: 20.0,
+            },
+        );
+        assert_tree(
+            &outside,
+            &AssertSpec {
+                target: "panel".into(),
+                in_viewport: Some(false),
+                ..Default::default()
+            },
+        )
+        .expect("outside clip");
+        let err = assert_tree(
+            &outside,
+            &AssertSpec {
+                target: "panel".into(),
+                in_viewport: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("in_viewport"), "{err}");
+        assert!(!crate::is_in_viewport_unavailable(&err), "{err}");
+    }
+
+    struct VisibleHost {
+        visible: bool,
+    }
+
+    impl AgentHost for VisibleHost {
+        fn hello(&self) -> HelloInfo {
+            HelloInfo {
+                protocol: PROTOCOL_VERSION,
+                app: "test".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                deliveries: vec![],
+                auth: crate::protocol::HelloAuth::None,
+            }
+        }
+
+        fn snapshot(&self) -> UiTree {
+            sample_tree(
+                PlatformKind::Headless,
+                self.visible,
+                crate::tree::Bounds::default(),
+            )
+        }
+
+        fn dispatch(&mut self, _op: &Op) -> Result<DispatchResult, String> {
+            Err("unsupported".into())
+        }
+    }
+
+    #[test]
+    fn wait_until_times_out_when_assert_never_matches() {
+        let mut host = VisibleHost { visible: false };
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::wait_until(
+                    AssertSpec {
+                        target: "panel".into(),
+                        visible: Some(true),
+                        ..Default::default()
+                    },
+                    50,
+                ),
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(err.contains("visible"), "{err}");
+    }
+
+    #[test]
+    fn wait_until_succeeds_when_visible_flips() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FlipVisible {
+            visible: Arc<AtomicBool>,
+        }
+
+        impl AgentHost for FlipVisible {
+            fn hello(&self) -> HelloInfo {
+                HelloInfo {
+                    protocol: PROTOCOL_VERSION,
+                    app: "test".into(),
+                    platform: PlatformKind::Headless,
+                    ready: true,
+                    deliveries: vec![],
+                    auth: crate::protocol::HelloAuth::None,
+                }
+            }
+
+            fn snapshot(&self) -> UiTree {
+                sample_tree(
+                    PlatformKind::Headless,
+                    self.visible.load(Ordering::SeqCst),
+                    crate::tree::Bounds::default(),
+                )
+            }
+
+            fn dispatch(&mut self, _op: &Op) -> Result<DispatchResult, String> {
+                Err("unsupported".into())
+            }
+        }
+
+        let visible = Arc::new(AtomicBool::new(false));
+        let mut host = FlipVisible {
+            visible: visible.clone(),
+        };
+        let flag = visible.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            flag.store(true, Ordering::SeqCst);
+        });
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::wait_until(
+                    AssertSpec {
+                        target: "panel".into(),
+                        visible: Some(true),
+                        ..Default::default()
+                    },
+                    500,
+                ),
+            ),
+            None,
+            None,
+        );
+        assert!(resp.ok, "{resp:?}");
+    }
+
+    #[test]
+    fn wait_until_headless_in_viewport_fails_fast() {
+        let mut host = VisibleHost { visible: true };
+        let started = std::time::Instant::now();
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::wait_until(
+                    AssertSpec {
+                        target: "panel".into(),
+                        in_viewport: Some(true),
+                        ..Default::default()
+                    },
+                    400,
+                ),
+            ),
+            None,
+            None,
+        );
+        let elapsed = started.elapsed();
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(crate::is_in_viewport_unavailable(&err), "{err}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "headless in_viewport must fail closed without waiting out the timeout: {elapsed:?}"
         );
     }
 }

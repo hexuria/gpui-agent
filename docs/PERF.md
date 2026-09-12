@@ -60,6 +60,7 @@ win is session reuse, not serialize.
 | mimalloc / compact_str / SmallVec / FxHashMap | PR #5 | JSON + loopback, not allocator- or hash-bound at todo size |
 
 `UiNode` is **168 bytes** on 64-bit (`uinode_layout_stays_compact`).
+`visible` fits in the existing bool padding before `Bounds`.
 
 ## Integrators
 
