@@ -183,6 +183,16 @@ pub fn validate_recipe(recipe: &Recipe, registry: &Registry) -> Result<(), Strin
             }
         }
         validate_placeholders_declared(&step.op, &recipe.params)?;
+        if let Op::Keybinding {
+            binding, confirm, ..
+        } = &step.op
+        {
+            if gpui_agent::is_quit_binding(binding) && !confirm {
+                return Err(format!(
+                    "dangerous keybinding `{binding}` requires confirm=true"
+                ));
+            }
+        }
         if let Op::Invoke { name, .. } = &step.op {
             match registry.get(name) {
                 Some(schema) if matches!(schema.kind, SchemaKind::Invoke) => {}
@@ -219,7 +229,7 @@ fn validate_placeholders_declared(op: &Op, params: &[String]) -> Result<(), Stri
 /// `Op` field must be visited or `$param` substitution silently skips it.
 fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
     match op {
-        Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } => {}
+        Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } | Op::Keybindings => {}
         Op::Click { target, .. } => collect_placeholders(target, out),
         Op::Type { target, text, .. } => {
             collect_placeholders(target, out);
@@ -232,6 +242,12 @@ fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
         Op::Key { target, key, .. } => {
             collect_placeholders(target, out);
             collect_placeholders(key, out);
+        }
+        Op::Keybinding { binding, chord, .. } => {
+            collect_placeholders(binding, out);
+            if let Some(chord) = chord {
+                collect_placeholders(chord, out);
+            }
         }
         Op::Assert { spec } => {
             collect_placeholders(&spec.target, out);
@@ -337,7 +353,7 @@ fn is_ident(name: &str) -> bool {
 /// Keep this match in sync with [`collect_placeholders_in_op`].
 fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result<(), String> {
     match op {
-        Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } => Ok(()),
+        Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } | Op::Keybindings => Ok(()),
         Op::Click { target, .. } => substitute_string_in_place(target, set),
         Op::Type { target, text, .. } => {
             substitute_string_in_place(target, set)?;
@@ -350,6 +366,13 @@ fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result
         Op::Key { target, key, .. } => {
             substitute_string_in_place(target, set)?;
             substitute_string_in_place(key, set)
+        }
+        Op::Keybinding { binding, chord, .. } => {
+            substitute_string_in_place(binding, set)?;
+            if let Some(chord) = chord {
+                substitute_string_in_place(chord, set)?;
+            }
+            Ok(())
         }
         Op::Assert { spec } => {
             substitute_string_in_place(&mut spec.target, set)?;
@@ -531,6 +554,8 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
                 delivery,
             }
         }
+        "keybindings" | "keybinding.list" => Op::Keybindings,
+        "keybinding" => parse_keybinding_wants(&tokens[1..])?,
         "assert" => Op::Assert {
             spec: parse_assert_spec(&tokens[1..])?,
         },
@@ -563,6 +588,77 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         needs: Vec::new(),
         screenshot,
         op,
+    })
+}
+
+fn parse_keybinding_wants(tokens: &[String]) -> Result<Op, String> {
+    use gpui_agent::protocol::KeybindingScope;
+
+    let mut binding = None;
+    let mut chord = None;
+    let mut scope = None;
+    let mut confirm = false;
+    let mut activate = false;
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        if token == "--id" || token == "--binding" {
+            i += 1;
+            binding = Some(
+                tokens
+                    .get(i)
+                    .ok_or_else(|| "keybinding needs --id".to_string())?
+                    .clone(),
+            );
+        } else if token == "--scope" {
+            i += 1;
+            let raw = tokens
+                .get(i)
+                .ok_or_else(|| "--scope needs focused or global".to_string())?;
+            scope = Some(raw.parse::<KeybindingScope>()?);
+        } else if token == "--chord" {
+            i += 1;
+            chord = Some(
+                tokens
+                    .get(i)
+                    .ok_or_else(|| "--chord needs a value".to_string())?
+                    .clone(),
+            );
+        } else if token == "--confirm" {
+            if tokens.get(i + 1).map(String::as_str) == Some("true") {
+                confirm = true;
+                i += 1;
+            } else if tokens.get(i + 1).map(String::as_str) == Some("false") {
+                confirm = false;
+                i += 1;
+            } else {
+                confirm = true;
+            }
+        } else if token == "--activate" {
+            if tokens.get(i + 1).map(String::as_str) == Some("false") {
+                activate = false;
+                i += 1;
+            } else {
+                activate = true;
+                if tokens.get(i + 1).map(String::as_str) == Some("true") {
+                    i += 1;
+                }
+            }
+        } else if !token.starts_with('-') && binding.is_none() {
+            binding = Some(token.clone());
+        } else {
+            return Err(format!("bad keybinding token `{token}`"));
+        }
+        i += 1;
+    }
+    let binding = binding.ok_or_else(|| "keybinding needs --id".to_string())?;
+    let scope = scope.ok_or_else(|| "keybinding needs --scope focused|global".to_string())?;
+    Ok(Op::Keybinding {
+        binding,
+        chord,
+        scope,
+        confirm,
+        activate,
     })
 }
 
@@ -1191,5 +1287,59 @@ assert todo-item-1 name=$title checked=false
             Op::Invoke { args, .. } => assert_eq!(args["title"], "Nested"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn wants_keybinding_and_list() {
+        use gpui_agent::protocol::KeybindingScope;
+
+        let recipe = parse_wants(
+            "keybindings\nkeybinding --id todo.go_settings --scope global\nkeybinding --id app.quit --scope global --confirm --chord cmd-q",
+            "kb",
+        )
+        .unwrap();
+        assert!(matches!(recipe.steps[0].op, Op::Keybindings));
+        match &recipe.steps[1].op {
+            Op::Keybinding {
+                binding,
+                scope,
+                confirm,
+                activate,
+                ..
+            } => {
+                assert_eq!(binding, "todo.go_settings");
+                assert_eq!(*scope, KeybindingScope::Global);
+                assert!(!confirm);
+                assert!(!activate);
+            }
+            other => panic!("{other:?}"),
+        }
+        match &recipe.steps[2].op {
+            Op::Keybinding {
+                binding,
+                chord,
+                confirm,
+                ..
+            } => {
+                assert_eq!(binding, "app.quit");
+                assert_eq!(chord.as_deref(), Some("cmd-q"));
+                assert!(confirm);
+            }
+            other => panic!("{other:?}"),
+        }
+        validate_recipe(&recipe, &todo_registry()).unwrap();
+    }
+
+    #[test]
+    fn recipe_quit_keybinding_without_confirm_fails_validate() {
+        let recipe = Recipe::from_json(
+            r#"{
+            "name": "bad",
+            "steps": [{"id": "q", "op": "keybinding", "binding": "app.quit", "scope": "global"}]
+        }"#,
+        )
+        .unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert!(err.contains("confirm=true"), "{err}");
     }
 }

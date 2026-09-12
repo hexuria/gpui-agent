@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use gpui_agent::DEFAULT_ADDR_STR;
 use gpui_agent::client::AgentClient;
-use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
+use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
 use recipe_cmd::RecipeCommand;
 
 /// Talk to an embedded AgentHost over the opt-in agent protocol (not CDP).
@@ -90,13 +90,33 @@ enum Command {
     },
     /// Replace the value of an editable widget.
     SetValue { target: String, value: String },
-    /// Send a key (`Enter`, `Backspace`) to a widget.
+    /// Send a key (`Enter`, `Backspace`) to a widget. No modifiers (use `keybinding`).
     Key {
         target: String,
         key: String,
         #[arg(long, default_value = "semantic")]
         delivery: DeliveryMode,
     },
+    /// Fire a GPUI Action by id (keymap path, never OS HID).
+    Keybinding {
+        /// Action id (`app.quit`). Protocol field: `binding` (request `id` is the RPC id).
+        #[arg(long)]
+        id: String,
+        /// `focused` (this window’s map) or `global` (this app’s global map only).
+        #[arg(long)]
+        scope: KeybindingScope,
+        /// Optional chord metadata / resolve aid (`cmd-q`).
+        #[arg(long)]
+        chord: Option<String>,
+        /// Required for destructive Actions (`app.quit`).
+        #[arg(long)]
+        confirm: bool,
+        /// Opt-in: bring this app’s window forward first (`scope=focused` only).
+        #[arg(long)]
+        activate: bool,
+    },
+    /// List registered Action-id keybindings (`{id, chord, scope, dangerous}`).
+    Keybindings,
     /// Assert fields on a node from the current snapshot.
     Assert {
         /// Stable id of the node (protocol field: `target`).
@@ -225,6 +245,14 @@ fn run() -> Result<()> {
             key,
             delivery,
         } => print_resp(rpc(client.key_with_delivery(target, key, delivery))?),
+        Command::Keybinding {
+            id,
+            scope,
+            chord,
+            confirm,
+            activate,
+        } => print_resp(rpc(client.keybinding(id, scope, chord, confirm, activate))?),
+        Command::Keybindings => print_resp(rpc(client.keybindings())?),
         Command::Assert {
             id,
             name,
@@ -296,6 +324,8 @@ mod tests {
                 "type",
                 "set-value",
                 "key",
+                "keybinding",
+                "keybindings",
                 "assert",
                 "invoke",
                 "shutdown",
@@ -519,6 +549,61 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn keybinding_cli_parses_id_scope_confirm_activate() {
+        let fire = Cli::try_parse_from([
+            "gpui-agent",
+            "keybinding",
+            "--id",
+            "app.quit",
+            "--scope",
+            "global",
+            "--chord",
+            "cmd-q",
+            "--confirm",
+        ])
+        .unwrap();
+        match fire.command {
+            Command::Keybinding {
+                id,
+                scope,
+                chord,
+                confirm,
+                activate,
+            } => {
+                assert_eq!(id, "app.quit");
+                assert_eq!(scope, KeybindingScope::Global);
+                assert_eq!(chord.as_deref(), Some("cmd-q"));
+                assert!(confirm);
+                assert!(!activate);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let focused = Cli::try_parse_from([
+            "gpui-agent",
+            "keybinding",
+            "--id",
+            "todo.focus_input",
+            "--scope",
+            "focused",
+            "--activate",
+        ])
+        .unwrap();
+        match focused.command {
+            Command::Keybinding {
+                scope, activate, ..
+            } => {
+                assert_eq!(scope, KeybindingScope::Focused);
+                assert!(activate);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let list = Cli::try_parse_from(["gpui-agent", "keybindings"]).unwrap();
+        assert!(matches!(list.command, Command::Keybindings));
     }
 
     #[test]

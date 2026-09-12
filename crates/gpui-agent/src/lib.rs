@@ -18,6 +18,7 @@ pub mod client;
 pub mod dispatch;
 pub mod hmac_auth;
 pub mod host;
+pub mod keybinding;
 pub mod mailbox;
 pub mod ndjson;
 pub mod prelude;
@@ -35,11 +36,17 @@ pub use hmac_auth::{
     Challenge, challenge_for_nonce, hex_decode, hex_encode, hmac_hex, hmac_verify,
 };
 pub use host::AgentHost;
+pub use keybinding::{
+    KEYBINDING_UNAVAILABLE, KeybindingInfo, KeybindingRequest, authorize_keybinding,
+    authorize_keybinding_op, binding_is_dangerous, complete_keybinding_action,
+    intercept_keybinding_action, is_keybinding_unavailable, is_quit_binding, is_quit_chord,
+    keybinding_list_json, keybinding_unavailable, op_is_confirmed_quit,
+};
 pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{line_is_blank, read_limited_line, read_limited_line_into, write_json_line};
 pub use protocol::{
-    AssertSpec, DeliveryMode, HelloAuth, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request,
-    Response,
+    AssertSpec, DeliveryMode, HelloAuth, HelloInfo, KeybindingScope, Op, PROTOCOL_VERSION,
+    PlatformKind, Request, Response,
 };
 pub use screenshot::{
     SCREENSHOT_BACKEND_SCREENCAPTURE, SCREENSHOT_UNAVAILABLE, TEST_PNG, accept_written_png,

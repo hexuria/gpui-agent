@@ -262,6 +262,7 @@ fn handle_stream_host<H: AgentHost>(
             break;
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
+        let confirmed_quit = crate::op_is_confirmed_quit(&req.op);
         let resp = {
             let mut host = host.lock().expect("host");
             handle_request(
@@ -272,7 +273,7 @@ fn handle_stream_host<H: AgentHost>(
             )
         };
         write_resp(&mut writer, &mut encode_buf, &resp);
-        if shutdown_op {
+        if shutdown_op || (confirmed_quit && resp.ok) {
             shutdown.store(true, Ordering::SeqCst);
             break;
         }
@@ -338,6 +339,7 @@ fn handle_stream_mailbox(
             break;
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
+        let confirmed_quit = crate::op_is_confirmed_quit(&req.op);
         let mut resp = mailbox
             .wait(req, timeout)
             .unwrap_or_else(|err| Response::err("?", err));
@@ -345,7 +347,7 @@ fn handle_stream_mailbox(
             hello.auth = crate::protocol::HelloAuth::from_token_configured(token);
         }
         write_resp(&mut writer, &mut encode_buf, &resp);
-        if shutdown_op {
+        if shutdown_op || (confirmed_quit && resp.ok) {
             shutdown.store(true, Ordering::SeqCst);
             break;
         }

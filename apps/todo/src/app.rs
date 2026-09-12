@@ -1,5 +1,5 @@
 #[cfg(feature = "embedded-host")]
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 #[cfg(feature = "embedded-host")]
 use gpui_kit::component::ElementExt;
@@ -16,9 +16,17 @@ use todo_core::TodoView;
 use todo_core::{Page, ids};
 
 #[cfg(feature = "embedded-host")]
-use gpui_agent::mailbox::AgentMailbox;
+use gpui_agent::mailbox::{AgentMailbox, MailboxRequest};
 #[cfg(feature = "embedded-host")]
 use gpui_agent::protocol::PlatformKind;
+
+/// In-flight `Op::Keybinding` waiting for GPUI to run the Action handler.
+#[cfg(feature = "embedded-host")]
+struct PendingKeybindingFire {
+    posted: MailboxRequest,
+    binding: String,
+    confirmed_quit: bool,
+}
 
 pub struct TodoApp {
     #[cfg(feature = "embedded-host")]
@@ -33,6 +41,12 @@ pub struct TodoApp {
     _subscriptions: Vec<Subscription>,
     #[cfg(feature = "embedded-host")]
     mailbox: Option<AgentMailbox>,
+    #[cfg(feature = "embedded-host")]
+    pending_keybinding: Option<PendingKeybindingFire>,
+    #[cfg(feature = "embedded-host")]
+    keybinding_backlog: VecDeque<MailboxRequest>,
+    #[cfg(feature = "embedded-host")]
+    last_keybinding_result: Option<(String, Result<gpui_agent::DispatchResult, String>)>,
     _refresh: Option<Task<()>>,
     #[cfg(feature = "embedded-host")]
     layout_bounds: HashMap<String, gpui_agent::Bounds>,
@@ -57,7 +71,33 @@ impl TodoApp {
                 }
             }));
         }
+        Self::register_global_actions(cx.weak_entity(), cx);
         app
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn register_global_actions(entity: WeakEntity<Self>, cx: &mut App) {
+        App::on_action(cx, {
+            let entity = entity.clone();
+            move |_: &crate::keybindings::GoSettings, cx| {
+                entity
+                    .update(cx, |this, cx| {
+                        let _ = this.run_keybinding_body(ids::KEY_GO_SETTINGS, None, cx);
+                    })
+                    .ok();
+            }
+        });
+        App::on_action(cx, {
+            let entity = entity.clone();
+            move |_: &crate::keybindings::Quit, cx| {
+                entity
+                    .update(cx, |this, cx| {
+                        let _ = this.run_keybinding_body(ids::KEY_QUIT, None, cx);
+                        this.quit_after_quit_action(cx);
+                    })
+                    .ok();
+            }
+        });
     }
 
     #[cfg(not(feature = "embedded-host"))]
@@ -109,6 +149,12 @@ impl TodoApp {
             _subscriptions: subscriptions,
             #[cfg(feature = "embedded-host")]
             mailbox: None,
+            #[cfg(feature = "embedded-host")]
+            pending_keybinding: None,
+            #[cfg(feature = "embedded-host")]
+            keybinding_backlog: VecDeque::new(),
+            #[cfg(feature = "embedded-host")]
+            last_keybinding_result: None,
             _refresh: None,
             #[cfg(feature = "embedded-host")]
             layout_bounds: HashMap::new(),
@@ -257,9 +303,20 @@ impl TodoApp {
         let Some(mailbox) = self.mailbox.clone() else {
             return;
         };
-        for posted in mailbox.take() {
+        self.keybinding_backlog.extend(mailbox.take());
+        if self.pending_keybinding.is_some() {
+            return;
+        }
+        while let Some(posted) = self.keybinding_backlog.pop_front() {
             self.sync_draft_from_input(cx);
             self.record_window_bounds(window);
+
+            if matches!(posted.request.op, gpui_agent::Op::Keybinding { .. }) {
+                if self.start_keybinding_fire(posted, window, cx) {
+                    break;
+                }
+                continue;
+            }
 
             let shutdown = matches!(posted.request.op, gpui_agent::Op::Shutdown);
             let response = if posted.request.op.is_virtual_input() {
@@ -289,17 +346,22 @@ impl TodoApp {
                 response
             };
 
-            let draft = self.store.draft().to_string();
-            if draft != self.input.read(cx).value().to_string() {
-                self.input.update(cx, |state, cx| {
-                    state.set_value(draft.as_str(), window, cx);
-                });
-            }
+            self.sync_input_from_store(window, cx);
             posted.reply(response);
             if shutdown {
                 cx.quit();
             }
             cx.notify();
+        }
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn sync_input_from_store(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let draft = self.store.draft().to_string();
+        if draft != self.input.read(cx).value().to_string() {
+            self.input.update(cx, |state, cx| {
+                state.set_value(draft.as_str(), window, cx);
+            });
         }
     }
 
@@ -411,6 +473,157 @@ impl TodoApp {
         })))
     }
 
+    /// Authorize + dispatch the GPUI Action only. Listeners own store mutation.
+    /// Returns true when the mailbox reply is deferred until after the handler.
+    #[cfg(feature = "embedded-host")]
+    fn start_keybinding_fire(
+        &mut self,
+        posted: MailboxRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let confirmed_quit = gpui_agent::op_is_confirmed_quit(&posted.request.op);
+        let catalog = self.store.keybindings();
+        let focused = window.is_window_active();
+        let entry = match gpui_agent::authorize_keybinding_op(&posted.request.op, &catalog, focused)
+        {
+            Ok(entry) => entry.clone(),
+            Err(error) => {
+                posted.reply(gpui_agent::Response::err(&posted.request.id, error));
+                self.sync_input_from_store(window, cx);
+                cx.notify();
+                return false;
+            }
+        };
+        let activate = match &posted.request.op {
+            gpui_agent::Op::Keybinding { activate, .. } => *activate,
+            _ => false,
+        };
+        let Some(action) = crate::keybindings::action_for_binding(&entry.id) else {
+            posted.reply(gpui_agent::Response::err(
+                &posted.request.id,
+                format!("unknown binding `{}`", entry.id),
+            ));
+            self.sync_input_from_store(window, cx);
+            cx.notify();
+            return false;
+        };
+        if activate {
+            window.activate_window();
+        }
+
+        // Record pending *before* dispatch so a sync global listener can see it.
+        // Window::dispatch_action always `cx.defer`s; finish is queued after that.
+        self.last_keybinding_result = None;
+        self.pending_keybinding = Some(PendingKeybindingFire {
+            posted,
+            binding: entry.id.clone(),
+            confirmed_quit,
+        });
+        match entry.scope {
+            gpui_agent::KeybindingScope::Focused => {
+                window.dispatch_action(action, cx);
+            }
+            gpui_agent::KeybindingScope::Global => {
+                if focused {
+                    window.dispatch_action(action, cx);
+                } else {
+                    // Kit pin: App::dispatch_action uses the global table when
+                    // there is no OS-active window. Do not activate to fake it.
+                    cx.dispatch_action(action.as_ref());
+                }
+            }
+        }
+        cx.defer_in(window, |this, window, cx| {
+            this.finish_keybinding_fire(window, cx);
+        });
+        true
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn finish_keybinding_fire(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_keybinding.take() else {
+            return;
+        };
+        let listener = match self.last_keybinding_result.take() {
+            Some((id, result)) if id == pending.binding => Some(result),
+            _ => None,
+        };
+        let response = match gpui_agent::complete_keybinding_action(listener) {
+            Ok(result) => {
+                let mut resp = gpui_agent::Response::ok(&pending.posted.request.id);
+                resp.result = result.value;
+                resp
+            }
+            Err(error) => gpui_agent::Response::err(&pending.posted.request.id, error),
+        };
+        self.sync_input_from_store(window, cx);
+        let confirmed_quit = pending.confirmed_quit;
+        pending.posted.reply(response);
+        if confirmed_quit && self.store.wants_shutdown() {
+            cx.quit();
+        }
+        cx.notify();
+    }
+
+    /// Action body used by keymap / `on_action` listeners. Not the intercept.
+    #[cfg(feature = "embedded-host")]
+    fn run_keybinding_body(
+        &mut self,
+        binding: &str,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> Result<gpui_agent::DispatchResult, String> {
+        let result = self.store.perform_keybinding(binding);
+        self.last_keybinding_result = Some((binding.to_string(), result.clone()));
+        let result = result?;
+        if binding == ids::KEY_FOCUS_INPUT {
+            if let Some(window) = window {
+                self.input.update(cx, |state, cx| state.focus(window, cx));
+            }
+        }
+        cx.notify();
+        Ok(result)
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn perform_keybinding_action(
+        &mut self,
+        binding: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<gpui_agent::DispatchResult, String> {
+        self.run_keybinding_body(binding, Some(window), cx)
+    }
+
+    /// Human `cmd-q` must still exit when the agent mailbox is live. Confirmed
+    /// agent quit replies first (`finish_keybinding_fire`), then quits.
+    #[cfg(feature = "embedded-host")]
+    fn quit_after_quit_action(&mut self, cx: &mut Context<Self>) {
+        if self.mailbox.is_none() {
+            cx.quit();
+            return;
+        }
+        let agent_confirmed_quit = self
+            .pending_keybinding
+            .as_ref()
+            .is_some_and(|pending| pending.confirmed_quit && pending.binding == ids::KEY_QUIT);
+        if agent_confirmed_quit {
+            return;
+        }
+        let entity = cx.weak_entity();
+        cx.defer(move |cx| {
+            let should_quit = entity
+                .update(cx, |this, _| {
+                    this.store.wants_shutdown() && this.pending_keybinding.is_none()
+                })
+                .unwrap_or(true);
+            if should_quit {
+                cx.quit();
+            }
+        });
+    }
+
     /// Inject move + down + up through GPUI's window event pipeline.
     /// Updates GPUI's in-window mouse position only — never the OS cursor.
     #[cfg(feature = "embedded-host")]
@@ -511,6 +724,7 @@ impl Render for TodoApp {
 
         v_flex()
             .id("todo-window")
+            .key_context("todo")
             .relative()
             .size_full()
             .bg(theme.background)
@@ -518,6 +732,33 @@ impl Render for TodoApp {
             .px_6()
             .py_5()
             .gap_4()
+            .when(cfg!(feature = "embedded-host"), |el| {
+                #[cfg(feature = "embedded-host")]
+                {
+                    el.on_action(cx.listener(
+                        |this, _: &crate::keybindings::FocusInput, window, cx| {
+                            let _ =
+                                this.perform_keybinding_action(ids::KEY_FOCUS_INPUT, window, cx);
+                        },
+                    ))
+                    .on_action(cx.listener(
+                        |this, _: &crate::keybindings::GoSettings, window, cx| {
+                            let _ =
+                                this.perform_keybinding_action(ids::KEY_GO_SETTINGS, window, cx);
+                        },
+                    ))
+                    .on_action(cx.listener(
+                        |this, _: &crate::keybindings::Quit, window, cx| {
+                            let _ = this.perform_keybinding_action(ids::KEY_QUIT, window, cx);
+                            this.quit_after_quit_action(cx);
+                        },
+                    ))
+                }
+                #[cfg(not(feature = "embedded-host"))]
+                {
+                    el
+                }
+            })
             .child(
                 v_flex()
                     .gap_1()

@@ -46,10 +46,18 @@ pub fn plan_click(tree: &UiTree, target: &str) -> Result<VirtualPointerClick, St
 }
 
 /// Map a protocol `key` (`Enter`, `Backspace`, …) to a GPUI `Keystroke::parse` token.
+///
+/// Modifier-free by design (SECURITY I1). Chords such as `cmd-q` belong on
+/// [`crate::Op::Keybinding`], not here.
 pub fn keystroke_token(key: &str) -> Result<String, String> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return Err(virtual_unavailable("empty key"));
+    }
+    if looks_like_modifier_chord(trimmed) {
+        return Err(virtual_unavailable(format!(
+            "modifiers are not allowed on free-form key `{trimmed}`; use op keybinding"
+        )));
     }
     match trimmed.to_ascii_lowercase().as_str() {
         "enter" | "return" => Ok("enter".into()),
@@ -63,6 +71,18 @@ pub fn keystroke_token(key: &str) -> Result<String, String> {
             "unhandled virtual key `{other}` (first slice: Enter, Backspace, Tab, Escape, Delete, Space, ASCII)"
         ))),
     }
+}
+
+fn looks_like_modifier_chord(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    lower.contains('-')
+        || lower.starts_with("cmd")
+        || lower.starts_with("ctrl")
+        || lower.starts_with("alt")
+        || lower.starts_with("shift")
+        || lower.starts_with("super")
+        || lower.starts_with("meta")
+        || lower.starts_with("win")
 }
 
 /// One GPUI keystroke token per character for `type` (ASCII + space).
@@ -212,6 +232,12 @@ mod tests {
                 .unwrap_err()
                 .starts_with(VIRTUAL_UNAVAILABLE)
         );
+        let cmd_q = keystroke_token("cmd-q").unwrap_err();
+        assert!(cmd_q.starts_with(VIRTUAL_UNAVAILABLE), "{cmd_q}");
+        assert!(cmd_q.contains("modifiers"), "{cmd_q}");
+        assert!(cmd_q.contains("keybinding"), "{cmd_q}");
+        assert!(keystroke_token("cmd-q").is_err());
+        assert!(keystroke_token("ctrl-c").unwrap_err().contains("modifiers"));
     }
 
     #[test]

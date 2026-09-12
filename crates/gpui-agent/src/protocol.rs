@@ -104,6 +104,51 @@ impl std::str::FromStr for DeliveryMode {
     }
 }
 
+/// Which keymap an Action-id `keybinding` fire must use.
+///
+/// `focused` is this app’s focused-window map (requires OS focus unless
+/// `activate: true`). `global` is **this app’s** global map only — never OS
+/// HID into another process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeybindingScope {
+    Focused,
+    Global,
+}
+
+impl KeybindingScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Focused => "focused",
+            Self::Global => "global",
+        }
+    }
+}
+
+impl std::fmt::Display for KeybindingScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for KeybindingScope {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "focused" => Ok(Self::Focused),
+            "global" => Ok(Self::Global),
+            other => Err(format!(
+                "unknown keybinding scope `{other}` (want focused or global)"
+            )),
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
@@ -131,6 +176,26 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
     },
+    /// Fire a GPUI **Action** by stable id (keymap path). Never OS HID.
+    ///
+    /// Wire field is `binding` (not `id`) so it does not collide with the
+    /// RPC correlation `id`. CLI/MCP `--id` maps here.
+    Keybinding {
+        binding: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chord: Option<String>,
+        scope: KeybindingScope,
+        #[serde(default, skip_serializing_if = "is_false")]
+        confirm: bool,
+        /// Opt-in host GPUI activate for `scope=focused` only. Default false.
+        #[serde(default, skip_serializing_if = "is_false")]
+        activate: bool,
+    },
+    /// List registered Action-id bindings: `{ id, chord, scope, dangerous }`.
+    ///
+    /// Alias `keybinding.list` is accepted on the wire.
+    #[serde(alias = "keybinding.list")]
+    Keybindings,
     Assert {
         #[serde(flatten)]
         spec: AssertSpec,
@@ -303,6 +368,20 @@ impl Op {
         }
     }
 
+    pub fn keybinding(binding: impl Into<String>, scope: KeybindingScope) -> Self {
+        Self::Keybinding {
+            binding: binding.into(),
+            chord: None,
+            scope,
+            confirm: false,
+            activate: false,
+        }
+    }
+
+    pub fn is_keybinding(&self) -> bool {
+        matches!(self, Self::Keybinding { .. } | Self::Keybindings)
+    }
+
     pub fn delivery(&self) -> DeliveryMode {
         match self {
             Self::Click { delivery, .. }
@@ -404,6 +483,59 @@ mod tests {
             !rendered.contains("super-secret-token"),
             "token leaked in Debug: {rendered}"
         );
+    }
+
+    #[test]
+    fn keybinding_op_does_not_clobber_request_id() {
+        let req = Request::new(
+            "rpc-1",
+            Op::Keybinding {
+                binding: "app.quit".into(),
+                chord: Some("cmd-q".into()),
+                scope: KeybindingScope::Global,
+                confirm: true,
+                activate: false,
+            },
+        );
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["id"], "rpc-1");
+        assert_eq!(json["op"], "keybinding");
+        assert_eq!(json["binding"], "app.quit");
+        assert_eq!(json["scope"], "global");
+        assert_eq!(json["confirm"], true);
+        assert!(json.get("activate").is_none());
+        let back: Request = serde_json::from_value(json).unwrap();
+        assert_eq!(back.id, "rpc-1");
+        match back.op {
+            Op::Keybinding {
+                binding,
+                chord,
+                scope,
+                confirm,
+                activate,
+            } => {
+                assert_eq!(binding, "app.quit");
+                assert_eq!(chord.as_deref(), Some("cmd-q"));
+                assert_eq!(scope, KeybindingScope::Global);
+                assert!(confirm);
+                assert!(!activate);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn keybindings_list_alias_roundtrip() {
+        let req = Request::new("2", Op::Keybindings);
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["op"], "keybindings");
+        let back: Request = serde_json::from_value(json).unwrap();
+        assert!(matches!(back.op, Op::Keybindings));
+
+        let alias: Request =
+            serde_json::from_str(r#"{"v":2,"id":"3","op":"keybinding.list"}"#).unwrap();
+        assert!(matches!(alias.op, Op::Keybindings));
+        assert_eq!(alias.id, "3");
     }
 
     #[test]

@@ -247,4 +247,3 @@ fn cli_help_hides_token_env_canary() {
         "help must mention AgentHost or embed:\n{text}"
     );
 }
-

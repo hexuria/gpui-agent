@@ -144,6 +144,15 @@ fn annotate(op: &Op, registry: &Registry) -> (Option<String>, Vec<Effect>, bool)
         Op::Type { .. } => lookup("type", registry),
         Op::SetValue { .. } => lookup("set_value", registry),
         Op::Key { .. } => lookup("key", registry),
+        Op::Keybinding { binding, .. } => {
+            let (name, effects, idempotent) = lookup("keybinding", registry);
+            if gpui_agent::is_quit_binding(binding) {
+                (name, vec![Effect::Exit], idempotent)
+            } else {
+                (name, effects, idempotent)
+            }
+        }
+        Op::Keybindings => lookup("keybindings", registry),
         Op::Assert { .. } => lookup("assert", registry),
         Op::Screenshot { .. } => lookup("screenshot", registry),
         Op::Shutdown => lookup("shutdown", registry),
@@ -300,6 +309,15 @@ mod tests {
     #[test]
     fn shutdown_requires_yes() {
         let recipe = parse_wants("hello\nshutdown", "bye").unwrap();
+        let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+        assert!(plan.requires_yes);
+        assert!(plan.effects.contains(&Effect::Exit));
+    }
+
+    #[test]
+    fn quit_keybinding_requires_yes() {
+        let recipe =
+            parse_wants("keybinding --id app.quit --scope global --confirm", "quit").unwrap();
         let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
         assert!(plan.requires_yes);
         assert!(plan.effects.contains(&Effect::Exit));

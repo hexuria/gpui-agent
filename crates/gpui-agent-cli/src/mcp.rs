@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use gpui_agent::client::AgentClient;
-use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
+use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
 use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
 use gpui_agent_recipe::{
     RunError, ScreenshotCapture, compile_plan, parse_recipe_source, registry_from_schema_paths,
@@ -127,8 +127,29 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "key",
-            "Send a key (Enter, Backspace, …) to a widget. Optional delivery=virtual uses GPUI dispatch_keystroke.",
+            "Send a key (Enter, Backspace, …) to a widget. No modifiers. Optional delivery=virtual uses GPUI dispatch_keystroke. Modifier chords use the keybinding tool.",
             input_schema_with_delivery(&["target", "key"]),
+        ),
+        tool(
+            "keybinding",
+            "Fire a GPUI Action by stable id (the same handler the keymap uses). Never OS HID. scope=focused requires the app window to be focused unless activate=true. scope=global is this app’s global map only. Destructive ids (app.quit) require confirm=true.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Action id (protocol field: binding). Alias: binding." },
+                    "binding": { "type": "string", "description": "Alias for id." },
+                    "scope": { "type": "string", "enum": ["focused", "global"] },
+                    "chord": { "type": "string", "description": "Optional chord metadata / resolve aid." },
+                    "confirm": { "type": "boolean", "description": "Required for dangerous Actions such as app.quit." },
+                    "activate": { "type": "boolean", "description": "scope=focused only: host-activate this window first." }
+                },
+                "required": ["scope"]
+            }),
+        ),
+        tool(
+            "keybindings",
+            "List registered Action-id keybindings: { id, chord, scope, dangerous }.",
+            json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "assert",
@@ -300,6 +321,25 @@ fn call_tool(
             args.string("key")?,
             parse_delivery(&args)?,
         )?,
+        "keybinding" => {
+            let binding = args
+                .opt_string("id")
+                .or_else(|| args.opt_string("binding"))
+                .ok_or_else(|| "missing string `id`".to_string())?;
+            let scope: KeybindingScope =
+                args.string("scope")?.parse().map_err(|err: String| err)?;
+            let chord = args.opt_string("chord");
+            let confirm = args
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let activate = args
+                .get("activate")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            client.keybinding(binding, scope, chord, confirm, activate)?
+        }
+        "keybindings" | "keybinding.list" => client.keybindings()?,
         "assert" => {
             let target = args
                 .opt_string("target")
@@ -498,6 +538,8 @@ mod tests {
                 "type",
                 "set_value",
                 "key",
+                "keybinding",
+                "keybindings",
                 "assert",
                 "invoke",
                 "shutdown",

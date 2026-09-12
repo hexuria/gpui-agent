@@ -458,6 +458,27 @@ impl AgentClient {
     pub fn wait_ready(&mut self) -> Result<Response, String> {
         self.expect_ok(Op::Wait { timeout_ms: None })
     }
+
+    pub fn keybindings(&mut self) -> Result<Response, String> {
+        self.expect_ok(Op::Keybindings)
+    }
+
+    pub fn keybinding(
+        &mut self,
+        binding: impl Into<String>,
+        scope: crate::protocol::KeybindingScope,
+        chord: Option<String>,
+        confirm: bool,
+        activate: bool,
+    ) -> Result<Response, String> {
+        self.expect_ok(Op::Keybinding {
+            binding: binding.into(),
+            chord,
+            scope,
+            confirm,
+            activate,
+        })
+    }
 }
 
 fn parse_response_line(line: &[u8]) -> Result<Response, String> {

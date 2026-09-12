@@ -104,6 +104,24 @@ pub fn handle_request(
             Ok(()) => Response::ok(req.id),
             Err(error) => Response::err(req.id, error),
         },
+        Op::Keybindings => {
+            let mut resp = Response::ok(&req.id);
+            resp.result = Some(crate::keybinding_list_json(&host.keybindings()));
+            resp
+        }
+        kb @ Op::Keybinding { .. } => {
+            match crate::authorize_keybinding_op(&kb, &host.keybindings(), host.is_app_focused()) {
+                Err(error) => Response::err(req.id, error),
+                Ok(_) => match host.dispatch(&kb) {
+                    Ok(result) => {
+                        let mut resp = Response::ok(req.id);
+                        resp.result = result.value;
+                        resp
+                    }
+                    Err(error) => Response::err(req.id, error),
+                },
+            }
+        }
         Op::Shutdown => match host.dispatch(&Op::Shutdown) {
             Ok(result) => {
                 let mut resp = Response::ok(req.id);
@@ -519,5 +537,35 @@ mod tests {
         };
         let err = assert_tree(&tree, &spec).unwrap_err();
         assert!(err.contains("duplicate id"), "{err}");
+    }
+
+    #[test]
+    fn keybindings_list_is_empty_on_hosts_without_a_catalog() {
+        let mut host = EmptyHost;
+        let resp = handle_request(&mut host, Request::new("1", Op::Keybindings), None, None);
+        assert!(resp.ok, "{resp:?}");
+        let list = resp.result.expect("list");
+        assert_eq!(list["keybindings"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn keybinding_unknown_fails_before_dispatch() {
+        let mut host = EmptyHost;
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::keybinding("app.quit", crate::KeybindingScope::Global),
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok, "{resp:?}");
+        assert!(
+            resp.error
+                .as_deref()
+                .is_some_and(|e| e.contains("unknown binding")),
+            "{resp:?}"
+        );
     }
 }
