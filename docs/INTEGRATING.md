@@ -70,10 +70,12 @@ auto-activate; `scope=global` is this app’s global map only — fail
 closed if you cannot dispatch without focus (`keybinding_unavailable`).
 Never synthesize OS HID. Intercept `Op::Screenshot` the
 same way: on macOS call `gpui_agent::capture_window_via_screencapture`
-with this window’s `CGWindowID`; on other OSes return
-`screenshot_unavailable`. Headless / tests: `spawn_host`
-with `Arc<Mutex<YourStore>>` and return `virtual_unavailable` /
-`screenshot_unavailable`.
+with this window’s `CGWindowID` (viewport). For `mode=scrolled`,
+resolve `target`, set scroll offset, wait for paint, capture tiles,
+stitch, and restore offset (no OS HID). Other OSes return
+`screenshot_unavailable` (including scrolled). Headless / tests:
+`spawn_host` with `Arc<Mutex<YourStore>>` and return
+`virtual_unavailable` / `screenshot_unavailable`.
 
 ## 3. Assign stable ids
 
@@ -167,6 +169,7 @@ reuses a single TCP session across `tools/call`.
       instead of pretending
 - [ ] Desktop screenshot runs on the UI thread with a real `Window`
       (macOS **embedded-host**: `screencapture -l` of that window only).
+      `mode=scrolled` stitches named-scroller tiles and restores offset.
       A GUI that is only a daemon client cannot serve a window PNG.
 
 ## 8. Copy-paste GPUI adapter
@@ -176,7 +179,7 @@ Do **not** add `gpui-kit` to `gpui-agent`. Copy this into the app crate:
 1. **Mailbox drain (desktop).** `spawn_mailbox` on a background thread; drain `AgentMailbox` on the GPUI UI thread. Never touch GPUI objects from the TCP thread.
 2. **Virtual dispatch.** On the UI thread, intercept `delivery=virtual` and call `Window::dispatch_event` / `dispatch_keystroke`. Never OS HID.
 3. **Keybinding dispatch.** On the UI thread, intercept `Op::Keybinding`, authorize against the host catalog (`confirm` for dangerous, no silent scope promote), then dispatch the GPUI Action the keymap would. Do **not** mutate the store from the intercept as a fallback if Action dispatch is a no-op — reply after the handler runs, or fail closed (`keybinding_unavailable: Action handler did not run`). `scope=global` must not activate. If the kit pin cannot dispatch a global Action without focus, return `keybinding_unavailable`.
-4. **macOS screenshot intercept.** On the UI thread, intercept `Op::Screenshot` and call `capture_window_via_screencapture` with this window’s `CGWindowID`. Other OSes: `screenshot_unavailable`.
+4. **macOS screenshot intercept.** On the UI thread, intercept `Op::Screenshot`. Viewport: `capture_window_via_screencapture` with this window’s `CGWindowID`. `mode=scrolled`: resolve `target`, set scroll offset, wait for paint, capture tiles, stitch, restore offset (no OS HID). Other OSes: `screenshot_unavailable` (including scrolled). Path confinement is unchanged.
 5. **`spawn_mailbox` vs `spawn_host`.** Painted GPUI: mailbox. Headless / tests: `spawn_host(Arc<Mutex<Store>>)`.
 6. **Default-deny token.** Bind via `from_env` requires `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`.
 7. **Confined screenshots.** Host writes relative `.png` names under `GPUI_AGENT_SCREENSHOT_DIR` (default `{temp_dir}/gpui-agent-screenshots/`). Clients send a file name, not an absolute path.

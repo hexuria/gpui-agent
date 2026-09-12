@@ -18,6 +18,8 @@ pub mod ids {
     pub const INPUT: &str = "todo-input";
     pub const ADD: &str = "todo-add";
     pub const LIST: &str = "todo-list";
+    /// Named scroll view for `screenshot mode=scrolled` (embedded-host demo).
+    pub const LIST_SCROLL: &str = "todo-list-scroll";
     pub const EMPTY: &str = "todo-empty";
     pub const STATUS: &str = "todo-status";
     pub const WINDOW: &str = "todo-window";
@@ -157,6 +159,12 @@ impl TodoStore {
 
     pub fn toggle_confirm_delete(&mut self) {
         self.confirm_delete = !self.confirm_delete;
+    }
+
+    pub fn seed_overflow_demo(&mut self, count: usize) {
+        for i in 1..=count {
+            let _ = self.add(format!("Scroll demo {i}"));
+        }
     }
 
     pub fn items(&self) -> &[Todo] {
@@ -360,7 +368,10 @@ impl TodoStore {
                 UiNode::textbox(ids::INPUT, "What needs doing?").with_value(self.draft.clone()),
             )
             .with_child(UiNode::button(ids::ADD, "Add"))
-            .with_child(UiNode::list(ids::LIST, "Todos").with_children(list_children))
+            .with_child(
+                UiNode::scroll(ids::LIST_SCROLL, "Todo list")
+                    .with_child(UiNode::list(ids::LIST, "Todos").with_children(list_children)),
+            )
             .with_child(UiNode::status(ids::STATUS, status_name))
     }
 
@@ -506,11 +517,11 @@ impl AgentHost for TodoStore {
         self.app_focused
     }
 
-    fn screenshot(&self, path: Option<&str>) -> Result<DispatchResult, String> {
-        let path = gpui_agent::require_screenshot_path(path)?;
+    fn screenshot(&self, spec: gpui_agent::ScreenshotSpec<'_>) -> Result<DispatchResult, String> {
+        let path = gpui_agent::require_screenshot_path(spec.path)?;
         let _dest = gpui_agent::confine_screenshot_path(path)?;
         let detail = match self.platform {
-            PlatformKind::Headless => "headless host has no pixel surface",
+            PlatformKind::Headless => "headless host has no pixel surface (viewport and scrolled)",
             PlatformKind::Desktop => {
                 "desktop screenshot must run on the GPUI UI thread with a Window \
                  (mailbox intercept). This store has no pixel surface."
@@ -539,7 +550,15 @@ impl AgentHost for TodoStore {
                 &Self::keybinding_catalog(),
             ))),
             Op::Invoke { name, args } => self.invoke(name, args),
-            Op::Screenshot { path } => AgentHost::screenshot(self, path.as_deref()),
+            Op::Screenshot {
+                path,
+                mode,
+                target,
+                max_height_px,
+            } => AgentHost::screenshot(
+                self,
+                gpui_agent::ScreenshotSpec::from_op(path, *mode, target, *max_height_px),
+            ),
             Op::Shutdown => {
                 self.shutdown = true;
                 Ok(DispatchResult::empty())
@@ -669,7 +688,7 @@ mod tests {
         let name = format!("todo-headless-no-shot-{}.png", std::process::id());
         let dest = gpui_agent::screenshot_base_dir().join(&name);
         let _ = std::fs::remove_file(&dest);
-        let req = Request::new("s", Op::Screenshot { path: Some(name) });
+        let req = Request::new("s", Op::screenshot(name));
         let resp = handle_request(&mut store, req, None, None);
         assert!(!resp.ok, "{resp:?}");
         let err = resp.error.unwrap();
@@ -679,15 +698,57 @@ mod tests {
     }
 
     #[test]
+    fn scrolled_screenshot_is_honestly_unavailable() {
+        let mut store = TodoStore::default();
+        let name = format!("todo-headless-no-scrolled-{}.png", std::process::id());
+        let dest = gpui_agent::screenshot_base_dir().join(&name);
+        let _ = std::fs::remove_file(&dest);
+        let req = Request::new(
+            "s",
+            Op::screenshot_scrolled(name, ids::LIST_SCROLL, Some(4096)),
+        );
+        let resp = handle_request(&mut store, req, None, None);
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(gpui_agent::is_screenshot_unavailable(&err), "{err}");
+        assert!(err.contains("headless"), "{err}");
+        assert!(!dest.exists(), "must not invent {}", dest.display());
+    }
+
+    #[test]
+    fn scrolled_screenshot_unconfined_path_fails_before_unavailable() {
+        let mut store = TodoStore::default();
+        let dest = std::path::Path::new("/tmp/evil-scrolled.png");
+        let _ = std::fs::remove_file(dest);
+        let req = Request::new(
+            "s",
+            Op::screenshot_scrolled("/tmp/evil-scrolled.png", ids::LIST_SCROLL, Some(4096)),
+        );
+        let resp = handle_request(&mut store, req, None, None);
+        assert!(!resp.ok, "{resp:?}");
+        let err = resp.error.unwrap();
+        assert!(
+            !gpui_agent::is_screenshot_unavailable(&err),
+            "unconfined scrolled path must fail at confine: {err}"
+        );
+        assert!(err.contains("relative"), "{err}");
+        assert!(!dest.exists(), "must not invent {}", dest.display());
+    }
+
+    #[test]
+    fn tree_exposes_scroll_target_id() {
+        let store = TodoStore::default();
+        let tree = store.tree();
+        let node = tree.find(ids::LIST_SCROLL).expect("scroll id");
+        assert_eq!(node.role, gpui_agent::role::SCROLL);
+        assert!(tree.find(ids::LIST).is_some());
+    }
+
+    #[test]
     fn screenshot_unconfined_path_fails_before_unavailable() {
         let mut store = TodoStore::default();
         for bad in ["/etc/passwd.png", "-Sc.png", "../x.png"] {
-            let req = Request::new(
-                "s",
-                Op::Screenshot {
-                    path: Some(bad.into()),
-                },
-            );
+            let req = Request::new("s", Op::screenshot(bad));
             let resp = handle_request(&mut store, req, None, None);
             assert!(!resp.ok, "{bad} {resp:?}");
             let err = resp.error.clone().unwrap();
@@ -719,12 +780,10 @@ mod tests {
         let _ = std::fs::remove_file(&dest);
         let req = Request::new(
             "s",
-            Op::Screenshot {
-                path: Some(format!(
-                    "todo-desktop-store-no-shot-{}.png",
-                    std::process::id()
-                )),
-            },
+            Op::screenshot(format!(
+                "todo-desktop-store-no-shot-{}.png",
+                std::process::id()
+            )),
         );
         let resp = handle_request(&mut store, req, None, None);
         assert!(!resp.ok, "{resp:?}");

@@ -70,12 +70,12 @@
       "keywords": ["add", "button"]
     },
     {
-      "name": "todo-list",
+      "name": "todo-list-scroll",
       "kind": "id",
-      "description": "List of todo items.",
-      "effects": ["write"],
+      "description": "Scroll view wrapping the todo list (screenshot mode=scrolled target).",
+      "effects": ["read"],
       "verified": true,
-      "keywords": ["list"]
+      "keywords": ["scroll", "list"]
     },
     {
       "name": "todo-window",

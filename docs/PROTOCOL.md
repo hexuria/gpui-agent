@@ -65,7 +65,7 @@ servers close on bad JSON the same way.
 | `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists` | Check snapshot fields |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
 | `wait` | optional `timeout_ms` | `None`: immediate hello (even if `ready: false`). `Some(ms)`: poll `hello.ready` until true or `wait timed out` (sleep ≤ 10 ms between polls) |
-| `screenshot` | optional `path` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Headless / daemon / default GUI client / Linux / Windows return `screenshot_unavailable` instead of a fake image. macOS `todo --features embedded-host` writes **this window** via `screencapture -l` (Screen Recording). Never the full desktop. |
+| `screenshot` | optional `path`, optional `mode` (`viewport` \| `scrolled`, default **viewport**), optional `target`, optional `max_height_px` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Default `mode=viewport` is unchanged: the painted window. `mode=scrolled` requires `target` (stable scroll-view id): the host sets scroll offset, waits for paint, captures tiles, stitches, and restores the original offset (semantic scroll API — **not** OS HID / virtual wheel). Headless / daemon / default GUI client / Linux / Windows return `screenshot_unavailable` instead of a fake image (including scrolled). macOS `todo --features embedded-host` writes **this window** via `screencapture -l` (Screen Recording); scrolled stitches those tiles. Never the full desktop. Offscreen `render_to_image` is out of MVP. |
 | `shutdown` | | Ask the host to exit |
 
 These are also the **only** first-class `gpui-agent` CLI commands (plus
@@ -141,6 +141,8 @@ gpui-agent click todo-add                    # semantic (default)
 gpui-agent click --delivery virtual todo-add
 gpui-agent type --delivery virtual todo-input "Hi"
 gpui-agent key --delivery virtual todo-input Enter
+gpui-agent screenshot --out artifacts/steps/mid.png
+gpui-agent screenshot --out tall.png --mode scrolled --target todo-list-scroll
 ```
 
 ```json
@@ -295,7 +297,7 @@ are implemented. New hosts implement `AgentHost` and keep this document.
 | --- | --- |
 | Headless | `screenshot_unavailable`, no file |
 | Desktop Linux / Windows | Same (no production GPUI framebuffer export on this pin) |
-| Desktop macOS (embedded-host) | PNG of **this window** (`screencapture -l`); permission failure is unavailable, not a fake PNG |
+| Desktop macOS (embedded-host) | PNG of **this window** (`screencapture -l`); `mode=scrolled` stitches tiles of a named scroller then restores offset. Permission failure is unavailable, not a fake PNG |
 | Desktop macOS (default GUI client) | `screenshot_unavailable` — GUI does not host the agent port |
 
 ## Extending

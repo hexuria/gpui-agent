@@ -33,7 +33,7 @@ pub fn maybe_start() -> Option<AgentMailbox> {
                 config.addr,
                 config.token,
                 mailbox.clone(),
-                Duration::from_secs(8),
+                Duration::from_secs(30),
             ) {
                 Ok((addr, _)) => {
                     eprintln!("gpui-agent listening on {addr} (platform=desktop, app=todo)");
@@ -48,6 +48,7 @@ pub fn maybe_start() -> Option<AgentMailbox> {
                     );
                     eprintln!(
                         "screenshot: macOS writes this window via screencapture -l (Screen Recording); \
+                         mode=scrolled tiles a named scroller (todo-list-scroll) then restores offset; \
                          other OSes and headless stay screenshot_unavailable"
                     );
                     Some(mailbox)

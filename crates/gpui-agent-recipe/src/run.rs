@@ -234,6 +234,9 @@ fn capture_screenshot(
         .to_string();
     match client.rpc(Op::Screenshot {
         path: Some(wire_name),
+        mode: gpui_agent::ScreenshotMode::Viewport,
+        target: None,
+        max_height_px: None,
     }) {
         Ok(resp) if resp.ok => Some(ScreenshotReceipt {
             path: path_str,

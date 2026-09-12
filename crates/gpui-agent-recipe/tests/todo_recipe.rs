@@ -528,8 +528,10 @@ impl AgentHost for PngHost {
         self.inner.dispatch(op)
     }
 
-    fn screenshot(&self, path: Option<&str>) -> Result<DispatchResult, String> {
-        let path = path.ok_or_else(|| "screenshot requires path".to_string())?;
+    fn screenshot(&self, spec: gpui_agent::ScreenshotSpec<'_>) -> Result<DispatchResult, String> {
+        let path = spec
+            .path
+            .ok_or_else(|| "screenshot requires path".to_string())?;
         gpui_agent::write_png(path, gpui_agent::TEST_PNG).map(DispatchResult::json)
     }
 }

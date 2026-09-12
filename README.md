@@ -31,6 +31,7 @@ gpui-agent wait
 gpui-agent hello
 gpui-agent snapshot --pretty
 gpui-agent screenshot --out artifacts/steps/mid.png
+gpui-agent screenshot --out tall.png --mode scrolled --target todo-list-scroll
 gpui-agent click nav-settings
 gpui-agent click --delivery virtual nav-settings
 gpui-agent assert --id page-settings

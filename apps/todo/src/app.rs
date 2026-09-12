@@ -52,6 +52,9 @@ pub struct TodoApp {
     layout_bounds: HashMap<String, gpui_agent::Bounds>,
     #[cfg(feature = "embedded-host")]
     agent_cursor: gpui_agent::AgentCursor,
+    scroll: ScrollHandle,
+    #[cfg(feature = "embedded-host")]
+    scrolled_job: Option<crate::scrolled_shot::ScrolledShotJob>,
 }
 
 impl TodoApp {
@@ -138,7 +141,11 @@ impl TodoApp {
 
         Self {
             #[cfg(feature = "embedded-host")]
-            store: TodoStore::new(PlatformKind::Desktop),
+            store: {
+                let mut store = TodoStore::new(PlatformKind::Desktop);
+                store.seed_overflow_demo(crate::scrolled_shot::DEMO_OVERFLOW_ROWS);
+                store
+            },
             #[cfg(not(feature = "embedded-host"))]
             view: TodoView::default(),
             #[cfg(not(feature = "embedded-host"))]
@@ -160,6 +167,9 @@ impl TodoApp {
             layout_bounds: HashMap::new(),
             #[cfg(feature = "embedded-host")]
             agent_cursor: gpui_agent::AgentCursor::session_default(),
+            scroll: ScrollHandle::new(),
+            #[cfg(feature = "embedded-host")]
+            scrolled_job: None,
         }
     }
 
@@ -304,6 +314,10 @@ impl TodoApp {
             return;
         };
         self.keybinding_backlog.extend(mailbox.take());
+        if self.scrolled_job.is_some() {
+            self.advance_scrolled_job(window, cx);
+            return;
+        }
         if self.pending_keybinding.is_some() {
             return;
         }
@@ -318,18 +332,40 @@ impl TodoApp {
                 continue;
             }
 
-            let shutdown = matches!(posted.request.op, gpui_agent::Op::Shutdown);
-            let response = if posted.request.op.is_virtual_input() {
-                match self.dispatch_virtual(&posted.request.op, window, cx) {
+            if let gpui_agent::Op::Screenshot { mode, .. } = &posted.request.op {
+                if mode.is_scrolled() {
+                    let (path, target, max_height_px) = match &posted.request.op {
+                        gpui_agent::Op::Screenshot {
+                            path,
+                            target,
+                            max_height_px,
+                            ..
+                        } => (path.clone(), target.clone(), *max_height_px),
+                        _ => unreachable!(),
+                    };
+                    self.start_scrolled_job(posted, path, target, max_height_px, window, cx);
+                    return;
+                }
+                let path = match &posted.request.op {
+                    gpui_agent::Op::Screenshot { path, .. } => path.clone(),
+                    _ => unreachable!(),
+                };
+                let response = match screenshot_this_window(window, path.as_deref()) {
                     Ok(result) => {
                         let mut resp = gpui_agent::Response::ok(&posted.request.id);
                         resp.result = result.value;
                         resp
                     }
                     Err(error) => gpui_agent::Response::err(&posted.request.id, error),
-                }
-            } else if let gpui_agent::Op::Screenshot { path } = &posted.request.op {
-                match screenshot_this_window(window, path.as_deref()) {
+                };
+                posted.reply(response);
+                cx.notify();
+                continue;
+            }
+
+            let shutdown = matches!(posted.request.op, gpui_agent::Op::Shutdown);
+            let response = if posted.request.op.is_virtual_input() {
+                match self.dispatch_virtual(&posted.request.op, window, cx) {
                     Ok(result) => {
                         let mut resp = gpui_agent::Response::ok(&posted.request.id);
                         resp.result = result.value;
@@ -352,6 +388,348 @@ impl TodoApp {
                 cx.quit();
             }
             cx.notify();
+        }
+    }
+
+    #[cfg(all(feature = "embedded-host", target_os = "macos"))]
+    fn scroll_metrics(&self) -> Result<gpui_agent::ScrollMetrics, String> {
+        let bounds = self.scroll.bounds();
+        let w = f32::from(bounds.size.width);
+        let h = f32::from(bounds.size.height);
+        if h < 1.0 {
+            return Err(gpui_agent::scroll_unavailable(
+                "todo-list-scroll viewport is not painted yet",
+            ));
+        }
+        let max_y = f32::from(self.scroll.max_offset().y);
+        let offset_y = (-f32::from(self.scroll.offset().y)).max(0.0);
+        Ok(gpui_agent::ScrollMetrics {
+            viewport: gpui_agent::Bounds {
+                x: f32::from(bounds.origin.x),
+                y: f32::from(bounds.origin.y),
+                w,
+                h,
+            },
+            content_height: h + max_y.max(0.0),
+            offset_y,
+        })
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn set_scroll_offset_y(&self, y: f32) {
+        self.scroll.set_offset(point(px(0.0), px(-y)));
+    }
+
+    #[cfg(all(feature = "embedded-host", target_os = "macos"))]
+    fn window_size(window: &Window) -> (f32, f32) {
+        let bounds = window.bounds();
+        (f32::from(bounds.size.width), f32::from(bounds.size.height))
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn start_scrolled_job(
+        &mut self,
+        posted: gpui_agent::mailbox::MailboxRequest,
+        path: Option<String>,
+        target: Option<String>,
+        max_height_px: Option<u32>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let spec = gpui_agent::ScreenshotSpec {
+            path: path.as_deref(),
+            mode: gpui_agent::ScreenshotMode::Scrolled,
+            target: target.as_deref(),
+            max_height_px,
+        };
+        if let Err(err) = spec.validate_request() {
+            reply_mailbox_err(posted, err);
+            return;
+        }
+        let path = match gpui_agent::require_screenshot_path(spec.path) {
+            Ok(path) => path.to_string(),
+            Err(err) => {
+                reply_mailbox_err(posted, err);
+                return;
+            }
+        };
+        if let Err(err) = gpui_agent::confine_screenshot_path(&path) {
+            reply_mailbox_err(posted, err);
+            return;
+        }
+        let target = match spec.scrolled_target() {
+            Ok(t) => t.to_string(),
+            Err(err) => {
+                reply_mailbox_err(posted, err);
+                return;
+            }
+        };
+        if target != ids::LIST_SCROLL {
+            reply_mailbox_err(
+                posted,
+                gpui_agent::scroll_unavailable(format!(
+                    "unknown scroll target `{target}` (want {})",
+                    ids::LIST_SCROLL
+                )),
+            );
+            return;
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
+            let _ = cx;
+            reply_mailbox_err(
+                posted,
+                gpui_agent::screenshot_unavailable(
+                    "scrolled screenshot is macOS-only (`screencapture -l` tiles). \
+                     This OS has no production GPUI framebuffer export (`Window::render_to_image` is \
+                     test-support only). Headless stays screenshot_unavailable.",
+                ),
+            );
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let window_id = match crate::macos_window::cgwindow_id(window) {
+                Ok(id) => id,
+                Err(err) => {
+                    reply_mailbox_err(posted, err);
+                    return;
+                }
+            };
+            let original = self.scroll_metrics().map(|m| m.offset_y).unwrap_or(0.0);
+            self.scrolled_job = Some(crate::scrolled_shot::ScrolledShotJob {
+                reply: posted,
+                dest_client: path,
+                target,
+                original_offset: original,
+                tiles: Vec::new(),
+                next: 0,
+                captured: Vec::new(),
+                metrics: None,
+                window_size: Self::window_size(window),
+                window_id,
+                phase: crate::scrolled_shot::ScrolledPhase::WaitMetrics,
+                frames_waited: 0,
+                awaiting_paint: false,
+            });
+            cx.notify();
+        }
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn restore_scroll_offset(&self, y: f32) {
+        self.set_scroll_offset_y(y);
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn finish_scrolled_job(
+        &mut self,
+        job: crate::scrolled_shot::ScrolledShotJob,
+        response: gpui_agent::Response,
+        cx: &mut Context<Self>,
+    ) {
+        self.restore_scroll_offset(job.original_offset);
+        job.reply.reply(response);
+        cx.notify();
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn advance_scrolled_job(&mut self, window: &Window, cx: &mut Context<Self>) {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
+            if let Some(job) = self.scrolled_job.take() {
+                let id = job.reply.request.id.clone();
+                self.finish_scrolled_job(
+                    job,
+                    gpui_agent::Response::err(
+                        id,
+                        gpui_agent::screenshot_unavailable("scrolled screenshot is macOS-only"),
+                    ),
+                    cx,
+                );
+            }
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.advance_scrolled_job_macos(window, cx);
+        }
+    }
+
+    #[cfg(all(feature = "embedded-host", target_os = "macos"))]
+    fn advance_scrolled_job_macos(&mut self, window: &Window, cx: &mut Context<Self>) {
+        use gpui_agent::{
+            MAX_SCROLLED_PNG_BYTES, capture_window_png_bytes, confine_screenshot_path,
+            crop_window_png, encode_png_rgba, plan_scroll_tiles, scrolled_dispatch_result,
+            stitch_tiles_vertically,
+        };
+
+        let mut job = match self.scrolled_job.take() {
+            Some(job) => job,
+            None => return,
+        };
+        job.frames_waited += 1;
+        job.window_size = Self::window_size(window);
+
+        match job.phase {
+            crate::scrolled_shot::ScrolledPhase::WaitMetrics => match self.scroll_metrics() {
+                Ok(metrics) => {
+                    let cap = match &job.reply.request.op {
+                        gpui_agent::Op::Screenshot { max_height_px, .. } => {
+                            max_height_px.unwrap_or(gpui_agent::DEFAULT_MAX_HEIGHT_PX)
+                        }
+                        _ => gpui_agent::DEFAULT_MAX_HEIGHT_PX,
+                    };
+                    let tiles = match plan_scroll_tiles(&metrics, cap) {
+                        Ok(tiles) => tiles,
+                        Err(err) => {
+                            let id = job.reply.request.id.clone();
+                            self.finish_scrolled_job(job, gpui_agent::Response::err(id, err), cx);
+                            return;
+                        }
+                    };
+                    job.original_offset = metrics.offset_y;
+                    job.metrics = Some(metrics);
+                    job.tiles = tiles;
+                    job.next = 0;
+                    if job.tiles.is_empty() {
+                        let id = job.reply.request.id.clone();
+                        self.finish_scrolled_job(
+                            job,
+                            gpui_agent::Response::err(id, "scrolled screenshot produced no tiles"),
+                            cx,
+                        );
+                        return;
+                    }
+                    self.set_scroll_offset_y(job.tiles[0].offset_y);
+                    job.phase = crate::scrolled_shot::ScrolledPhase::WaitPaint;
+                    job.awaiting_paint = true;
+                    self.scrolled_job = Some(job);
+                    cx.notify();
+                }
+                Err(_) if job.frames_waited < crate::scrolled_shot::METRICS_WAIT_FRAMES => {
+                    self.scrolled_job = Some(job);
+                    cx.notify();
+                }
+                Err(err) => {
+                    let id = job.reply.request.id.clone();
+                    self.finish_scrolled_job(job, gpui_agent::Response::err(id, err), cx);
+                }
+            },
+            crate::scrolled_shot::ScrolledPhase::WaitPaint => {
+                if job.awaiting_paint {
+                    job.awaiting_paint = false;
+                    self.scrolled_job = Some(job);
+                    cx.notify();
+                    return;
+                }
+                let spec = job.tiles[job.next];
+                let metrics = match job.metrics {
+                    Some(m) => m,
+                    None => {
+                        let id = job.reply.request.id.clone();
+                        self.finish_scrolled_job(
+                            job,
+                            gpui_agent::Response::err(
+                                id,
+                                gpui_agent::scroll_unavailable("missing scroll metrics"),
+                            ),
+                            cx,
+                        );
+                        return;
+                    }
+                };
+                let png = match capture_window_png_bytes(job.window_id) {
+                    Ok(png) => png,
+                    Err(err) => {
+                        let id = job.reply.request.id.clone();
+                        self.finish_scrolled_job(job, gpui_agent::Response::err(id, err), cx);
+                        return;
+                    }
+                };
+                let slice = match crop_window_png(
+                    &png,
+                    job.window_size.0,
+                    job.window_size.1,
+                    metrics.viewport,
+                    spec.skip_top_px,
+                    spec.take_height_px,
+                ) {
+                    Ok(slice) => slice,
+                    Err(err) => {
+                        let id = job.reply.request.id.clone();
+                        self.finish_scrolled_job(job, gpui_agent::Response::err(id, err), cx);
+                        return;
+                    }
+                };
+                job.captured.push(slice);
+                job.next += 1;
+                if job.next >= job.tiles.len() {
+                    let dest_client = job.dest_client.clone();
+                    let target = job.target.clone();
+                    let content_h = metrics.content_height.max(metrics.viewport.h);
+                    let vh = metrics.viewport.h;
+                    let tile_count = job.tiles.len();
+                    let stitched = match stitch_tiles_vertically(&job.captured) {
+                        Ok(img) => img,
+                        Err(err) => {
+                            let id = job.reply.request.id.clone();
+                            self.finish_scrolled_job(job, gpui_agent::Response::err(id, err), cx);
+                            return;
+                        }
+                    };
+                    let bytes = match encode_png_rgba(&stitched) {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            let id = job.reply.request.id.clone();
+                            self.finish_scrolled_job(job, gpui_agent::Response::err(id, err), cx);
+                            return;
+                        }
+                    };
+                    if bytes.len() > MAX_SCROLLED_PNG_BYTES {
+                        let id = job.reply.request.id.clone();
+                        self.finish_scrolled_job(
+                            job,
+                            gpui_agent::Response::err(
+                                id,
+                                format!(
+                                    "stitched png exceeds {MAX_SCROLLED_PNG_BYTES} bytes ({})",
+                                    bytes.len()
+                                ),
+                            ),
+                            cx,
+                        );
+                        return;
+                    }
+                    let dest = match confine_screenshot_path(&dest_client) {
+                        Ok(dest) => dest,
+                        Err(err) => {
+                            let id = job.reply.request.id.clone();
+                            self.finish_scrolled_job(job, gpui_agent::Response::err(id, err), cx);
+                            return;
+                        }
+                    };
+                    if let Err(err) = gpui_agent::atomic_write_png(&dest, &bytes) {
+                        let id = job.reply.request.id.clone();
+                        self.finish_scrolled_job(job, gpui_agent::Response::err(id, err), cx);
+                        return;
+                    }
+                    let dest_str = dest.to_string_lossy().into_owned();
+                    let result =
+                        scrolled_dispatch_result(&dest_str, &target, content_h, vh, tile_count);
+                    let id = job.reply.request.id.clone();
+                    let mut resp = gpui_agent::Response::ok(id);
+                    resp.result = result.value;
+                    self.finish_scrolled_job(job, resp, cx);
+                    return;
+                }
+                self.set_scroll_offset_y(job.tiles[job.next].offset_y);
+                job.awaiting_paint = true;
+                self.scrolled_job = Some(job);
+                cx.notify();
+            }
         }
     }
 
@@ -952,12 +1330,21 @@ impl TodoApp {
                 .collect()
         };
 
-        v_flex()
+        let list = v_flex()
             .id(ids::LIST)
-            .flex_1()
             .gap_2()
             .w_full()
-            .children(children)
+            .flex_shrink_0()
+            .children(children);
+
+        div()
+            .id(ids::LIST_SCROLL)
+            .flex_1()
+            .min_h(px(0.))
+            .w_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(list)
     }
 
     fn render_item(
@@ -978,6 +1365,7 @@ impl TodoApp {
         let row = h_flex()
             .id(SharedString::from(row_id.clone()))
             .w_full()
+            .flex_shrink_0()
             .gap_2()
             .px_3()
             .py_2()
@@ -1042,6 +1430,12 @@ impl TodoApp {
             row.into_any_element()
         }
     }
+}
+
+#[cfg(feature = "embedded-host")]
+fn reply_mailbox_err(posted: gpui_agent::mailbox::MailboxRequest, err: impl Into<String>) {
+    let id = posted.request.id.clone();
+    posted.reply(gpui_agent::Response::err(id, err));
 }
 
 #[cfg(feature = "embedded-host")]

@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::hmac_auth::{hmac_hex, parse_challenge_line};
 use crate::mailbox::MAX_MAILBOX_DEPTH;
 use crate::ndjson::{read_limited_line_into, write_json_line};
-use crate::protocol::{AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response};
+use crate::protocol::{AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response, ScreenshotMode};
 use crate::server::{MAX_LINE_BYTES, default_addr};
 
 /// Blocking NDJSON client used by the CLI, MCP shim, recipes, and tests.
@@ -60,6 +60,18 @@ impl LiveSession {
             session.auth = Some(hmac_hex(token, &nonce)?);
         }
         Ok(session)
+    }
+
+    fn set_io_timeout(&mut self, timeout: Duration) -> Result<(), String> {
+        for stream in [&self.writer, self.reader.get_ref()] {
+            stream
+                .set_read_timeout(Some(timeout))
+                .map_err(|err| err.to_string())?;
+            stream
+                .set_write_timeout(Some(timeout))
+                .map_err(|err| err.to_string())?;
+        }
+        Ok(())
     }
 
     fn exchange_wire(&mut self, id: &str, op: &Op) -> Result<Response, String> {
@@ -199,6 +211,17 @@ impl AgentClient {
         self.timeout = timeout;
     }
 
+    /// Scrolled capture waits for paint + N window grabs. The default 8s
+    /// RPC timeout is shorter than the embedded-host mailbox (30s).
+    fn timeout_for(&self, op: &Op) -> Duration {
+        match op {
+            Op::Screenshot { mode, .. } if mode.is_scrolled() => {
+                self.timeout.max(Duration::from_secs(30))
+            }
+            _ => self.timeout,
+        }
+    }
+
     /// True when a live TCP session is being reused.
     pub fn has_session(&self) -> bool {
         self.session.is_some()
@@ -263,9 +286,10 @@ impl AgentClient {
         let mut id_buf = [0u8; 20];
         let id = fmt_u64(id_num, &mut id_buf);
         let mut last_err = String::new();
-        let deadline = std::time::Instant::now() + self.timeout;
+        let timeout = self.timeout_for(op);
+        let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
-            match self.roundtrip_wire(id, op) {
+            match self.roundtrip_wire(id, op, timeout) {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
                     last_err = err;
@@ -280,13 +304,15 @@ impl AgentClient {
         ))
     }
 
-    fn roundtrip_wire(&mut self, id: &str, op: &Op) -> Result<Response, String> {
+    fn roundtrip_wire(&mut self, id: &str, op: &Op, timeout: Duration) -> Result<Response, String> {
         if self.session.is_none() {
             self.session = Some(LiveSession::open(
                 self.addr,
-                self.timeout,
+                timeout,
                 self.token.as_deref(),
             )?);
+        } else if let Some(session) = self.session.as_mut() {
+            session.set_io_timeout(timeout)?;
         }
         match self
             .session
@@ -367,8 +393,31 @@ impl AgentClient {
 
     /// Observe-only PNG of the app surface. `path` is on the host machine.
     pub fn screenshot(&mut self, path: impl Into<String>) -> Result<Response, String> {
+        self.expect_ok(Op::screenshot(path))
+    }
+
+    /// Opt-in tall capture of a named scroller (`mode=scrolled`).
+    pub fn screenshot_scrolled(
+        &mut self,
+        path: impl Into<String>,
+        target: impl Into<String>,
+        max_height_px: Option<u32>,
+    ) -> Result<Response, String> {
+        self.expect_ok(Op::screenshot_scrolled(path, target, max_height_px))
+    }
+
+    pub fn screenshot_with(
+        &mut self,
+        path: impl Into<String>,
+        mode: ScreenshotMode,
+        target: Option<String>,
+        max_height_px: Option<u32>,
+    ) -> Result<Response, String> {
         self.expect_ok(Op::Screenshot {
             path: Some(path.into()),
+            mode,
+            target,
+            max_height_px,
         })
     }
 

@@ -62,7 +62,8 @@ fn recipe_against_sdk_host() {
 ```
 
 `TestHost` binds `127.0.0.1:0`. Screenshot stays honest: hosts without a
-surface return `screenshot_unavailable` (do not invent PNGs).
+surface return `screenshot_unavailable` (do not invent PNGs). That
+includes `mode=scrolled`. Offscreen `render_to_image` is out of MVP.
 
 ## 3. Desktop mailbox vs daemon
 

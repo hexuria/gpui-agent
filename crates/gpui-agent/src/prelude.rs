@@ -15,8 +15,9 @@ pub use crate::keybinding::{
 pub use crate::mailbox::AgentMailbox;
 pub use crate::protocol::{
     AssertSpec, DeliveryMode, HelloAuth, HelloInfo, KeybindingScope, Op, PROTOCOL_VERSION,
-    PlatformKind, Request, Response,
+    PlatformKind, Request, Response, ScreenshotMode,
 };
+pub use crate::scroll_capture::{ScreenshotSpec, ScrollMetrics, scroll_unavailable};
 pub use crate::security::{
     AgentConfig, authorize_bind, authorize_client, from_env, is_loopback_addr,
 };

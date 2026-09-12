@@ -209,6 +209,45 @@ pub fn screencapture_window_argv(window_id: u32, path: &str) -> Result<Vec<Strin
     ])
 }
 
+/// Capture **this** window and return PNG bytes. Writes only a temp file
+/// (never the client path). Linux/Windows return unavailable with no file.
+pub fn capture_window_png_bytes(window_id: u32) -> Result<Vec<u8>, String> {
+    let dest = screenshot_base_dir().join("tile.png");
+    let tmp = png_write_temp_path(&dest, 0);
+    let tmp_str = tmp
+        .to_str()
+        .ok_or_else(|| "screenshot temp path is not utf-8".to_string())?;
+    let args = screencapture_window_argv(window_id, tmp_str)?;
+    #[cfg(target_os = "macos")]
+    {
+        prepare_screencapture_dest(tmp_str)?;
+        run_screencapture(&args, tmp_str)?;
+        let bytes = match std::fs::read(&tmp) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(screenshot_unavailable(format!(
+                    "screencapture produced no tile: {err}"
+                )));
+            }
+        };
+        let _ = std::fs::remove_file(&tmp);
+        if !bytes.starts_with(b"\x89PNG") {
+            return Err(screenshot_unavailable(
+                "screencapture wrote a non-PNG tile; refusing to stitch it",
+            ));
+        }
+        Ok(bytes)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = args;
+        Err(screenshot_unavailable(
+            "screencapture -l is macOS-only; this OS has no production GPUI framebuffer export",
+        ))
+    }
+}
+
 /// Capture **this** window to `path` with macOS `screencapture -l`.
 ///
 /// Linux/Windows return [`screenshot_unavailable`] without running a
@@ -456,6 +495,28 @@ mod tests {
             "must not claim a screencapture PNG on this OS: {err}"
         );
         assert!(!dest.exists(), "must not invent {}", dest.display());
+    }
+
+    /// Scrolled mode uses the same Mac-only grab. Must not invent a PNG
+    /// (including a stitched fake) on Linux/Windows.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn scrolled_capture_without_macos_does_not_invent_a_file() {
+        let dest = screenshot_base_dir()
+            .join(format!("gpui-agent-no-scrolled-{}.png", std::process::id()));
+        let _ = std::fs::remove_file(&dest);
+        let err = capture_window_png_bytes(7).unwrap_err();
+        assert!(is_screenshot_unavailable(&err), "{err}");
+        assert!(err.contains("macOS-only"), "{err}");
+        assert!(!dest.exists(), "must not invent {}", dest.display());
+        let spec = crate::scroll_capture::ScreenshotSpec {
+            path: Some("scrolled.png"),
+            mode: crate::protocol::ScreenshotMode::Scrolled,
+            target: Some("todo-list-scroll"),
+            max_height_px: Some(4096),
+        };
+        spec.validate_request().unwrap();
+        assert!(!dest.exists());
     }
 
     #[test]
