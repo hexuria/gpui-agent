@@ -367,6 +367,12 @@ pub struct HelloInfo {
     pub protocol: u32,
     pub app: String,
     pub platform: PlatformKind,
+    /// The host's operating system (`std::env::consts::OS`: `macos`, `linux`,
+    /// `windows`, …). `platform` says *what kind* of host answered; `os` says
+    /// *which machine*. A smoke script that expects a Mac can refuse a Linux
+    /// host that happens to be forwarded to the same loopback port.
+    #[serde(default = "host_os")]
+    pub os: String,
     pub ready: bool,
     /// Input delivery modes this host actually implements.
     /// Headless typically lists only `semantic`. Desktop GPUI lists both.
@@ -375,6 +381,11 @@ pub struct HelloInfo {
     /// `required` when the host was started with a non-empty token.
     #[serde(default)]
     pub auth: HelloAuth,
+}
+
+/// The operating system this process runs on, as `hello.os` reports it.
+pub fn host_os() -> String {
+    std::env::consts::OS.to_string()
 }
 
 impl Request {
@@ -707,6 +718,7 @@ mod tests {
     #[test]
     fn hello_auth_roundtrip() {
         let hello = HelloInfo {
+            os: crate::protocol::host_os(),
             protocol: PROTOCOL_VERSION,
             app: "todo".into(),
             platform: PlatformKind::Headless,
