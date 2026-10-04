@@ -339,6 +339,12 @@ are implemented. New hosts implement `AgentHost` and keep this document.
 | Desktop macOS (embedded-host) | PNG of **this window** (`screencapture -l`); `mode=scrolled` stitches tiles of a named scroller then restores offset. Permission failure is unavailable, not a fake PNG |
 | Desktop macOS (default GUI client) | `screenshot_unavailable` — GUI does not host the agent port |
 
+## Discovery
+
+The host picks its own listen port. On bind it writes a JSON record (address, pid, `hello.app`, executable basename, bundle id when it is inside a macOS `.app` or `GPUI_AGENT_CONNECT_ID` is set) under `$XDG_RUNTIME_DIR/gpui-agent/hosts/` (or a per-user temp directory). `hello` may also include optional `bundle_id` and `executable`.
+
+`gpui-agent --connect <bundle id or executable>` reads those records. The next command with no `--addr` and no `--connect` reuses that choice. `--addr` / `GPUI_AGENT_ADDR` wins. Records for dead processes, or for a port that no longer accepts TCP, are removed.
+
 ## Extending
 
 - Additive fields may appear on nodes and responses; clients must ignore unknowns.
