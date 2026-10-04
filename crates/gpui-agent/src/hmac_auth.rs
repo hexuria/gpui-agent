@@ -53,7 +53,7 @@ fn hex_nibble(b: u8) -> Result<u8, String> {
     }
 }
 
-/// 32-byte nonce from `/dev/urandom` on Unix. Fail closed elsewhere.
+/// 32-byte nonce from `/dev/urandom` (Unix) or `BCryptGenRandom` (Windows).
 pub fn random_nonce() -> Result<[u8; NONCE_LEN], String> {
     let mut buf = [0u8; NONCE_LEN];
     #[cfg(unix)]
@@ -64,10 +64,35 @@ pub fn random_nonce() -> Result<[u8; NONCE_LEN], String> {
             .map_err(|err| format!("urandom: {err}"))?;
         Ok(buf)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // System-preferred RNG via CNG (same family getrandom uses on Windows).
+        unsafe extern "system" {
+            fn BCryptGenRandom(
+                h_algorithm: *mut core::ffi::c_void,
+                pb_buffer: *mut u8,
+                cb_buffer: u32,
+                dw_flags: u32,
+            ) -> i32;
+        }
+        const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+        let status = unsafe {
+            BCryptGenRandom(
+                core::ptr::null_mut(),
+                buf.as_mut_ptr(),
+                NONCE_LEN as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        };
+        if status != 0 {
+            return Err(format!("BCryptGenRandom failed: 0x{status:08x}"));
+        }
+        Ok(buf)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = buf;
-        Err("CSPRNG unavailable (need /dev/urandom)".into())
+        Err("CSPRNG unavailable on this target".into())
     }
 }
 
@@ -117,4 +142,19 @@ pub fn parse_challenge_line(line: &[u8]) -> Result<[u8; NONCE_LEN], String> {
     let mut nonce = [0u8; NONCE_LEN];
     nonce.copy_from_slice(&bytes);
     Ok(nonce)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn random_nonce_is_32_nonzero_bytes() {
+        let a = random_nonce().expect("cspng");
+        let b = random_nonce().expect("cspng");
+        assert_eq!(a.len(), NONCE_LEN);
+        assert_ne!(a, [0u8; NONCE_LEN], "nonce must not be all zeros");
+        assert_ne!(a, b, "two nonces must differ");
+    }
 }
