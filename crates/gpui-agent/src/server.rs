@@ -86,6 +86,16 @@ impl AgentServer {
     /// Serve a mutex-protected host on this thread (plus one thread per
     /// accepted connection). Used by `todo-headless` and integration tests.
     pub fn serve_host<H: AgentHost + 'static>(self, host: Arc<Mutex<H>>) {
+        let _published = match self.local_addr() {
+            Ok(addr) => {
+                let app = host
+                    .lock()
+                    .map(|guard| guard.hello().app)
+                    .unwrap_or_default();
+                crate::discovery::publish_current(addr, &app).ok()
+            }
+            Err(_) => None,
+        };
         let token = self.token.clone();
         let shutdown = self.shutdown.clone();
         let limits = self.limits.clone();
@@ -450,6 +460,8 @@ mod tests {
                 ready: true,
                 deliveries: vec![DeliveryMode::Semantic],
                 auth: crate::protocol::HelloAuth::None,
+                bundle_id: None,
+                executable: None,
             }
         }
 

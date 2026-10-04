@@ -381,6 +381,13 @@ pub struct HelloInfo {
     /// `required` when the host was started with a non-empty token.
     #[serde(default)]
     pub auth: HelloAuth,
+    /// macOS bundle id when the host is inside a `.app`, or `GPUI_AGENT_CONNECT_ID`.
+    /// Empty on hosts that have neither. Clients ignore this when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
+    /// Executable basename (`current_exe`), so `--connect <name>` can match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
 }
 
 /// The operating system this process runs on, as `hello.os` reports it.
@@ -725,6 +732,8 @@ mod tests {
             ready: true,
             deliveries: vec![DeliveryMode::Semantic],
             auth: HelloAuth::Required,
+            bundle_id: None,
+            executable: None,
         };
         let json = serde_json::to_value(&hello).unwrap();
         assert_eq!(json["auth"], "required");

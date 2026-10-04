@@ -22,3 +22,11 @@ serde_json.workspace = true
 
 [dev-dependencies]
 todo-core.workspace = true
+
+# cargo-binstall: v* GitHub Release asset
+# gpui-agent-cli-<target>-v<version>.tgz contains gpui-agent-cli/gpui-agent
+# plus a sibling .sha256 file.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
+bin-dir = "{ name }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
