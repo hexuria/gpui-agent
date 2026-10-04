@@ -7,6 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Shared todo domain and semantic-tree host used by the GPUI app and the headless agent host."
+publish = false
 
 [dependencies]
 gpui-agent.workspace = true

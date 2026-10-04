@@ -7,6 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "GPUI Kit 0.6 todo desktop client of the headless daemon (ADR-001)."
+publish = false
 
 [features]
 default = []

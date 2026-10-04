@@ -18,8 +18,8 @@ repository = "https://github.com/hexuria/gpui-agent"
 homepage = "https://github.com/hexuria/gpui-agent"
 
 [workspace.dependencies]
-gpui-agent = { path = "crates/gpui-agent" }
-gpui-agent-recipe = { path = "crates/gpui-agent-recipe" }
+gpui-agent = { path = "crates/gpui-agent", version = "0.1.0" }
+gpui-agent-recipe = { path = "crates/gpui-agent-recipe", version = "0.1.0" }
 todo-core = { path = "crates/todo-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
