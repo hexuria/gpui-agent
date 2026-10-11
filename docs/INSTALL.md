@@ -10,7 +10,17 @@ Agents install two binaries. Neither pulls `gpui-kit` / Metal / Vulkan.
 Protocol version is **v1** (`hello.protocol`). Skew: clients and hosts
 with a different `v` fail closed (`authorize_request`).
 
-## cargo install (from a checkout)
+## cargo install
+
+From crates.io, no git checkout. The package is `gpui-agent-cli`; the binary is `gpui-agent`.
+
+```bash
+cargo install gpui-agent-cli
+```
+
+`cargo binstall gpui-agent-cli` downloads the prebuilt binary from the `v*` GitHub Release (`gpui-agent-cli-<target>-v<version>.tgz` and a sibling `.sha256`). `todo-headless` is not published.
+
+From a checkout (this repo does not commit `Cargo.lock`):
 
 ```bash
 cargo install --path crates/gpui-agent-cli --locked=false
@@ -19,6 +29,21 @@ cargo install --path apps/todo-headless --locked=false
 
 The repo does not commit `Cargo.lock`. CI builds release artifacts
 without a lockfile.
+
+## Connect by app
+
+`--addr` defaults to the loopback demo port when nothing else is set. To drive a specific app, name it. Do not hardcode that app's port.
+
+```bash
+gpui-agent --connect dev.example.nativechat hello
+gpui-agent --connect eBIRForms invoke profile.list
+# same session: no --addr and no second --connect
+gpui-agent hello
+```
+
+`--connect` matches the host's bundle id, `GPUI_AGENT_CONNECT_ID`, executable name, or `hello.app`. A missing app is one error that names the id. Two running apps do not share a port. `--addr` and `GPUI_AGENT_ADDR` override discovery.
+
+Hosts publish a record while they are listening and delete it on shutdown. A record whose process has exited is ignored.
 
 ## Run
 

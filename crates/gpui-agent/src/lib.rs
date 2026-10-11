@@ -15,6 +15,7 @@
 //! a headless test host, and later web (GPUI WASM) or mobile hosts.
 
 pub mod client;
+pub mod discovery;
 pub mod dispatch;
 pub mod hmac_auth;
 pub mod host;
@@ -32,6 +33,7 @@ pub mod tree;
 pub mod virtual_input;
 
 pub use client::AgentClient;
+pub use discovery::{ResolveError, resolve_client_addr, runtime_root};
 pub use dispatch::{DispatchResult, assert_tree, authorize_request, handle_request};
 pub use hmac_auth::{
     Challenge, challenge_for_nonce, hex_decode, hex_encode, hmac_hex, hmac_verify,

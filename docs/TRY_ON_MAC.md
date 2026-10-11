@@ -25,7 +25,7 @@ git pull origin main
 ```
 
 P3 is already on `main` (`gol/no-brainer-p3-screenshot-b20f` is
-historical). `rust-toolchain.toml` pins **1.98.1**. First `cargo` may
+historical). `rust-toolchain.toml` pins **1.99.0**. First `cargo` may
 download that toolchain. You do not need to install GPUI system libs on
 macOS for **headless** (no window).
 

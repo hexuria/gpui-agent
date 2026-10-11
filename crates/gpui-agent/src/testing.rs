@@ -79,6 +79,8 @@ mod tests {
                 ready: true,
                 deliveries: vec![],
                 auth: crate::HelloAuth::None,
+                bundle_id: None,
+                executable: None,
             }
         }
 

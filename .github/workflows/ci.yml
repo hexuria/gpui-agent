@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
       - uses: Swatinem/rust-cache@v2
       - name: Generate lockfile
         run: cargo generate-lockfile
@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
       - uses: Swatinem/rust-cache@v2
       - name: Release CLI + daemon (no GPUI)
         run: cargo build --release -p gpui-agent-cli -p todo-headless

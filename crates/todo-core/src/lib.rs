@@ -554,6 +554,8 @@ impl AgentHost for TodoStore {
                 _ => vec![DeliveryMode::Semantic],
             },
             auth: gpui_agent::HelloAuth::None,
+            bundle_id: None,
+            executable: None,
         }
     }
 

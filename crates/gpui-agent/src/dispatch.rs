@@ -158,6 +158,7 @@ fn hello_response(host: &dyn AgentHost, id: &str, expected_token: Option<&str>) 
     let mut resp = Response::ok(id);
     let mut hello = host.hello();
     hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
+    crate::discovery::fill_hello_identity(&mut hello);
     resp.hello = Some(hello);
     resp
 }
@@ -175,6 +176,7 @@ fn wait_until_ready(
             let mut resp = Response::ok(id);
             let mut hello = hello;
             hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
+            crate::discovery::fill_hello_identity(&mut hello);
             resp.hello = Some(hello);
             return resp;
         }
@@ -363,6 +365,8 @@ mod tests {
                 ready: true,
                 deliveries: vec![],
                 auth: crate::protocol::HelloAuth::None,
+                bundle_id: None,
+                executable: None,
             }
         }
 
@@ -591,6 +595,8 @@ mod tests {
                 ready: self.ready,
                 deliveries: vec![],
                 auth: crate::protocol::HelloAuth::None,
+                bundle_id: None,
+                executable: None,
             }
         }
 
@@ -670,6 +676,8 @@ mod tests {
                     ready: self.ready.load(Ordering::SeqCst),
                     deliveries: vec![],
                     auth: crate::protocol::HelloAuth::None,
+                    bundle_id: None,
+                    executable: None,
                 }
             }
 
@@ -926,6 +934,8 @@ mod tests {
                 ready: true,
                 deliveries: vec![],
                 auth: crate::protocol::HelloAuth::None,
+                bundle_id: None,
+                executable: None,
             }
         }
 
@@ -986,6 +996,8 @@ mod tests {
                     ready: true,
                     deliveries: vec![],
                     auth: crate::protocol::HelloAuth::None,
+                    bundle_id: None,
+                    executable: None,
                 }
             }
 

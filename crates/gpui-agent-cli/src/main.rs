@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use gpui_agent::DEFAULT_ADDR_STR;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
 use recipe_cmd::RecipeCommand;
@@ -24,10 +23,16 @@ use recipe_cmd::RecipeCommand;
 #[derive(Parser)]
 #[command(name = "gpui-agent", after_help = AFTER_HELP)]
 struct Cli {
-    /// Host:port of the automation server. Loopback by default; non-loopback
-    /// needs `--allow-remote` and a non-empty token.
-    #[arg(long, default_value = DEFAULT_ADDR_STR, env = "GPUI_AGENT_ADDR")]
-    addr: SocketAddr,
+    /// Host:port of the automation server. When omitted, `--connect` or the
+    /// last successful `--connect` in this session is used, then the loopback
+    /// default. Non-loopback needs `--allow-remote` and a non-empty token.
+    #[arg(long, env = "GPUI_AGENT_ADDR")]
+    addr: Option<SocketAddr>,
+    /// Bundle id or executable name of the app to drive. The CLI finds that
+    /// app's AgentHost. A later command with no `--addr` and no `--connect`
+    /// keeps using it.
+    #[arg(long, env = "GPUI_AGENT_CONNECT")]
+    connect: Option<String>,
     /// Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host
     /// has one. Required (non-empty) for `recipe run` and `mcp`.
     #[arg(long, env = "GPUI_AGENT_TOKEN", hide_env_values = true)]
@@ -49,7 +54,9 @@ accepted — see docs/RECIPES.md). Host bind is default-deny: set
 GPUI_AGENT_TOKEN on the host. `recipe run` and `mcp` require a non-empty
 GPUI_AGENT_TOKEN or --token; set the same value on the host. Non-loopback
 `--addr` also needs `--allow-remote` (or GPUI_AGENT_ALLOW_REMOTE=1) and a
-token so a mistyped address cannot leak the secret (see docs/SECURITY.md).";
+token so a mistyped address cannot leak the secret (see docs/SECURITY.md).
+`--connect <bundle id or executable>` picks the app; the next command in
+this session can omit both `--connect` and `--addr`.";
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -232,25 +239,30 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    let addr = gpui_agent::resolve_client_addr(
+        &gpui_agent::runtime_root(),
+        cli.addr,
+        cli.connect.as_deref(),
+    )?;
     let token = take_non_empty_token(cli.token);
-    gpui_agent::authorize_client(cli.addr, token.as_deref(), cli.allow_remote)
-        .with_context(|| format!("refusing agent address {}", cli.addr))?;
+    gpui_agent::authorize_client(addr, token.as_deref(), cli.allow_remote)
+        .with_context(|| format!("refusing agent address {addr}"))?;
 
     if let Command::Mcp { schema } = cli.command {
         let token = require_recipe_mcp_token(token.as_deref())?;
-        return mcp::run(cli.addr, token.to_string(), schema);
+        return mcp::run(addr, token.to_string(), schema);
     }
     if let Command::Recipe { schema, action } = cli.command {
         let client = if matches!(action, RecipeCommand::Run { .. }) {
             let token = require_recipe_mcp_token(token.as_deref())?;
-            Some(AgentClient::connect(cli.addr).with_token(token))
+            Some(AgentClient::connect(addr).with_token(token))
         } else {
             None
         };
         return recipe_cmd::run(client, action, &schema);
     }
 
-    let mut client = AgentClient::connect(cli.addr);
+    let mut client = AgentClient::connect(addr);
     if let Some(token) = token {
         client = client.with_token(token);
     }
@@ -921,15 +933,22 @@ mod tests {
     fn cli_addr_must_be_loopback() {
         let remote =
             Cli::try_parse_from(["gpui-agent", "--addr", "8.8.8.8:17421", "hello"]).unwrap();
-        assert!(gpui_agent::ensure_loopback(remote.addr).is_err());
+        assert!(gpui_agent::ensure_loopback(remote.addr.unwrap()).is_err());
         assert!(
-            gpui_agent::authorize_client(remote.addr, remote.token.as_deref(), remote.allow_remote)
-                .is_err()
+            gpui_agent::authorize_client(
+                remote.addr.unwrap(),
+                remote.token.as_deref(),
+                remote.allow_remote
+            )
+            .is_err()
         );
 
         let local = Cli::try_parse_from(["gpui-agent", "hello"]).unwrap();
-        assert!(gpui_agent::ensure_loopback(local.addr).is_ok());
-        assert!(gpui_agent::authorize_client(local.addr, None, local.allow_remote).is_ok());
+        assert!(local.addr.is_none());
+        assert!(local.connect.is_none());
+        let fallback = gpui_agent::default_addr();
+        assert!(gpui_agent::ensure_loopback(fallback).is_ok());
+        assert!(gpui_agent::authorize_client(fallback, None, local.allow_remote).is_ok());
     }
 
     #[test]
@@ -945,8 +964,12 @@ mod tests {
         .unwrap();
         assert!(!denied.allow_remote);
         assert!(
-            gpui_agent::authorize_client(denied.addr, denied.token.as_deref(), denied.allow_remote)
-                .is_err()
+            gpui_agent::authorize_client(
+                denied.addr.unwrap(),
+                denied.token.as_deref(),
+                denied.allow_remote
+            )
+            .is_err()
         );
 
         let no_token = Cli::try_parse_from([
@@ -960,7 +983,7 @@ mod tests {
         assert!(no_token.allow_remote);
         assert!(
             gpui_agent::authorize_client(
-                no_token.addr,
+                no_token.addr.unwrap(),
                 take_non_empty_token(no_token.token).as_deref(),
                 no_token.allow_remote
             )
@@ -980,7 +1003,7 @@ mod tests {
         assert!(allowed.allow_remote);
         assert!(
             gpui_agent::authorize_client(
-                allowed.addr,
+                allowed.addr.unwrap(),
                 take_non_empty_token(allowed.token).as_deref(),
                 allowed.allow_remote
             )
@@ -1010,6 +1033,25 @@ mod tests {
     }
 
     #[test]
+    fn connect_flag_parses_bundle_id() {
+        let cli =
+            Cli::try_parse_from(["gpui-agent", "--connect", "dev.example.nativechat", "hello"])
+                .unwrap();
+        assert_eq!(cli.connect.as_deref(), Some("dev.example.nativechat"));
+        assert!(cli.addr.is_none());
+        let by_exe = Cli::try_parse_from([
+            "gpui-agent",
+            "--connect",
+            "eBIRForms",
+            "invoke",
+            "profile.list",
+            "--arg",
+            "x=1",
+        ])
+        .unwrap();
+        assert_eq!(by_exe.connect.as_deref(), Some("eBIRForms"));
+    }
+
     fn help_mentions_recipe_mcp_token() {
         let help = Cli::command().render_long_help().to_string();
         assert!(
