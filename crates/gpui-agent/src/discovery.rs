@@ -367,7 +367,31 @@ pub fn pid_alive(pid: u32) -> bool {
         // EPERM: the process exists but we cannot signal it.
         std::io::Error::last_os_error().raw_os_error() == Some(1)
     }
-    #[cfg(not(unix))]
+    // Windows: a process we can open for query and whose exit code is still
+    // STILL_ACTIVE. Without this every record was pruned as dead on Windows.
+    #[cfg(windows)]
+    {
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+            fn GetExitCodeProcess(handle: *mut std::ffi::c_void, code: *mut u32) -> i32;
+        }
+        // SAFETY: a query-only process handle, closed before returning.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(handle, &mut code) != 0;
+            CloseHandle(handle);
+            ok && code == STILL_ACTIVE
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         false
     }
@@ -406,6 +430,26 @@ mod tests {
             bundle_id: bundle.map(str::to_string),
             connect_id: None,
         }
+    }
+
+    /// Every platform, Windows included, sees this process as alive and a
+    /// finished child as gone. Windows once answered `false` for everything,
+    /// so `load_live` pruned every record there.
+    #[test]
+    fn pid_alive_sees_this_process_and_not_a_finished_child() {
+        assert!(pid_alive(std::process::id()));
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit"])
+                .spawn()
+                .unwrap()
+        } else {
+            std::process::Command::new("true").spawn().unwrap()
+        };
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(!pid_alive(pid));
+        assert!(!pid_alive(0));
     }
 
     #[test]
