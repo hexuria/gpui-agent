@@ -343,7 +343,7 @@ are implemented. New hosts implement `AgentHost` and keep this document.
 
 The host picks its own listen port. On bind it writes a JSON record (address, pid, `hello.app`, executable basename, bundle id when it is inside a macOS `.app` or `GPUI_AGENT_CONNECT_ID` is set) under `$XDG_RUNTIME_DIR/gpui-agent/hosts/` (or a per-user temp directory). `hello` may also include optional `bundle_id` and `executable`.
 
-`gpui-agent --connect <bundle id or executable>` reads those records. The next command with no `--addr` and no `--connect` reuses that choice. `--addr` / `GPUI_AGENT_ADDR` wins. Records for dead processes, or for a port that no longer accepts TCP, are removed.
+`gpui-agent --connect <bundle id or executable>` reads those records. `--connect last` reuses that choice; a command with neither `--addr` nor `--connect` goes to the default address, because the saved choice is per user and another agent may have made it. The CLI names the app it is about to act on, on stderr. `--addr` / `GPUI_AGENT_ADDR` wins. Records for dead processes, or for a port that no longer accepts TCP, are removed.
 
 ## Extending
 

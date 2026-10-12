@@ -23,14 +23,15 @@ use recipe_cmd::RecipeCommand;
 #[derive(Parser)]
 #[command(name = "gpui-agent", after_help = AFTER_HELP)]
 struct Cli {
-    /// Host:port of the automation server. When omitted, `--connect` or the
-    /// last successful `--connect` in this session is used, then the loopback
-    /// default. Non-loopback needs `--allow-remote` and a non-empty token.
+    /// Host:port of the automation server. When omitted, `--connect` is used,
+    /// then the loopback default. Non-loopback needs `--allow-remote` and a
+    /// non-empty token.
     #[arg(long, env = "GPUI_AGENT_ADDR")]
     addr: Option<SocketAddr>,
     /// Bundle id or executable name of the app to drive. The CLI finds that
-    /// app's AgentHost. A later command with no `--addr` and no `--connect`
-    /// keeps using it.
+    /// app's AgentHost and remembers it; `--connect last` reuses that choice.
+    /// A command with neither `--addr` nor `--connect` does not: another agent
+    /// on this Mac may have picked a different app.
     #[arg(long, env = "GPUI_AGENT_CONNECT")]
     connect: Option<String>,
     /// Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host
@@ -55,8 +56,8 @@ GPUI_AGENT_TOKEN on the host. `recipe run` and `mcp` require a non-empty
 GPUI_AGENT_TOKEN or --token; set the same value on the host. Non-loopback
 `--addr` also needs `--allow-remote` (or GPUI_AGENT_ALLOW_REMOTE=1) and a
 token so a mistyped address cannot leak the secret (see docs/SECURITY.md).
-`--connect <bundle id or executable>` picks the app; the next command in
-this session can omit both `--connect` and `--addr`.";
+`--connect <bundle id or executable>` picks the app; `--connect last` reuses
+the last pick. Every command that discovery routes names its app on stderr.";
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -239,11 +240,17 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    let addr = gpui_agent::resolve_client_addr(
+    let target = gpui_agent::resolve_client_target(
         &gpui_agent::runtime_root(),
         cli.addr,
         cli.connect.as_deref(),
     )?;
+    // Say which app discovery picked before acting on it, so a command that lands in the wrong
+    // window is visible. Stderr keeps stdout (and `mcp`'s protocol) clean.
+    if target.app.is_some() {
+        eprintln!("gpui-agent: {}", target.describe());
+    }
+    let addr = target.addr;
     let token = take_non_empty_token(cli.token);
     gpui_agent::authorize_client(addr, token.as_deref(), cli.allow_remote)
         .with_context(|| format!("refusing agent address {addr}"))?;
