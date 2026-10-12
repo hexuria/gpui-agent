@@ -23,6 +23,7 @@ pub use crate::security::{
 };
 pub use crate::server::{
     DEFAULT_ADDR_STR, MAX_CONNECTIONS, MAX_LINE_BYTES, default_addr, spawn_host, spawn_mailbox,
+    spawn_mailbox_named,
 };
 pub use crate::tree::{
     Bounds, IN_VIEWPORT_UNAVAILABLE, UiNode, UiTree, in_viewport_unavailable,

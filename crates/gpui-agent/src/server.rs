@@ -53,6 +53,9 @@ pub struct AgentServer {
     token: Option<String>,
     shutdown: Arc<AtomicBool>,
     limits: ServerLimits,
+    /// The `app` its discovery record carries. `serve_host` asks the host's `hello()`; a mailbox
+    /// has no host to ask, so it uses this, or the executable's name when unset.
+    app: Option<String>,
 }
 
 impl AgentServer {
@@ -72,7 +75,14 @@ impl AgentServer {
             token,
             shutdown: Arc::new(AtomicBool::new(false)),
             limits,
+            app: None,
         })
+    }
+
+    /// The app name `--connect` can find a mailbox host by (its `hello().app`, usually).
+    pub fn with_app(mut self, app: impl Into<String>) -> Self {
+        self.app = Some(app.into());
+        self
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
@@ -128,7 +138,20 @@ impl AgentServer {
     }
 
     /// Serve by posting each request onto a mailbox the UI thread drains.
+    ///
+    /// Like `serve_host`, it writes a discovery record for as long as it serves, so
+    /// `--connect` finds a GPUI app that runs the agent this way (#47).
     pub fn serve_mailbox(self, mailbox: AgentMailbox, timeout: Duration) {
+        let _published = match self.local_addr() {
+            Ok(addr) => {
+                let app = self
+                    .app
+                    .clone()
+                    .unwrap_or_else(|| crate::discovery::detect_identity().executable);
+                crate::discovery::publish_current(addr, &app).ok()
+            }
+            Err(_) => None,
+        };
         let token = self.token.clone();
         let shutdown = self.shutdown.clone();
         let limits = self.limits.clone();
@@ -425,7 +448,8 @@ pub fn spawn_host<H: AgentHost + 'static>(
     Ok((bound, flag))
 }
 
-/// Spawn `serve_mailbox` on a background thread.
+/// Spawn `serve_mailbox` on a background thread. Its discovery record names the app after the
+/// executable; `spawn_mailbox_named` gives it the app's own name.
 pub fn spawn_mailbox(
     addr: SocketAddr,
     token: Option<String>,
@@ -433,6 +457,27 @@ pub fn spawn_mailbox(
     timeout: Duration,
 ) -> std::io::Result<(SocketAddr, Arc<AtomicBool>)> {
     let server = AgentServer::bind(addr, token)?;
+    spawn_mailbox_server(server, mailbox, timeout)
+}
+
+/// `spawn_mailbox`, listed under `app` (what `hello().app` answers) so `--connect <app>` finds
+/// it whatever the executable is called.
+pub fn spawn_mailbox_named(
+    addr: SocketAddr,
+    token: Option<String>,
+    mailbox: AgentMailbox,
+    timeout: Duration,
+    app: &str,
+) -> std::io::Result<(SocketAddr, Arc<AtomicBool>)> {
+    let server = AgentServer::bind(addr, token)?.with_app(app);
+    spawn_mailbox_server(server, mailbox, timeout)
+}
+
+fn spawn_mailbox_server(
+    server: AgentServer,
+    mailbox: AgentMailbox,
+    timeout: Duration,
+) -> std::io::Result<(SocketAddr, Arc<AtomicBool>)> {
     let bound = server.local_addr()?;
     let flag = server.shutdown_handle();
     thread::spawn(move || server.serve_mailbox(mailbox, timeout));

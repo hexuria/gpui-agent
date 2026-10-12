@@ -198,7 +198,7 @@ reuses a single TCP session across `tools/call`.
 
 Do **not** add `gpui-kit` to `gpui-agent`. Copy this into the app crate:
 
-1. **Mailbox drain (desktop).** `spawn_mailbox` on a background thread; drain `AgentMailbox` on the GPUI UI thread. Never touch GPUI objects from the TCP thread.
+1. **Mailbox drain (desktop).** `spawn_mailbox` on a background thread; drain `AgentMailbox` on the GPUI UI thread. Never touch GPUI objects from the TCP thread. `spawn_mailbox_named(…, "<your hello().app>")` lists the app under that name for `--connect`; plain `spawn_mailbox` lists it under the executable.
 2. **Virtual dispatch.** On the UI thread, intercept `delivery=virtual` and call `Window::dispatch_event` / `dispatch_keystroke`. Never OS HID.
 3. **Keybinding dispatch.** On the UI thread, intercept `Op::Keybinding`, authorize against the host catalog (`confirm` for dangerous, no silent scope promote), then dispatch the GPUI Action the keymap would. Do **not** mutate the store from the intercept as a fallback if Action dispatch is a no-op — reply after the handler runs, or fail closed (`keybinding_unavailable: Action handler did not run`). `scope=global` must not activate. If the kit pin cannot dispatch a global Action without focus, return `keybinding_unavailable`.
 4. **macOS screenshot intercept.** On the UI thread, intercept `Op::Screenshot`. Viewport: `capture_window_via_screencapture` with this window’s `CGWindowID`. `mode=scrolled`: resolve `target`, set scroll offset, wait for paint, capture tiles, stitch, restore offset (no OS HID). Other OSes: `screenshot_unavailable` (including scrolled). Path confinement is unchanged.

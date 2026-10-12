@@ -2,8 +2,10 @@
 //!
 //! Each host writes one JSON record when it starts listening and removes it
 //! on shutdown. The CLI matches `--connect <id>` against those records, then
-//! remembers the choice so the next command in the same session can omit
-//! both `--connect` and `--addr`.
+//! remembers the choice, which a later command reuses only when it asks for it
+//! with `--connect last`. A command with neither `--addr` nor `--connect` goes
+//! to the default address: the saved choice is per user, not per terminal, so
+//! reusing it silently would let one agent drive the app another agent picked.
 
 use std::fs;
 use std::io::{self, ErrorKind};
@@ -23,6 +25,8 @@ pub const CONNECT_ID_ENV: &str = "GPUI_AGENT_CONNECT_ID";
 /// Directory that holds `hosts/` and `session.json`. Tests and launchers set
 /// this so records stay out of the real per-user directory.
 pub const RUNTIME_DIR_ENV: &str = "GPUI_AGENT_RUNTIME_DIR";
+/// `--connect last`: the app the last `--connect <id>` picked.
+pub const LAST_SESSION: &str = "last";
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 
@@ -65,6 +69,29 @@ pub enum ResolveError {
     Ambiguous { id: String, detail: String },
     #[error("invalid host address '{addr}'")]
     BadAddr { addr: String },
+    #[error("no earlier --connect to reuse; pass --connect <bundle id or executable>")]
+    NoSession,
+}
+
+/// Where a command goes, and which app that is when discovery chose it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientTarget {
+    pub addr: SocketAddr,
+    /// The app's `hello().app` from its record; `None` for `--addr` and the default address.
+    pub app: Option<String>,
+    /// What the command asked for: `--connect <id>`, `--connect last`, or nothing.
+    pub connect: Option<String>,
+}
+
+impl ClientTarget {
+    /// One line naming the app a command is about to act on, for stderr.
+    pub fn describe(&self) -> String {
+        match (&self.app, &self.connect) {
+            (Some(app), Some(id)) => format!("acting on {app} at {} (--connect {id})", self.addr),
+            (Some(app), None) => format!("acting on {app} at {}", self.addr),
+            (None, _) => format!("acting on {}", self.addr),
+        }
+    }
 }
 
 /// Per-user directory for discovery records.
@@ -207,35 +234,67 @@ impl PublishedHost {
     }
 }
 
-/// `--addr` wins. Otherwise `--connect`, then the saved session, then the
-/// loopback default.
+/// `--addr` wins. Otherwise `--connect <id>` (saved for `--connect last`), then
+/// `--connect last`, then the loopback default. A bare command never reuses the
+/// saved choice (#48).
 pub fn resolve_client_addr(
     root: &Path,
     explicit: Option<SocketAddr>,
     connect: Option<&str>,
 ) -> Result<SocketAddr, ResolveError> {
+    resolve_client_target(root, explicit, connect).map(|target| target.addr)
+}
+
+/// `resolve_client_addr`, also naming the app discovery chose so the CLI can say
+/// which app it is about to drive.
+pub fn resolve_client_target(
+    root: &Path,
+    explicit: Option<SocketAddr>,
+    connect: Option<&str>,
+) -> Result<ClientTarget, ResolveError> {
     if let Some(addr) = explicit {
-        return Ok(addr);
+        return Ok(ClientTarget {
+            addr,
+            app: None,
+            connect: None,
+        });
     }
-    if let Some(id) = connect.map(str::trim).filter(|s| !s.is_empty()) {
-        let record = resolve_id(root, id)?;
-        save_session(root, &record.addr, id).map_err(|_| ResolveError::BadAddr {
-            addr: record.addr.clone(),
-        })?;
-        return parse_addr(&record.addr);
+    let Some(id) = connect.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(ClientTarget {
+            addr: default_addr(),
+            app: None,
+            connect: None,
+        });
+    };
+    if id == LAST_SESSION {
+        let session = load_session(root).ok_or(ResolveError::NoSession)?;
+        let found = resolve_id(root, &session.id).ok();
+        let addr = match &found {
+            Some(record) => {
+                let _ = save_session(root, &record.addr, &session.id);
+                record.addr.clone()
+            }
+            None if tcp_open(&session.addr) => session.addr.clone(),
+            None => {
+                let _ = fs::remove_file(session_path(root));
+                return Err(ResolveError::Missing { id: session.id });
+            }
+        };
+        return Ok(ClientTarget {
+            addr: parse_addr(&addr)?,
+            app: Some(found.map_or(session.id, |record| record.app)),
+            connect: Some(LAST_SESSION.to_string()),
+        });
     }
-    if let Some(session) = load_session(root) {
-        if tcp_open(&session.addr) {
-            return parse_addr(&session.addr);
-        }
-        if let Ok(record) = resolve_id(root, &session.id) {
-            let _ = save_session(root, &record.addr, &session.id);
-            return parse_addr(&record.addr);
-        }
-        let _ = fs::remove_file(session_path(root));
-        return Err(ResolveError::Missing { id: session.id });
-    }
-    Ok(default_addr())
+    let record = resolve_id(root, id)?;
+    save_session(root, &record.addr, id).map_err(|_| ResolveError::BadAddr {
+        addr: record.addr.clone(),
+    })?;
+    Ok(ClientTarget {
+        addr: parse_addr(&record.addr)?,
+        app: Some(record.app),
+        connect: Some(id.to_string()),
+    })
 }
 
 pub fn resolve_id(root: &Path, id: &str) -> Result<HostRecord, ResolveError> {
@@ -500,7 +559,7 @@ mod tests {
 
         let resolved = resolve_client_addr(&root, None, Some("dev.example.ebir")).unwrap();
         assert_eq!(resolved, addr_b);
-        let again = resolve_client_addr(&root, None, None).unwrap();
+        let again = resolve_client_addr(&root, None, Some(LAST_SESSION)).unwrap();
         assert_eq!(again, addr_b);
 
         let explicit = "127.0.0.1:9".parse().unwrap();
@@ -620,6 +679,53 @@ mod tests {
             bundle_id_from_exe(&exe).as_deref(),
             Some("dev.example.demo")
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// One agent's `--connect` is not another agent's: a later command with neither `--addr` nor
+    /// `--connect` goes to the default address, not to the app someone else picked last (#48).
+    /// Only `--connect last` reuses the saved choice, and the target says which app it is.
+    #[test]
+    fn a_bare_command_does_not_reuse_another_agents_connect() {
+        let root = temp_root("bare");
+        let listener = listen();
+        let addr = listener.local_addr().unwrap();
+        let _keep = publish_record(
+            &root,
+            &record(addr, "eBIRForms", "eBIRForms", Some("dev.example.ebir")),
+        )
+        .unwrap();
+
+        let picked = resolve_client_target(&root, None, Some("dev.example.ebir")).unwrap();
+        assert_eq!(picked.addr, addr);
+        assert_eq!(picked.app.as_deref(), Some("eBIRForms"));
+
+        let bare = resolve_client_target(&root, None, None).unwrap();
+        assert_eq!(
+            bare.addr,
+            default_addr(),
+            "a bare command must not drive eBIRForms"
+        );
+        assert_eq!(bare.app, None);
+
+        let last = resolve_client_target(&root, None, Some("last")).unwrap();
+        assert_eq!(last.addr, addr);
+        assert_eq!(last.app.as_deref(), Some("eBIRForms"));
+        assert!(
+            last.describe().contains("eBIRForms") && last.describe().contains(&addr.to_string()),
+            "{}",
+            last.describe()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn last_with_nothing_saved_says_so() {
+        let root = temp_root("nolast");
+        assert!(matches!(
+            resolve_client_target(&root, None, Some(LAST_SESSION)),
+            Err(ResolveError::NoSession)
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

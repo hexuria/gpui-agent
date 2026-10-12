@@ -33,7 +33,9 @@ pub mod tree;
 pub mod virtual_input;
 
 pub use client::AgentClient;
-pub use discovery::{ResolveError, resolve_client_addr, runtime_root};
+pub use discovery::{
+    ClientTarget, ResolveError, resolve_client_addr, resolve_client_target, runtime_root,
+};
 pub use dispatch::{DispatchResult, assert_tree, authorize_request, handle_request};
 pub use hmac_auth::{
     Challenge, challenge_for_nonce, hex_decode, hex_encode, hmac_hex, hmac_verify,

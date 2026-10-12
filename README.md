@@ -284,7 +284,7 @@ Automation is **opt-in and off by default**. Full audit: [docs/SECURITY.md](docs
 | Runtime | `GPUI_AGENT=1` (`true`/`yes`/`on` also work) |
 | Release binaries | Also require `GPUI_AGENT_ALLOW_RELEASE=1` |
 | Bind address | Loopback default (`127.0.0.1:17421`). Non-loopback needs `GPUI_AGENT_REMOTE=1` **and** a token. The CLI refuses a non-loopback `--addr` unless `--allow-remote` / `GPUI_AGENT_ALLOW_REMOTE=1` **and** a token. Plaintext TCP+token is lab-only. |
-| `--connect` | Bundle id or executable name. The CLI finds that app's AgentHost (no fixed app port). The next command in the session can omit `--connect` and `--addr`. `--addr` / `GPUI_AGENT_ADDR` still wins. |
+| `--connect` | Bundle id or executable name. The CLI finds that app's AgentHost (no fixed app port). `--connect last` reuses the last pick; a command with neither `--connect` nor `--addr` goes to the default address, so one agent never drives the app another agent picked. A command routed by `--connect` names its app on stderr. `--addr` / `GPUI_AGENT_ADDR` still wins. |
 | Host token | **Required** to bind (`GPUI_AGENT_TOKEN`). `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback for local demos (loud banner). |
 | Required for `recipe run` / `mcp` | Non-empty `GPUI_AGENT_TOKEN` or `--token` on the **client**. Set the **same** value on the host. `hello.auth` is `"required"` or `"none"`. |
 | DoS caps | 1 MiB NDJSON line, 32 concurrent connections, 128 mailbox depth, 30s idle timeout |
