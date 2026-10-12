@@ -81,6 +81,6 @@ jobs:
           toolchain: 1.99.0
       - uses: Swatinem/rust-cache@v2
       - name: Release CLI
-        run: cargo build --locked --release -p gpui-agent-cli
+        run: cargo build --release -p gpui-agent-cli
       - name: Agent tests
-        run: cargo test --locked -p gpui-agent
+        run: cargo test -p gpui-agent
