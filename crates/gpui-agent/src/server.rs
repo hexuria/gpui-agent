@@ -693,7 +693,9 @@ mod tests {
                     || msg.contains("connection closed")
                     || msg.to_ascii_lowercase().contains("reset")
                     || msg.contains("Broken pipe")
-                    || msg.contains("os error 32"),
+                    || msg.contains("os error 32")
+                    // Windows WSAECONNRESET
+                    || msg.contains("os error 10054"),
                 "wrong token must not run the wave: {msg}"
             ),
         }
