@@ -69,3 +69,18 @@ jobs:
           path: |
             target/release/gpui-agent
             target/release/todo-headless
+
+  windows:
+    name: cli + agent (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Release CLI
+        run: cargo build --locked --release -p gpui-agent-cli
+      - name: Agent tests
+        run: cargo test --locked -p gpui-agent

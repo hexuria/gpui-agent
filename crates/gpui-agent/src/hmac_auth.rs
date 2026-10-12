@@ -67,6 +67,7 @@ pub fn random_nonce() -> Result<[u8; NONCE_LEN], String> {
     #[cfg(windows)]
     {
         // System-preferred RNG via CNG (same family getrandom uses on Windows).
+        #[link(name = "bcrypt")]
         unsafe extern "system" {
             fn BCryptGenRandom(
                 h_algorithm: *mut core::ffi::c_void,
