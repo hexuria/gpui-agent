@@ -145,7 +145,6 @@ pub fn parse_challenge_line(line: &[u8]) -> Result<[u8; NONCE_LEN], String> {
     Ok(nonce)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
