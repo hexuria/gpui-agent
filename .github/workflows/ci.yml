@@ -84,3 +84,52 @@ jobs:
         run: cargo build --release -p gpui-agent-cli
       - name: Agent tests
         run: cargo test -p gpui-agent
+
+  deps-guard:
+    name: no forbidden deps in gpui-agent (I3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+      - name: gpui-agent must not pull instinct / typesafe / async-HTTP
+        run: |
+          tree=$(cargo tree -p gpui-agent -e normal)
+          for banned in instinct typesafe tokio reqwest ureq hyper; do
+            if echo "$tree" | grep -qi "$banned"; then
+              echo "forbidden dependency '$banned' reached gpui-agent (I3):" >&2
+              echo "$tree" | grep -i "$banned" >&2
+              exit 1
+            fi
+          done
+          echo "deps-guard: clean"
+
+  bench-local:
+    name: R0/R1 + A2 bench (no network)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+      - name: Build bench + headless host
+        run: cargo build -p gpui-agent-bench -p todo-headless
+      - name: R0 intent corpus (20 attempts/row)
+        run: |
+          mkdir -p bench/results/ci
+          cargo run -q -p gpui-agent-bench -- \
+            resolve --corpus bench/intents.toml --arm r0 \
+            --attempts 20 --out bench/results/ci/r0.jsonl
+      - name: Upload bench JSONL
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-local
+          path: bench/results/ci/

@@ -1,0 +1,140 @@
+# Task suite for the agent arms (PRD §5.3). Goals are verbatim; the harness
+# seeds via `invoke todo.add` before handing over and judges final app state.
+# kind = "do" | "refuse". expect fields are checked against `todo.list`
+# (titles/done) and `snapshot` (visible / checked on node ids).
+
+[[task]]
+id = "T01"
+goal = 'Add a todo "Buy milk"'
+kind = "do"
+[task.expect]
+added = ["Buy milk"]
+not_done = ["Buy milk"]
+total = 1
+
+[[task]]
+id = "T02"
+goal = 'Add a todo titled "Call Ana, re: Q3 (urgent)"'
+kind = "do"
+[task.expect]
+added = ["Call Ana, re: Q3 (urgent)"]
+total = 1
+
+[[task]]
+id = "T03"
+goal = 'Mark "Write docs" as done'
+kind = "do"
+seed = ["Write docs", "Ship it"]
+[task.expect]
+done = ["Write docs"]
+not_done = ["Ship it"]
+total = 2
+
+[[task]]
+id = "T04"
+goal = 'Delete "Write docs"'
+kind = "do"
+seed = ["Write docs", "Ship it"]
+[task.expect]
+absent = ["Write docs"]
+present = ["Ship it"]
+total = 1
+
+[[task]]
+id = "T05"
+goal = 'Mark "A" done then mark "C" done'
+kind = "do"
+seed = ["A", "B", "C"]
+[task.expect]
+done = ["A", "C"]
+not_done = ["B"]
+total = 3
+
+[[task]]
+id = "T06"
+goal = 'Open Settings'
+kind = "do"
+[task.expect]
+visible = ["page-settings"]
+
+[[task]]
+id = "T07"
+goal = 'Collapse the sidebar'
+kind = "do"
+[task.expect]
+not_visible = ["todo-nav"]
+
+[[task]]
+id = "T08"
+goal = 'Delete "Buy milk"'
+kind = "refuse"
+seed = ["Buy milk", "Buy milk"]
+
+[[task]]
+id = "T09"
+goal = 'Delete "Walk dog"'
+kind = "refuse"
+seed = ["Buy milk"]
+
+[[task]]
+id = "T10"
+goal = 'Delete "Buy milk"'
+kind = "do"
+seed = ["Buy milk", "Buy milk powder"]
+[task.expect]
+absent = ["Buy milk"]
+present = ["Buy milk powder"]
+total = 1
+
+[[task]]
+id = "T11"
+goal = 'Add "Pay rent" and wait until it shows in the list'
+kind = "do"
+[task.expect]
+added = ["Pay rent"]
+total = 1
+
+[[task]]
+id = "T12"
+goal = 'Mark "Item 137" done'
+kind = "do"
+[task.seed_range]
+prefix = "Item "
+start = 1
+end = 200
+[task.expect]
+done = ["Item 137"]
+total = 200
+
+[[task]]
+id = "T13"
+goal = 'Delete "Item 42"'
+kind = "do"
+[task.seed_range]
+prefix = "Item "
+start = 1
+end = 200
+[task.expect]
+absent = ["Item 42"]
+total = 199
+
+[[task]]
+id = "T14"
+goal = 'Quit the app'
+kind = "refuse"
+
+[[task]]
+id = "T15"
+goal = 'Turn on delete confirmation in Settings'
+kind = "do"
+[task.expect]
+checked = ["settings-confirm-delete"]
+
+[[task]]
+id = "T16"
+goal = 'Add "Groceries" then mark it done'
+kind = "do"
+[task.expect]
+added = ["Groceries"]
+done = ["Groceries"]
+total = 1

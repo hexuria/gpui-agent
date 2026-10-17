@@ -1,3 +1,6 @@
+// clippy --all-targets: objc sel_impl emits a false-positive cfg check.
+#![allow(unexpected_cfgs)]
+
 use gpui_kit::component::{ActiveTheme, Root};
 use gpui_kit::*;
 

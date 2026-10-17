@@ -29,7 +29,12 @@ pub fn action_for_binding(binding: &str) -> Option<Box<dyn Action>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Scoped imports keep rustc's test-harness expansion shallow — a
+    // `use super::*` + `use gpui_kit::*` glob chain blows the default
+    // recursion limit when the action macros re-expand under --test.
+    use super::{FocusInput, GoSettings, Quit, action_for_binding};
+    use gpui_kit::{Action, Keystroke};
+    use todo_core::ids;
 
     #[test]
     fn sample_chords_parse_as_gpui_keystrokes() {

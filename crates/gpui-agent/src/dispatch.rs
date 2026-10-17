@@ -650,7 +650,7 @@ mod tests {
         );
         let elapsed = started.elapsed();
         assert!(resp.ok, "{resp:?}");
-        assert_eq!(resp.hello.as_ref().unwrap().ready, false);
+        assert!(!resp.hello.as_ref().unwrap().ready);
         assert!(
             elapsed < std::time::Duration::from_millis(40),
             "Wait None must not poll: {elapsed:?}"
@@ -716,7 +716,7 @@ mod tests {
             None,
         );
         assert!(resp.ok, "{resp:?}");
-        assert_eq!(resp.hello.as_ref().unwrap().ready, true);
+        assert!(resp.hello.as_ref().unwrap().ready);
     }
 
     #[test]

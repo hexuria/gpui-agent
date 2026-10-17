@@ -311,7 +311,7 @@ impl TodoApp {
             match result {
                 Ok(view) => {
                     self.daemon_error = None;
-                    if view.draft != self.input.read(cx).value().to_string()
+                    if view.draft.as_str() != self.input.read(cx).value().as_str()
                         && self.page() == Page::Todos
                     {
                         // Only push daemon draft when an agent typed; skip if it matches
@@ -770,7 +770,7 @@ impl TodoApp {
     #[cfg(feature = "embedded-host")]
     fn sync_input_from_store(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let draft = self.store.draft().to_string();
-        if draft != self.input.read(cx).value().to_string() {
+        if draft.as_str() != self.input.read(cx).value().as_str() {
             self.input.update(cx, |state, cx| {
                 state.set_value(draft.as_str(), window, cx);
             });

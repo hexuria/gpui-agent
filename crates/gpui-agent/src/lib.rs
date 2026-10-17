@@ -8,7 +8,7 @@
 //!
 //! **SDK entry:** [`prelude`], [`testing::TestHost`], [`UiNode`] constructors
 //! in [`tree::role`]. Cookbook: `docs/SDK.md`. Product agent-machine
-//! mutations go through a **daemon** ([`docs/ADR-001-daemon-sot.md`] in the
+//! mutations go through a **daemon** (`docs/ADR-001-daemon-sot.md` in the
 //! repo); in-process [`AgentHost`] is for widget E2E and embedders.
 //!
 //! Platform seams (`PlatformKind`) keep the protocol stable across desktop,
