@@ -36,6 +36,7 @@ jobs:
       - name: Run arm ${{ inputs.arm }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ONLY: ${{ inputs.only }}
         run: |
           mkdir -p bench/results/manual
           cd bench
@@ -46,8 +47,6 @@ jobs:
             --attempts "${{ inputs.attempts }}" \
             ${ONLY:+--only "${{ inputs.only }}"} \
             --out "results/manual/${{ inputs.arm }}.jsonl"
-        env:
-          ONLY: ${{ inputs.only }}
       - name: Upload JSONL
         uses: actions/upload-artifact@v4
         with:
