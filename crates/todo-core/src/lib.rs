@@ -626,7 +626,7 @@ impl AgentHost for TodoStore {
         match op {
             Op::Click { target, .. } => self.click(target),
             Op::Type { target, text, .. } => self.type_into(target, text),
-            Op::SetValue { target, value } => self.set_value(target, value),
+            Op::SetValue { target, value, .. } => self.set_value(target, value),
             Op::Key { target, key, .. } => self.key(target, key),
             Op::Keybinding { .. } => self.fire_keybinding(op),
             Op::Keybindings => Ok(DispatchResult::json(gpui_agent::keybinding_list_json(
@@ -702,6 +702,7 @@ mod tests {
             .dispatch(&Op::SetValue {
                 target: ids::INPUT.into(),
                 value: "Buy milk".into(),
+                expect_fingerprint: None,
             })
             .unwrap();
         store.dispatch(&Op::click(ids::ADD)).unwrap();

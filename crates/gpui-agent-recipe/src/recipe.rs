@@ -252,7 +252,7 @@ fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
             collect_placeholders(target, out);
             collect_placeholders(text, out);
         }
-        Op::SetValue { target, value } => {
+        Op::SetValue { target, value, .. } => {
             collect_placeholders(target, out);
             collect_placeholders(value, out);
         }
@@ -385,7 +385,7 @@ fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result
             substitute_string_in_place(target, set)?;
             substitute_string_in_place(text, set)
         }
-        Op::SetValue { target, value } => {
+        Op::SetValue { target, value, .. } => {
             substitute_string_in_place(target, set)?;
             substitute_string_in_place(value, set)
         }
@@ -539,7 +539,11 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
                 .first()
                 .ok_or_else(|| "click needs a target".to_string())?
                 .clone();
-            Op::Click { target, delivery }
+            Op::Click {
+                target,
+                delivery,
+                expect_fingerprint: None,
+            }
         }
         "type" => {
             let (delivery, rest) = take_delivery(&tokens[1..])?;
@@ -550,6 +554,7 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
                 target: rest[0].clone(),
                 text: rest[1].clone(),
                 delivery,
+                expect_fingerprint: None,
             }
         }
         "set_value" => {
@@ -559,6 +564,7 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
             Op::SetValue {
                 target: tokens[1].clone(),
                 value: tokens[2].clone(),
+                expect_fingerprint: None,
             }
         }
         "key" => {
@@ -570,6 +576,7 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
                 target: rest[0].clone(),
                 key: rest[1].clone(),
                 delivery,
+                expect_fingerprint: None,
             }
         }
         "keybindings" | "keybinding.list" => Op::Keybindings,
@@ -1143,7 +1150,11 @@ assert todo-item-1 name=$title checked=false
         )
         .unwrap();
         match &recipe.steps[0].op {
-            Op::Click { target, delivery } => {
+            Op::Click {
+                target,
+                delivery,
+                expect_fingerprint: None,
+            } => {
                 assert_eq!(target, "todo-add");
                 assert_eq!(*delivery, DeliveryMode::Virtual);
             }
@@ -1299,7 +1310,7 @@ assert todo-item-1 name=$title checked=false
     fn wants_standalone_quoted_value() {
         let recipe = parse_wants(r#"set-value todo-input "Buy milk""#, "q").unwrap();
         match &recipe.steps[0].op {
-            Op::SetValue { target, value } => {
+            Op::SetValue { target, value, .. } => {
                 assert_eq!(target, "todo-input");
                 assert_eq!(value, "Buy milk");
             }

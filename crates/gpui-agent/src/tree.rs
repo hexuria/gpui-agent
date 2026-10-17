@@ -233,6 +233,70 @@ impl UiNode {
         self.children.iter().find_map(|child| child.find(id))
     }
 
+    /// `(node, parent_id)` for `id`, or `None`.
+    pub fn find_with_parent<'a>(
+        &'a self,
+        id: &str,
+        parent_id: Option<&'a str>,
+    ) -> Option<(&'a UiNode, Option<&'a str>)> {
+        if self.id == id {
+            return Some((self, parent_id));
+        }
+        self.children
+            .iter()
+            .find_map(|child| child.find_with_parent(id, Some(self.id.as_str())))
+    }
+
+    /// Content fingerprint for the M5 `expect_fingerprint` staleness
+    /// gate: FNV-1a/64 over
+    /// `id, role, name, enabled, visible, checked, value-hash, states
+    /// (in order), parent_id`.
+    ///
+    /// `bounds` are excluded: semantic delivery addresses nodes by id,
+    /// and a paint/resize that moves a node does not make the action
+    /// unsafe. Focus is excluded for the same reason — a focus shift
+    /// alone does not change what a click on `id` would do.
+    ///
+    /// Not serialized by default; `snapshot` exposes fingerprints only
+    /// with `fingerprints: true`.
+    pub fn fingerprint(&self, parent_id: Option<&str>) -> u64 {
+        const OFF: u64 = 0xcbf29ce484222325;
+        fn feed(mut h: u64, bytes: &[u8]) -> u64 {
+            for b in bytes {
+                h ^= u64::from(*b);
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        }
+        let mut h = OFF;
+        for field in [&self.id, &self.role, &self.name] {
+            h = feed(h, field.as_bytes());
+            h = feed(h, &[0xff]);
+        }
+        h = feed(h, &[u8::from(self.enabled), u8::from(self.visible)]);
+        h = feed(
+            h,
+            &[match self.checked {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            }],
+        );
+        let value_hash = self
+            .value
+            .as_deref()
+            .map_or(0u64, |v| feed(OFF, v.as_bytes()));
+        h = feed(h, &value_hash.to_le_bytes());
+        for state in &self.states {
+            h = feed(h, state.as_bytes());
+            h = feed(h, &[0xff]);
+        }
+        if let Some(parent) = parent_id {
+            h = feed(h, parent.as_bytes());
+        }
+        feed(h, &[u8::from(parent_id.is_some())])
+    }
+
     pub fn find_all<'a>(&'a self, id: &str) -> Vec<&'a UiNode> {
         let mut out = Vec::new();
         self.collect_id(id, &mut out);
@@ -364,6 +428,37 @@ impl UiTree {
         for node in &mut self.nodes {
             node.apply_bounds_map(map);
         }
+    }
+
+    /// Content fingerprint of `id` including its parent chain
+    /// contribution ([`UiNode::fingerprint`]), or `None` when the id is
+    /// absent — the host's `target_gone` signal for
+    /// `expect_fingerprint`.
+    pub fn fingerprint_of(&self, id: &str) -> Option<u64> {
+        self.nodes
+            .iter()
+            .find_map(|node| node.find_with_parent(id, None))
+            .map(|(node, parent)| node.fingerprint(parent))
+    }
+
+    /// `id → fingerprint` for every node — the `snapshot
+    /// fingerprints:true` payload (M5).
+    pub fn fingerprint_map(&self) -> std::collections::BTreeMap<String, u64> {
+        fn walk(
+            node: &UiNode,
+            parent: Option<&str>,
+            out: &mut std::collections::BTreeMap<String, u64>,
+        ) {
+            out.insert(node.id.clone(), node.fingerprint(parent));
+            for child in &node.children {
+                walk(child, Some(node.id.as_str()), out);
+            }
+        }
+        let mut map = std::collections::BTreeMap::new();
+        for node in &self.nodes {
+            walk(node, None, &mut map);
+        }
+        map
     }
 }
 
