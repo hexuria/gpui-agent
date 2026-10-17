@@ -332,7 +332,7 @@ impl ActionSpace {
             })
     }
 
-    /// Stronger than [`literal_placed`]: the literal appears inside a
+    /// Stronger than [`Self::literal_placed`]: the literal appears inside a
     /// node's *label* — it names an entity that exists on screen
     /// ("Buy milk" the list item), not merely a field's draft value.
     /// Completion evidence for payload clauses: the add landed.
