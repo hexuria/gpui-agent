@@ -30,11 +30,3 @@ thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 gpui-kit = "0.6"
-
-# TEMPORARY (M0 blocked: human-publish): resolve the instinct crates from
-# the publishable-crates PR head until `cargo add instinct-core@0.1` works.
-# Remove this table — do not merge anything that needs it — before M2 lands.
-[patch.crates-io]
-instinct-core = { git = "https://github.com/hexuria/instinct", rev = "75ad24e" }
-instinct-lexicon = { git = "https://github.com/hexuria/instinct", rev = "75ad24e" }
-instinct-text = { git = "https://github.com/hexuria/instinct", rev = "75ad24e" }
