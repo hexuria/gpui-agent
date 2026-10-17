@@ -828,4 +828,83 @@ mod tests {
         assert!(matches!(outcome, PolicyOutcome::Choice(_)));
         assert_eq!(policy.calls(), 1);
     }
+
+    // ---- subprocess round-trip stubs (unix) -------------------------
+    //
+    // `/bin/sh -c '<script>'` as the endpoint exercises spawn + stdin
+    // write + capped read + timeout plumbing inside
+    // `CommandEscalation::call`. Unix-only: the wire/validation tests
+    // above already cover reply semantics cross-platform.
+
+    #[cfg(unix)]
+    fn spawn_esc(script: &str) -> CommandEscalation {
+        let argv = ["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()];
+        CommandEscalation::new(&argv).expect("cmd")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn call_returns_spawned_reply() {
+        let mut esc = spawn_esc("printf '%s' '{\"abstain\":\"stubbed abstain\"}'");
+        let outcome = esc
+            .choose(&space(), &UiGoal::new("g"), &[], &AbstainReport::default())
+            .expect("choose");
+        let PolicyOutcome::Abstain { reason, .. } = outcome else {
+            panic!("expected abstain: {outcome:?}")
+        };
+        assert_eq!(reason, "escalated abstain: stubbed abstain");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn call_rejects_over_cap_reply() {
+        // head -c emits 65544 bytes — literal on purpose: a mutated
+        // STDOUT_CAP must not shrink the expected size with it.
+        let mut esc = spawn_esc("head -c 65544 /dev/zero | tr '\\0' 'x'");
+        let err = esc
+            .choose(&space(), &UiGoal::new("g"), &[], &AbstainReport::default())
+            .expect_err("over-cap reply must error");
+        assert!(err.contains("cap"), "{err}");
+    }
+
+    /// Exactly STDOUT_CAP bytes is in-budget: `>` not `>=`/`==`.
+    /// Literal 65536 so a mutated cap can't satisfy the test too.
+    #[cfg(unix)]
+    #[test]
+    fn call_accepts_exact_cap_reply() {
+        // {"abstain":"<pad>"} padded to exactly 65536 bytes.
+        let script = format!(
+            "printf '%s%s%s' '{{\"abstain\":\"' \"$(head -c {} /dev/zero | tr '\\0' 'y')\" '\"}}'",
+            65536 - "{\"abstain\":\"\"}".len()
+        );
+        let mut esc = spawn_esc(&script);
+        let outcome = esc
+            .choose(&space(), &UiGoal::new("g"), &[], &AbstainReport::default())
+            .expect("exact-cap reply is in budget");
+        assert!(matches!(outcome, PolicyOutcome::Abstain { .. }));
+    }
+
+    #[test]
+    fn choose_request_carries_wire_shape() {
+        let report = AbstainReport {
+            reason: "margin".to_owned(),
+            ranked: vec![ranked("CLICK:a", crate::ActionKind::Click, "Add")],
+        };
+        let req = CommandEscalation::choose_request(&space(), &UiGoal::new("goal x"), &[], &report);
+        assert_eq!(req["v"], 1);
+        assert_eq!(req["kind"], "choose");
+        assert_eq!(req["goal"], "goal x");
+        assert_eq!(req["clause"], "goal x");
+        assert!(!req["actions"].as_array().expect("actions").is_empty());
+        assert_eq!(req["abstain"]["reason"], "margin");
+        assert_eq!(req["abstain"]["ranked"][0]["id"], "CLICK:a");
+    }
+
+    #[test]
+    fn text_reply_boundary_is_256() {
+        let ok = format!("{{\"text\":\"{}\"}}", "x".repeat(TEXT_CAP));
+        assert!(CommandEscalation::parse_text_reply(&ok, 0).is_ok());
+        let over = format!("{{\"text\":\"{}\"}}", "x".repeat(TEXT_CAP + 1));
+        assert!(CommandEscalation::parse_text_reply(&over, 0).is_err());
+    }
 }
