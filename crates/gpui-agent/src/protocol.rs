@@ -233,7 +233,7 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
         /// M5 staleness gate: the host recomputes
-        /// [`UiNode::fingerprint`] on the dispatch path; mismatch →
+        /// [`crate::tree::UiNode::fingerprint`] on the dispatch path; mismatch →
         /// `stale_target`, missing node → `target_gone`. Nothing
         /// dispatches on a mismatch.
         #[serde(default, skip_serializing_if = "Option::is_none")]

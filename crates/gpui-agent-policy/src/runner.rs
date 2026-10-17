@@ -239,6 +239,10 @@ pub struct EngineInfo {
     pub instinct: &'static str,
 }
 
+/// `instinct-*` version requirement from `gpui-agent-policy`'s manifest
+/// — pinned by `engine_instinct_matches_manifest` so it cannot drift.
+const INSTINCT_VERSION_REQ: &str = "0.1";
+
 /// Resolve invoke-schema args for an `INVOKE:<name>` dispatch — owned
 /// by the caller (recipe crate) so this crate stays recipe-free.
 pub type InvokeArgs = dyn FnMut(&str, &str) -> Result<serde_json::Value, String>;
@@ -597,7 +601,10 @@ impl<'a> Runner<'a> {
                 Ok(r) => r,
                 Err(err) if err.starts_with("stale_target") || err.starts_with("target_gone") => {
                     stale += 1;
-                    if stale >= self.caps.max_consecutive_stale {
+                    // `max_consecutive_stale` bounds the *re-decides*
+                    // (PRD M5.3 "at most twice"): abort on the stale
+                    // arriving after the last allowed re-decide.
+                    if stale > self.caps.max_consecutive_stale {
                         return Ok(self.receipt(
                             goal,
                             clauses,
@@ -793,7 +800,7 @@ impl<'a> Runner<'a> {
             calls: self.calls,
             engine: EngineInfo {
                 policy: env!("CARGO_PKG_VERSION"),
-                instinct: "0.1",
+                instinct: INSTINCT_VERSION_REQ,
             },
         }
     }
@@ -806,4 +813,24 @@ fn key_of(action: &crate::action_space::OfferedAction) -> Result<String, String>
         .and_then(|rest| rest.rsplit_once(':'))
         .map(|(_, key)| key.to_owned())
         .ok_or_else(|| format!("bad key action id {id}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::INSTINCT_VERSION_REQ;
+
+    /// The receipt's `engine.instinct` must equal the manifest's
+    /// `instinct-*` requirement — the literal cannot drift silently.
+    #[test]
+    fn engine_instinct_matches_manifest() {
+        let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .expect("read gpui-agent-policy manifest");
+        for dep in ["instinct-core", "instinct-lexicon", "instinct-text"] {
+            let line = format!("{dep} = \"{INSTINCT_VERSION_REQ}\"");
+            assert!(
+                manifest.contains(&line),
+                "manifest missing `{line}` — update INSTINCT_VERSION_REQ"
+            );
+        }
+    }
 }

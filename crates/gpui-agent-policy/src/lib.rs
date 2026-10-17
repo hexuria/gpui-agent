@@ -7,6 +7,11 @@
 //! can never be dispatched. No floats in the decision path, no network,
 //! no model — deterministic decisions in microseconds.
 //!
+//! The `jev` feature is the one carve-out: it adds a blocking System One
+//! call (network) whose reply is validated with `f64` probability sums —
+//! post-decision verification only, never inside local scoring, and it
+//! can only select among offered ids or fail closed as `Blocked`.
+//!
 //! `evidence` is a port of `aui-policy/src/evidence.rs`: integer milli
 //! scores (`0..=1000`), exact-label saturation, `NON_EXACT_CAP`,
 //! `UNNAMED_OPERATION_CAP`, and `target_phrase` (goal minus quoted
@@ -28,6 +33,8 @@ pub mod arbitration;
 pub mod escalate;
 pub mod evidence;
 pub mod goal;
+#[cfg(feature = "jev")]
+pub mod jev;
 pub mod policy;
 pub mod runner;
 pub mod text;
@@ -48,6 +55,8 @@ pub use evidence::{
 pub use goal::{UiGoal, split_sequential_clauses};
 pub use instinct_core::{Confidence, Profile};
 pub use instinct_text::{NormalizeConfig, Normalized, normalize};
+#[cfg(feature = "jev")]
+pub use jev::JevEscalation;
 pub use policy::{
     HABITUATION_STEP, HistoryEntry, InstinctPolicy, PolicyDecision, PolicyError, PolicyOutcome,
     RankedAction, UiPolicy,

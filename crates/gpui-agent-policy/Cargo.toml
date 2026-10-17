@@ -16,6 +16,12 @@ instinct-text = "0.1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+typesafe-sdk = { workspace = true, optional = true }
+
+[features]
+# M8: Jev (System One) escalation via typesafe-sdk blocking client.
+# Off by default — no model/network dep in normal builds.
+jev = ["dep:typesafe-sdk"]
 
 [dev-dependencies]
 proptest = "1"

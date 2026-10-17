@@ -13,17 +13,29 @@ use gpui_agent_policy::{
     Runner, UiPolicy,
 };
 use gpui_agent_recipe::{Effect, SchemaKind, invoke_args, registry_from_schema_paths};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-pub fn run(
-    mut client: AgentClient,
-    goal: &str,
-    profile: &str,
-    json_out: bool,
-    escalate_cmd: &[String],
-    escalate_timeout_ms: u64,
-    schema: &[PathBuf],
-) -> Result<()> {
+/// Options for `gpui-agent run` (M6 + M7/M8 escalation knobs).
+pub struct RunOpts<'a> {
+    pub goal: &'a str,
+    pub profile: &'a str,
+    pub json_out: bool,
+    pub escalate: Option<&'a str>,
+    pub escalate_cmd: &'a [String],
+    pub escalate_timeout_ms: u64,
+    pub schema: &'a [PathBuf],
+}
+
+pub fn run(mut client: AgentClient, opts: RunOpts<'_>) -> Result<()> {
+    let RunOpts {
+        goal,
+        profile,
+        json_out,
+        escalate,
+        escalate_cmd,
+        escalate_timeout_ms,
+        schema,
+    } = opts;
     let profile = match profile {
         "fast" => Profile::Fast,
         "standard" => Profile::Standard,
@@ -60,7 +72,9 @@ pub fn run(
     };
     // M7: `--escalate-cmd` wraps the local policy in an abstain-only
     // fallback and enables the `kind:"text"` tier on deterministic
-    // Missing. Without it the run is exactly the M6 local loop.
+    // Missing. M8: `--escalate jev` substitutes the System One
+    // fallback (no text tier). Without either the run is exactly the
+    // M6 local loop.
     let escalation = if escalate_cmd.is_empty() {
         None
     } else {
@@ -70,12 +84,13 @@ pub fn run(
                 .with_timeout(std::time::Duration::from_millis(escalate_timeout_ms)),
         )
     };
-    let policy: Box<dyn UiPolicy> = match escalation.clone() {
-        Some(esc) => Box::new(EscalatingPolicy::new(
+    let policy: Box<dyn UiPolicy> = match (escalate, escalation.clone()) {
+        (Some(engine), _) => jev_policy(profile, engine)?,
+        (None, Some(esc)) => Box::new(EscalatingPolicy::new(
             InstinctPolicy::new(profile),
             Some(esc),
         )),
-        None => Box::new(InstinctPolicy::new(profile)),
+        (None, None) => Box::new(InstinctPolicy::new(profile)),
     };
     let receipt = Runner::new(
         &mut client,
@@ -90,6 +105,27 @@ pub fn run(
     let code = exit_code_of(&receipt);
     print_receipt(&receipt, json_out)?;
     std::process::exit(code);
+}
+
+/// `--escalate <engine>` → the named fallback. `jev` needs feature
+/// `jev` and TYPESAFE_API_KEY — a missing key is a config error,
+/// never a silent disable.
+#[cfg(feature = "jev")]
+fn jev_policy(profile: Profile, engine: &str) -> Result<Box<dyn UiPolicy>> {
+    match engine {
+        "jev" => Ok(Box::new(EscalatingPolicy::new(
+            InstinctPolicy::new(profile),
+            Some(gpui_agent_policy::JevEscalation::from_env().map_err(anyhow::Error::msg)?),
+        ))),
+        other => Err(anyhow!("unknown --escalate engine {other}")),
+    }
+}
+
+#[cfg(not(feature = "jev"))]
+fn jev_policy(_profile: Profile, engine: &str) -> Result<Box<dyn UiPolicy>> {
+    Err(anyhow!(
+        "--escalate {engine} requires this binary to be built with feature `jev`"
+    ))
 }
 
 fn exit_code_of(receipt: &RunReceipt) -> i32 {
@@ -126,6 +162,5 @@ fn print_receipt(receipt: &RunReceipt, json_out: bool) -> Result<()> {
         "engine: gpui-agent-policy {} / instinct {}",
         receipt.engine.policy, receipt.engine.instinct
     );
-    let _ = json!(receipt); // keep serde derive reachable pre-M7
     Ok(())
 }

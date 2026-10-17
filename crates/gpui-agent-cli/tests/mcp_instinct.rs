@@ -139,14 +139,18 @@ fn locate_and_act_drive_todo_flow() {
         "act",
         json!({ "instruction": r#"type "Buy milk" into What needs doing?"# }),
     );
-    assert_eq!(typed["answer"], "done", "{typed}");
-    assert_eq!(typed["op"], "TYPE", "{typed}");
-    assert_eq!(typed["text"], "Buy milk", "{typed}");
+    assert_eq!(typed["done"]["op"], "TYPE", "{typed}");
+    assert_eq!(typed["done"]["text"], "Buy milk", "{typed}");
+    // M4.5 envelope: post-dispatch rev + diff of the dispatch's effect.
+    assert!(typed["rev"].is_u64(), "{typed}");
+    assert!(
+        typed.get("diff").is_some() || typed.get("unchanged").is_some(),
+        "{typed}"
+    );
 
     let clicked = mcp.call("act", json!({ "instruction": "click Add" }));
-    assert_eq!(clicked["answer"], "done", "{clicked}");
-    assert_eq!(clicked["op"], "CLICK", "{clicked}");
-    assert_eq!(clicked["id"], "CLICK:todo-add", "{clicked}");
+    assert_eq!(clicked["done"]["op"], "CLICK", "{clicked}");
+    assert_eq!(clicked["done"]["id"], "CLICK:todo-add", "{clicked}");
 
     let items: Vec<String> = store
         .lock()
@@ -169,14 +173,15 @@ fn act_abstains_without_dispatch() {
         "act",
         json!({ "instruction": "click the nonexistent waffle button" }),
     );
-    assert_eq!(out["answer"], "abstain", "{out}");
-    assert!(!out["reason"].as_str().unwrap_or("").is_empty(), "{out}");
+    assert!(
+        !out["abstain"]["reason"].as_str().unwrap_or("").is_empty(),
+        "{out}"
+    );
     assert!(store.lock().unwrap().items().is_empty());
 
     // Destructive keybinding is offered but never auto-chosen.
     let quit = mcp.call("act", json!({ "instruction": "app quit keybinding" }));
-    assert_eq!(quit["answer"], "abstain", "{quit}");
-    assert_eq!(quit["reason"], "needs_confirmation", "{quit}");
+    assert_eq!(quit["abstain"]["reason"], "needs_confirmation", "{quit}");
     // The host is still alive — prove no dispatch happened.
     let hello = mcp.call("hello", json!({}));
     assert_eq!(hello["ok"], true, "{hello}");

@@ -121,7 +121,7 @@ def log_usage(resp) -> None:
 
 def main() -> int:
     req = json.load(sys.stdin)
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     kind = req.get("kind")
     if kind == "choose":
         emit(choose(client, req))

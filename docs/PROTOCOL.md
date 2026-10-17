@@ -54,12 +54,13 @@ servers close on bad JSON the same way.
 
 | `op` | Fields | Effect |
 | --- | --- | --- |
-| `hello` | | Protocol, app name, platform, ready, supported `deliveries`, `auth` (`required` \| `none`) |
-| `snapshot` | | Semantic UI tree |
-| `click` | `target`, optional `delivery` | Activate a widget by stable id |
-| `type` | `target`, `text`, optional `delivery` | Append to an editable widget |
-| `set_value` | `target`, `value` | Replace editable value (semantic only) |
-| `key` | `target`, `key`, optional `delivery` | `Enter`, `Backspace`, … (no modifiers; SECURITY I1) |
+| `hello` | | Protocol, app name, platform, ready, supported `deliveries`, `auth` (`required` \| `none`), `features` |
+| `snapshot` | optional `since`, `format`, `fingerprints` | Semantic UI tree; `since:<rev>` → diff or `unchanged` (see Revisions); `format:"compact"` → one line per visible node; `fingerprints:true` → `id → fingerprint` map |
+| `revision` | | Cheap probe — response `rev` is `AgentHost::revision()` without a tree rebuild |
+| `click` | `target`, optional `delivery`, optional `expect_fingerprint` | Activate a widget by stable id; fingerprint gate below |
+| `type` | `target`, `text`, optional `delivery`, optional `expect_fingerprint` | Append to an editable widget |
+| `set_value` | `target`, `value`, optional `expect_fingerprint` | Replace editable value (semantic only) |
+| `key` | `target`, `key`, optional `delivery`, optional `expect_fingerprint` | `Enter`, `Backspace`, … (no modifiers; SECURITY I1) |
 | `keybinding` | `binding` (Action id), `scope` (`focused` \| `global`), optional `chord`, `confirm`, `activate` | Fire the GPUI **Action** the keymap would. Never OS HID. |
 | `keybindings` | | List `{id, chord, scope, dangerous}`. Alias `keybinding.list`. |
 | `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists`/`visible`/`in_viewport` | Check snapshot fields. `exists` is tree presence. `visible` is host-declared. `in_viewport` is geometry (see below). |
@@ -70,7 +71,7 @@ servers close on bad JSON the same way.
 | `shutdown` | | Ask the host to exit |
 
 These are also the **only** first-class `gpui-agent` CLI commands (plus
-`mcp` and experimental `recipe`). App-specific verbs are `invoke` names
+`mcp`, `run`, and experimental `recipe`). App-specific verbs are `invoke` names
 or click targets — not new subcommands. `recipe` is a **client-side**
 batch of the ops above (`AgentClient` reuses one TCP session; `rpc_once`
 is the old reconnect path for benches). It is not a new wire `op`.
@@ -94,6 +95,61 @@ macOS **embedded-host** writes the app window. Details:
 ```
 
 Omitted fields are absent, not null.
+
+## Revisions (`snapshot since`, `revision`)
+
+Hosts that track state mutations report a monotonically increasing
+`rev` on every response (`Response.rev`) and from `AgentHost::revision()`.
+`hello.features` then lists `rev` / `snapshot_since` / `snapshot_compact`.
+A host with no revision (`rev` omitted) tells the client **do not
+cache** — every snapshot may differ even at the same logical state.
+
+```json
+{"v":2,"id":"1","op":"snapshot","since":4}
+{"v":2,"id":"2","op":"revision"}
+{"v":2,"id":"3","op":"snapshot","since":4,"format":"compact","fingerprints":true}
+```
+
+The server keeps a per-connection ring of recent snapshots. For
+`snapshot since`:
+
+| Holds `rev` | Response |
+| --- | --- |
+| `since` == current | `result: {"unchanged": true}` — tree is not rebuilt |
+| `since` in the ring | `result: {"diff": TreeDiff}` — `added` (full node + `parent` id), `removed` (ids), `changed` (id + only the differing scalar fields). A reparent is `removed` + `added`, never a field edit. `rev` is the new revision |
+| `since` evicted / unknown | `tree: <full>` + `result: {"full": true}` — resync |
+
+`revision` returns `rev` only — the cheap "did anything move" probe
+(mailbox `wait_until` uses it so an idle tree costs no rebuild).
+
+`format:"compact"` returns `result: {"compact": "<text>"}` instead of
+`tree`: one line per **visible** node,
+`"<indent><id> <role> \"<name>\"  [<flag>|<flag>]"` with flags
+`checked` / `disabled` / `focused` / `value="…"` (truncated; password
+nodes never emit `value`). Indentation is two spaces per depth. Compact
+responses carry `rev` too — they combine with `since`.
+
+`fingerprints:true` adds `Response.fingerprints`:
+`{id → FNV-1a hash of the node's stable fields}`. Bounds and focus are
+excluded — layout wobble does not churn the hash. Used by
+`expect_fingerprint` below; hosts that implement it list
+`expect_fingerprint` in `hello.features`.
+
+## Target fingerprint gate (`expect_fingerprint`)
+
+`click` / `type` / `set_value` / `key` accept optional
+`expect_fingerprint: <u64>` — the value the client read for the target
+from `snapshot {fingerprints:true}`. The host recomputes the target's
+fingerprint **in the same call, before dispatching** (on the UI thread
+for mailbox hosts):
+
+- fingerprint mismatch → `stale_target: <id>` (nothing dispatched)
+- target id absent → `target_gone: <id>` (nothing dispatched)
+
+Both are fail-closed: the action is discarded and the client should
+re-snapshot. This replaces racy "assert then click" pairs with one
+atomic check — an agent cannot click a node that moved, renamed, or
+re-rendered since it last observed.
 
 ## Semantic tree
 
@@ -297,7 +353,11 @@ Reuse `gpui-agent-cli` unchanged. Details: [INTEGRATING.md](INTEGRATING.md).
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; client-side batching; see
-[RECIPES.md](RECIPES.md)).
+[RECIPES.md](RECIPES.md)), and — with the opt-in `instinct` build
+feature — `locate` (ranked target resolution, abstains instead of
+guessing), `act` (resolve → fingerprint-gated dispatch → re-observe →
+verify), and `snapshot` `since` / `compact` parameters that mirror the
+wire fields above.
 
 Point Claude Code at the binary (`args: ["mcp"]` or
 `["mcp", "--schema", "examples/schemas/todo.json"]`). Set

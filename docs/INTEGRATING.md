@@ -97,6 +97,23 @@ remembered revision, or the full tree plus `{"full":true}` when the
 client's base has aged out. `hello.features` advertises `rev`,
 `snapshot_since`, `snapshot_compact` automatically.
 
+### Fingerprint gate (`expect_fingerprint`)
+
+`snapshot {fingerprints:true}` returns an `id → fingerprint` map
+(`UiNode::fingerprint` — FNV-1a over the node's stable fields; bounds
+and focus excluded). Mutation ops accept `expect_fingerprint`; the
+server locates the target and recomputes the hash **on the dispatch
+thread, in the same call as the dispatch**:
+
+- mismatch → `stale_target: <id>` — nothing dispatched
+- target absent → `target_gone: <id>` — nothing dispatched
+
+Implement this gate in your `dispatch` path before mutating
+(`gpui_agent::tree::find_node` + `UiNode::fingerprint`, or reuse the
+helper the sample stores use). It replaces "assert then click" races:
+the client proves it is acting on the exact node it last observed.
+Hosts that support it list `expect_fingerprint` in `hello.features`.
+
 ## 3. Assign stable ids
 
 Ids are **your** contract with agents. Prefer names that survive layout
@@ -200,6 +217,8 @@ reuses a single TCP session across `tools/call`.
       [SECURITY.md](SECURITY.md#recipes-experimental). Visual note:
       [RECORDING.md](RECORDING.md).
 - [ ] Product builds leave the feature off
+- [ ] `revision()` bumps on every snapshot-affecting mutation — or returns `None` (never a stale `rev`)
+- [ ] `expect_fingerprint` checked on the dispatch thread before mutating (`stale_target` / `target_gone`, nothing dispatched)
 - [ ] `hello.deliveries` lists `semantic` and, on a painted GPUI window, `virtual`
 - [ ] `hello.auth` is `"required"` when `GPUI_AGENT_TOKEN` is set on the host (`"none"` otherwise)
 - [ ] Recipe / MCP clients export the **same** `GPUI_AGENT_TOKEN` as the host

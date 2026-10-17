@@ -11,7 +11,7 @@
 //! Request `choose`:
 //! `{"v":1,"kind":"choose","goal","clause","actions":[…],"history":[…],
 //!   "abstain":{"reason","ranked":[…]}}` — every action is `{id,op}` plus
-//! optional `role`/`name`.
+//! optional `role`/`name`/`state` (observed control state).
 //!
 //! Request `text` (field payload on deterministic [`TextError::Missing`]):
 //! `{"v":1,"kind":"text","goal","clause","field":{"id","name"}}`
@@ -123,9 +123,27 @@ where
         let Some(fallback) = self.fallback.as_mut() else {
             return Ok(first);
         };
+        let report = AbstainReport::of(&first);
+        if ambiguous_contenders(&report.ranked) {
+            // Two contenders share kind+label: identical rows in the menu
+            // (e.g. two "Buy milk" entries). No endpoint can tell them
+            // apart either — a pick here is a coin flip, not evidence.
+            // Paying a model for it violates abstain-over-guess.
+            return Ok(first);
+        }
         self.calls += 1;
-        fallback.decide_escalating(space, goal, history, &AbstainReport::of(&first))
+        fallback.decide_escalating(space, goal, history, &report)
     }
+}
+
+/// True when the ranked contenders contain an identical (kind, label)
+/// pair — the menu itself cannot express which of the two is meant.
+fn ambiguous_contenders(ranked: &[RankedAction]) -> bool {
+    ranked.iter().enumerate().any(|(i, a)| {
+        ranked[..i]
+            .iter()
+            .any(|b| a.kind == b.kind && a.label == b.label)
+    })
 }
 
 /// Fallback contract: receives the local abstain as evidence. The
@@ -256,6 +274,9 @@ impl CommandEscalation {
                     json!({"id": a.id().as_str(), "op": a.kind().as_str(), "name": a.label()});
                 if let Some(role) = a.role() {
                     action["role"] = json!(role);
+                }
+                if let Some(state) = a.state() {
+                    action["state"] = state.to_json();
                 }
                 action
             })
@@ -750,5 +771,187 @@ mod tests {
             outcome,
             PolicyOutcome::Choice(_) | PolicyOutcome::Abstain { .. }
         ));
+    }
+
+    fn ranked(id: &str, kind: crate::ActionKind, label: &str) -> RankedAction {
+        RankedAction {
+            id: crate::ActionId::try_new(id).expect("id"),
+            kind,
+            label: label.to_owned(),
+            confidence_millis: 500,
+        }
+    }
+
+    fn abstain_with(ranked: Vec<RankedAction>) -> PolicyOutcome {
+        PolicyOutcome::Abstain {
+            reason: "margin".to_owned(),
+            operation_ranked: Vec::new(),
+            target_ranked: ranked,
+        }
+    }
+
+    /// Two identical "Buy milk" rows tie locally; the fallback sees the
+    /// same identical menu and can only coin-flip — so it must not run.
+    #[test]
+    fn escalating_policy_skips_fallback_on_identical_contenders() {
+        let space = space();
+        let dup = vec![
+            ranked("CLICK:m1", crate::ActionKind::Click, "Buy milk"),
+            ranked("CLICK:m2", crate::ActionKind::Click, "Buy milk"),
+        ];
+        let mut policy =
+            EscalatingPolicy::new(Stub::new(abstain_with(dup)), Some(Stub::new(choice_done())));
+        let outcome = policy
+            .decide(&space, &UiGoal::new("Delete Buy milk"), &[])
+            .expect("decide");
+        let PolicyOutcome::Abstain { reason, .. } = outcome else {
+            panic!("expected local abstain: {outcome:?}")
+        };
+        assert_eq!(reason, "margin");
+        assert_eq!(policy.calls(), 0, "identical contenders must not escalate");
+        assert_eq!(policy.fallback.as_ref().unwrap().calls, 0);
+    }
+
+    /// Same label but a different kind is still distinguishable to the
+    /// endpoint — escalation proceeds.
+    #[test]
+    fn escalating_policy_escalates_same_label_different_kind() {
+        let space = space();
+        let contenders = vec![
+            ranked("CLICK:m1", crate::ActionKind::Click, "Buy milk"),
+            ranked("TYPE:m2", crate::ActionKind::Type, "Buy milk"),
+        ];
+        let mut policy = EscalatingPolicy::new(
+            Stub::new(abstain_with(contenders)),
+            Some(Stub::new(choice_done())),
+        );
+        let outcome = policy
+            .decide(&space, &UiGoal::new("anything"), &[])
+            .expect("decide");
+        assert!(matches!(outcome, PolicyOutcome::Choice(_)));
+        assert_eq!(policy.calls(), 1);
+    }
+
+    // ---- subprocess round-trip stubs (unix) -------------------------
+    //
+    // `/bin/sh -c '<script>'` as the endpoint exercises spawn + stdin
+    // write + capped read + timeout plumbing inside
+    // `CommandEscalation::call`. Unix-only: the wire/validation tests
+    // above already cover reply semantics cross-platform.
+
+    #[cfg(unix)]
+    fn spawn_esc(script: &str) -> CommandEscalation {
+        let argv = ["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()];
+        CommandEscalation::new(&argv).expect("cmd")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn call_returns_spawned_reply() {
+        let mut esc = spawn_esc("printf '%s' '{\"abstain\":\"stubbed abstain\"}'");
+        let outcome = esc
+            .choose(&space(), &UiGoal::new("g"), &[], &AbstainReport::default())
+            .expect("choose");
+        let PolicyOutcome::Abstain { reason, .. } = outcome else {
+            panic!("expected abstain: {outcome:?}")
+        };
+        assert_eq!(reason, "escalated abstain: stubbed abstain");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn call_rejects_over_cap_reply() {
+        // head -c emits 65544 bytes — literal on purpose: a mutated
+        // STDOUT_CAP must not shrink the expected size with it.
+        let mut esc = spawn_esc("head -c 65544 /dev/zero | tr '\\0' 'x'");
+        let err = esc
+            .choose(&space(), &UiGoal::new("g"), &[], &AbstainReport::default())
+            .expect_err("over-cap reply must error");
+        assert!(err.contains("cap"), "{err}");
+    }
+
+    /// Exactly STDOUT_CAP bytes is in-budget: `>` not `>=`/`==`.
+    /// Literal 65536 so a mutated cap can't satisfy the test too.
+    #[cfg(unix)]
+    #[test]
+    fn call_accepts_exact_cap_reply() {
+        // {"abstain":"<pad>"} padded to exactly 65536 bytes.
+        let script = format!(
+            "printf '%s%s%s' '{{\"abstain\":\"' \"$(head -c {} /dev/zero | tr '\\0' 'y')\" '\"}}'",
+            65536 - "{\"abstain\":\"\"}".len()
+        );
+        let mut esc = spawn_esc(&script);
+        let outcome = esc
+            .choose(&space(), &UiGoal::new("g"), &[], &AbstainReport::default())
+            .expect("exact-cap reply is in budget");
+        assert!(matches!(outcome, PolicyOutcome::Abstain { .. }));
+    }
+
+    #[test]
+    fn choose_request_carries_wire_shape() {
+        let report = AbstainReport {
+            reason: "margin".to_owned(),
+            ranked: vec![ranked("CLICK:a", crate::ActionKind::Click, "Add")],
+        };
+        let req = CommandEscalation::choose_request(&space(), &UiGoal::new("goal x"), &[], &report);
+        assert_eq!(req["v"], 1);
+        assert_eq!(req["kind"], "choose");
+        assert_eq!(req["goal"], "goal x");
+        assert_eq!(req["clause"], "goal x");
+        assert!(!req["actions"].as_array().expect("actions").is_empty());
+        assert_eq!(req["abstain"]["reason"], "margin");
+        assert_eq!(req["abstain"]["ranked"][0]["id"], "CLICK:a");
+    }
+
+    /// PRD M7.2: `actions[]` carries observed control `state` so the
+    /// fallback scores the same evidence the local policy saw.
+    #[test]
+    fn choose_request_actions_carry_state() {
+        let mut field = UiNode::textbox("input", "Name");
+        field.value = Some("Ana".to_owned());
+        let mut toggle = UiNode::new("t1", "checkbox", "Done");
+        toggle.checked = Some(true);
+        toggle.states = vec!["expanded".to_owned()];
+        let tree = UiTree {
+            app: "todo".to_owned(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            rev: Some(1),
+            nodes: vec![
+                UiNode::window("w", "App").with_children(vec![boxed(field), boxed(toggle)]),
+            ],
+        };
+        let req = CommandEscalation::choose_request(
+            &ActionSpace::from_tree(&tree, &[], &[]),
+            &UiGoal::new("g"),
+            &[],
+            &AbstainReport::default(),
+        );
+        let actions = req["actions"].as_array().expect("actions");
+        let ty = actions
+            .iter()
+            .find(|a| a["id"] == json!("TYPE:input"))
+            .expect("TYPE:input offered");
+        assert_eq!(ty["state"]["value"], "Ana");
+        let click = actions
+            .iter()
+            .find(|a| a["id"] == json!("CLICK:t1"))
+            .expect("CLICK:t1 offered");
+        assert_eq!(click["state"]["checked"], true);
+        assert_eq!(click["state"]["states"][0], "expanded");
+        // Controls carry no state.
+        let done = actions
+            .iter()
+            .find(|a| a["id"] == json!("DONE"))
+            .expect("DONE offered");
+        assert!(done.get("state").is_none());
+    }
+
+    #[test]
+    fn text_reply_boundary_is_256() {
+        let ok = format!("{{\"text\":\"{}\"}}", "x".repeat(TEXT_CAP));
+        assert!(CommandEscalation::parse_text_reply(&ok, 0).is_ok());
+        let over = format!("{{\"text\":\"{}\"}}", "x".repeat(TEXT_CAP + 1));
+        assert!(CommandEscalation::parse_text_reply(&over, 0).is_err());
     }
 }

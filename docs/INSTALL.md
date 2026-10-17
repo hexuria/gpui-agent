@@ -30,6 +30,32 @@ cargo install --path apps/todo-headless --locked=false
 The repo does not commit `Cargo.lock`. CI builds release artifacts
 without a lockfile.
 
+## Optional features (off by default)
+
+The default build ships the legacy keyword resolver and the original
+tool set — nothing below changes unless you opt in.
+
+| Feature | On crate | Adds | Needs |
+| --- | --- | --- | --- |
+| `instinct` | `gpui-agent-cli` | `run --goal` local driver; `locate` + `act` MCP tools | nothing — deterministic, local, no model/network |
+| `instinct` | `gpui-agent-recipe` | Instinct-backed `resolve_intent` (abstains instead of guessing) | nothing |
+| `jev` | `gpui-agent-cli` | `run --goal --escalate jev` (System One fallback, only after a local abstain) | `TYPESAFE_API_KEY`; implies `instinct` |
+
+```bash
+# local deterministic agent + compact/diff MCP tools
+cargo install --path crates/gpui-agent-cli --features instinct --locked=false
+# + optional System One escalation on abstain
+cargo install --path crates/gpui-agent-cli --features jev --locked=false
+```
+
+A binary built without `jev` answers `--escalate jev` with a clear
+feature error; without `instinct`, `run`/`locate`/`act` do not exist.
+Wire compatibility is additive (`confidence_millis`, `rev`,
+`expect_fingerprint` are optional fields), so old clients keep working
+against feature-enabled hosts and vice versa. `snapshot since=<rev>`,
+`format=compact`, and `fingerprints=true` are protocol params in every
+build — not feature-gated.
+
 ## Connect by app
 
 `--addr` defaults to the loopback demo port when nothing else is set. To drive a specific app, name it. Do not hardcode that app's port.

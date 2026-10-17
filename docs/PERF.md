@@ -96,3 +96,24 @@ GATE-P verdicts:
 - `since` against a ring-cached rev answers a `diff` (`added` /
   `removed` / `changed`); past 8 revisions it degrades to the full tree
   with `{"full":true}` — never wrong, only bigger.
+
+## M2–M8 — Instinct policy (GATE-R / GATE-L)
+
+`gpui-agent-policy` is the opt-in local decision engine (`instinct`
+feature; `jev` adds the optional System One fallback). Everything below
+is in [docs/bench/RESULTS.md](bench/RESULTS.md).
+
+| Number | Value |
+| --- | --- |
+| `resolve` decision latency (GATE-R bar) | **p50 46 µs** ≤ 50 µs |
+| Resolve accuracy vs baseline | R1 wrong=0, pass 59.2% vs R0 44.8% |
+| `run --goal` local arm (GATE-L, A2) | **16/16, wrong=0** (T09 refuse correct) |
+| Escalated decision | one subprocess spawn (M7) or one System One POST (M8) **per abstain only** — a local choice costs zero model calls |
+
+Determinism: the local policy reads no clocks, RNG, env, or unordered
+maps in the decision path — same tree + same goal → same decision.
+Abstain never becomes a dispatch.
+
+LLM-arm comparisons (A0/A1 GATE-T, A3 GATE-E, A4) are pending owner
+API keys; the wire and validation paths are covered by scripted
+endpoints, not live models.
