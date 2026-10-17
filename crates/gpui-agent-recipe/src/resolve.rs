@@ -174,31 +174,8 @@ fn materialize(
             )),
         },
         SchemaKind::Invoke => {
-            let mut args = serde_json::Map::new();
-            if schema.required.iter().any(|r| r == "title") {
-                let title = extract_title(intent).ok_or_else(|| {
-                    format!(
-                        "{} requires title (quote it or write titled …)",
-                        schema.name
-                    )
-                })?;
-                fills.push(TokenFill {
-                    name: "title".into(),
-                    value: title.clone(),
-                    source: "quoted_or_titled".into(),
-                });
-                args.insert("title".into(), Value::String(title));
-            }
-            if schema.required.iter().any(|r| r == "id") {
-                let id =
-                    extract_id(intent).ok_or_else(|| format!("{} requires id", schema.name))?;
-                fills.push(TokenFill {
-                    name: "id".into(),
-                    value: id.to_string(),
-                    source: "number".into(),
-                });
-                args.insert("id".into(), json!(id));
-            }
+            let (args, arg_fills) = invoke_args_from_intent(intent, schema)?;
+            fills.extend(arg_fills);
             Ok((
                 Op::Invoke {
                     name: schema.name.clone(),
@@ -216,6 +193,51 @@ fn materialize(
             Ok((Op::click(schema.name.clone()), fills))
         }
     }
+}
+
+/// Fill an `Invoke` schema's required args from prose (`title` from a
+/// quoted/`titled` phrase, `id` from a number). Shared by `materialize`
+/// and the M4 `act` tool. Fails closed: any unfilled `required` arg is
+/// an error, never a guess.
+fn invoke_args_from_intent(
+    intent: &str,
+    schema: &crate::schema::OpSchema,
+) -> Result<(serde_json::Map<String, Value>, Vec<TokenFill>), String> {
+    let mut args = serde_json::Map::new();
+    let mut fills = Vec::new();
+    if schema.required.iter().any(|r| r == "title") {
+        let title = extract_title(intent).ok_or_else(|| {
+            format!(
+                "{} requires title (quote it or write titled …)",
+                schema.name
+            )
+        })?;
+        fills.push(TokenFill {
+            name: "title".into(),
+            value: title.clone(),
+            source: "quoted_or_titled".into(),
+        });
+        args.insert("title".into(), Value::String(title));
+    }
+    if schema.required.iter().any(|r| r == "id") {
+        let id = extract_id(intent).ok_or_else(|| format!("{} requires id", schema.name))?;
+        fills.push(TokenFill {
+            name: "id".into(),
+            value: id.to_string(),
+            source: "number".into(),
+        });
+        args.insert("id".into(), json!(id));
+    }
+    Ok((args, fills))
+}
+
+/// Args object for an `Invoke` schema resolved from natural-language
+/// `intent`. Errors when a `required` arg cannot be filled.
+pub fn invoke_args(schema: &crate::schema::OpSchema, intent: &str) -> Result<Value, String> {
+    if schema.kind != SchemaKind::Invoke {
+        return Err(format!("{} is not an invoke schema", schema.name));
+    }
+    invoke_args_from_intent(intent, schema).map(|(args, _)| Value::Object(args))
 }
 
 fn required_target(intent: &str, fills: &mut Vec<TokenFill>) -> Result<String, String> {

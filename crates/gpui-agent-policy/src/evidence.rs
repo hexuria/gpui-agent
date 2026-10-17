@@ -33,6 +33,14 @@ pub enum OperationKind {
     Wait,
     ScrollDown,
     ScrollUp,
+    /// `set_value` — programmatic field set, distinct from typed input.
+    SetValue,
+    /// `key` — send a named key (Enter, Escape, …) to a node.
+    Key,
+    /// `keybinding` — fire a registered Action-id binding.
+    Keybinding,
+    /// `invoke` — run a registered host invoke schema.
+    Invoke,
 }
 
 impl OperationKind {
@@ -46,6 +54,10 @@ impl OperationKind {
             Self::Wait => "wait",
             Self::ScrollDown => "scroll_down",
             Self::ScrollUp => "scroll_up",
+            Self::SetValue => "set_value",
+            Self::Key => "key",
+            Self::Keybinding => "keybinding",
+            Self::Invoke => "invoke",
         }
     }
 
@@ -462,6 +474,21 @@ fn control_keyword_hit(goal: &str, kind: OperationKind) -> bool {
         OperationKind::Click => &[&["click"], &["press"], &["tap"]],
         OperationKind::TypeText => &[&["type"], &["enter"], &["fill"], &["input"]],
         OperationKind::Select => &[&["select"], &["choose"], &["pick"]],
+        OperationKind::SetValue => &[&["set"], &["change"], &["update"]],
+        OperationKind::Key => &[
+            &["press", "enter"],
+            &["hit", "enter"],
+            &["press", "return"],
+            &["send", "enter"],
+            &["press", "tab"],
+            &["press", "escape"],
+            &["press", "backspace"],
+            &["press", "space"],
+            &["keypress"],
+            &["submit"],
+        ],
+        OperationKind::Keybinding => &[&["shortcut"], &["hotkey"], &["keybinding"]],
+        OperationKind::Invoke => &[&["invoke"], &["run"], &["call"], &["execute"], &["trigger"]],
     };
     matches_instruction_tokens(&instruction_tokens(goal), keys)
 }
@@ -472,6 +499,10 @@ fn named_target_operations(goal: &str) -> Vec<OperationKind> {
         OperationKind::Click,
         OperationKind::TypeText,
         OperationKind::Select,
+        OperationKind::SetValue,
+        OperationKind::Key,
+        OperationKind::Keybinding,
+        OperationKind::Invoke,
     ]
     .into_iter()
     .filter(|kind| control_keyword_hit(goal, *kind))
