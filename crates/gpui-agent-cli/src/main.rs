@@ -1,5 +1,7 @@
 mod mcp;
 mod recipe_cmd;
+#[cfg(feature = "instinct")]
+mod run_cmd;
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -204,6 +206,23 @@ enum Command {
         #[arg(long = "schema", value_name = "PATH")]
         schema: Vec<std::path::PathBuf>,
     },
+    /// Experimental (instinct): run a natural-language goal through the local agent loop.
+    /// Prints a receipt; exits 0 done, 2 abstained/blocked/cap, 1 error. Requires a token.
+    #[cfg(feature = "instinct")]
+    Run {
+        /// The goal text (`then` / `and then` split sequential clauses).
+        #[arg(long)]
+        goal: String,
+        /// Instinct arbitration profile.
+        #[arg(long, default_value = "standard", value_parser = ["fast", "standard", "deep"])]
+        profile: String,
+        /// Print the raw JSON receipt instead of the text summary.
+        #[arg(long)]
+        json: bool,
+        /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
+        #[arg(long = "schema", value_name = "PATH")]
+        schema: Vec<std::path::PathBuf>,
+    },
     /// Experimental: validate / plan / run / resolve a JSON recipe of protocol ops (`.wants` also accepted). `run` requires a token.
     Recipe {
         /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
@@ -267,6 +286,19 @@ fn run() -> Result<()> {
             None
         };
         return recipe_cmd::run(client, action, &schema);
+    }
+
+    #[cfg(feature = "instinct")]
+    if let Command::Run {
+        ref goal,
+        ref profile,
+        json,
+        ref schema,
+    } = cli.command
+    {
+        let token = require_recipe_mcp_token(token.as_deref())?;
+        let client = AgentClient::connect(addr).with_token(token);
+        return run_cmd::run(client, goal, profile, json, schema);
     }
 
     let mut client = AgentClient::connect(addr);
@@ -381,6 +413,8 @@ fn run() -> Result<()> {
         Command::Invoke { name, args } => print_resp(rpc(client.invoke(name, parse_args(&args)?))?),
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
         Command::Mcp { .. } | Command::Recipe { .. } => unreachable!(),
+        #[cfg(feature = "instinct")]
+        Command::Run { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -419,27 +453,27 @@ mod tests {
             .get_subcommands()
             .map(|c| c.get_name().to_string())
             .collect();
-        assert_eq!(
-            names,
-            [
-                "wait",
-                "wait-until",
-                "hello",
-                "snapshot",
-                "screenshot",
-                "click",
-                "type",
-                "set-value",
-                "key",
-                "keybinding",
-                "keybindings",
-                "assert",
-                "invoke",
-                "shutdown",
-                "mcp",
-                "recipe",
-            ]
-        );
+        let mut expected = vec![
+            "wait",
+            "wait-until",
+            "hello",
+            "snapshot",
+            "screenshot",
+            "click",
+            "type",
+            "set-value",
+            "key",
+            "keybinding",
+            "keybindings",
+            "assert",
+            "invoke",
+            "shutdown",
+            "mcp",
+        ];
+        #[cfg(feature = "instinct")]
+        expected.push("run");
+        expected.push("recipe");
+        assert_eq!(names, expected);
         assert!(!names.iter().any(|n| n == "todo"));
     }
 

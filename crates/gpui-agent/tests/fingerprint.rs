@@ -4,9 +4,7 @@
 //! optional field is omitted.
 
 use gpui_agent::dispatch::{DispatchResult, TreeCache};
-use gpui_agent::protocol::{
-    DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request,
-};
+use gpui_agent::protocol::{DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request};
 use gpui_agent::tree::{UiNode, UiTree};
 use gpui_agent::{AgentHost, HelloAuth, handle_request_cached};
 

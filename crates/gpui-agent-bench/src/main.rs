@@ -472,7 +472,7 @@ fn run_local_attempt(
         }
 
         let started = Instant::now();
-        let (goal_status, cap_hit) = run_goal(goal_cmd, &addr, &token, CAP_WALL_MS);
+        let (goal_status, cap_hit) = run_goal(goal_cmd, &task.goal, &addr, &token, CAP_WALL_MS);
         let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
         rec.insert("wall_ms".into(), json!(wall_ms));
         rec.insert("cap_hit".into(), json!(cap_hit));
@@ -500,7 +500,8 @@ fn run_local_attempt(
             harness_ops += 1;
             match client.expect_ok(Op::snapshot()) {
                 Ok(resp) => {
-                    let tree_ok = judge_tree(&task.expect, resp.result);
+                    let tree = resp.tree.and_then(|t| serde_json::to_value(&t).ok());
+                    let tree_ok = judge_tree(&task.expect, tree);
                     if !tree_ok.0 {
                         rec.insert("pass".into(), json!(false));
                         rec.insert("detail".into(), json!(tree_ok.1));
@@ -527,7 +528,7 @@ fn run_local_attempt(
     rec
 }
 
-fn run_goal(goal_cmd: &str, addr: &str, token: &str, cap_ms: u64) -> (i32, bool) {
+fn run_goal(goal_cmd: &str, goal: &str, addr: &str, token: &str, cap_ms: u64) -> (i32, bool) {
     let (shell, flag) = if cfg!(windows) {
         ("cmd", "/C")
     } else {
@@ -538,6 +539,7 @@ fn run_goal(goal_cmd: &str, addr: &str, token: &str, cap_ms: u64) -> (i32, bool)
         .arg(goal_cmd)
         .env("GPUI_AGENT_ADDR", addr)
         .env("GPUI_AGENT_TOKEN", token)
+        .env("GPUI_AGENT_BENCH_GOAL", goal)
         .env("GPUI_AGENT", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -723,27 +725,39 @@ fn judge_tree(e: &Expect, result: Option<Value>) -> (bool, String) {
     let Some(v) = result else {
         return (false, "snapshot returned no tree".into());
     };
-    // Response.result for snapshot carries the UiTree: { nodes: [...] }.
-    let nodes = v
+    // The UiTree nests pages/items under the window root — flatten so
+    // `visible`/`checked` ids match at any depth.
+    let roots = v
         .get("nodes")
         .or_else(|| v.get("tree").and_then(|t| t.get("nodes")))
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let mut nodes = Vec::new();
+    let mut stack: Vec<Value> = roots;
+    while let Some(n) = stack.pop() {
+        if let Some(kids) = n.get("children").and_then(Value::as_array) {
+            stack.extend(kids.iter().cloned());
+        }
+        nodes.push(n);
+    }
     let find = |id: &str| {
         nodes
             .iter()
             .find(|n| n.get("id").and_then(Value::as_str) == Some(id))
     };
+    // `visible` is omitted on the wire when true (`skip_serializing_if`);
+    // an absent key means visible, matching the serde default.
+    let vis = |n: &Value| n.get("visible").and_then(Value::as_bool).unwrap_or(true);
     for id in &e.visible {
         match find(id) {
-            Some(n) if n.get("visible").and_then(Value::as_bool) == Some(true) => {}
+            Some(n) if vis(n) => {}
             _ => return (false, format!("{id} not visible")),
         }
     }
     for id in &e.not_visible {
         if let Some(n) = find(id) {
-            if n.get("visible").and_then(Value::as_bool) == Some(true) {
+            if vis(n) {
                 return (false, format!("{id} still visible"));
             }
         }

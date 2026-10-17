@@ -453,15 +453,15 @@ impl TodoStore {
             })));
         }
         if target == ids::NAV_TODOS {
-            self.page = Page::Todos;
+            self.go(Page::Todos);
             return Ok(DispatchResult::empty());
         }
         if target == ids::NAV_SETTINGS {
-            self.page = Page::Settings;
+            self.go(Page::Settings);
             return Ok(DispatchResult::empty());
         }
         if target == ids::SETTINGS_CONFIRM_DELETE {
-            self.confirm_delete = !self.confirm_delete;
+            self.toggle_confirm_delete();
             return Ok(DispatchResult::json(serde_json::json!({
                 "confirm_delete": self.confirm_delete
             })));
@@ -486,6 +486,7 @@ impl TodoStore {
             return Err(format!("`{target}` is not editable"));
         }
         self.draft.push_str(text);
+        self.bump_revision();
         Ok(DispatchResult::json(
             serde_json::json!({ "value": self.draft }),
         ))
@@ -496,6 +497,7 @@ impl TodoStore {
             return Err(format!("`{target}` is not editable"));
         }
         self.draft = value.to_string();
+        self.bump_revision();
         Ok(DispatchResult::json(
             serde_json::json!({ "value": self.draft }),
         ))
@@ -506,6 +508,7 @@ impl TodoStore {
             (ids::INPUT, "Enter") | (ids::ADD, "Enter") => self.add_from_draft().map(todo_result),
             (ids::INPUT, "Backspace") => {
                 self.draft.pop();
+                self.bump_revision();
                 Ok(DispatchResult::empty())
             }
             _ => Err(format!("unhandled key `{key}` on `{target}`")),
@@ -692,6 +695,28 @@ mod tests {
         assert!(store.rev > r);
         let r = store.rev;
         store.delete(id).unwrap();
+        assert!(store.rev > r);
+        let r = store.rev;
+        // Draft edits through the dispatch path are mutations too —
+        // a `snapshot since` must not report `unchanged` after them.
+        store.type_into(ids::INPUT, "m").unwrap();
+        assert!(store.rev > r);
+        let r = store.rev;
+        store.set_value(ids::INPUT, "mi").unwrap();
+        assert!(store.rev > r);
+        let r = store.rev;
+        store.key(ids::INPUT, "Backspace").unwrap();
+        assert!(store.rev > r);
+        // Click-driven mutations — nav flips the visible page and the
+        // confirm-delete checkbox flips `checked`; both are real
+        // observable state and must bump.
+        let r = store.rev;
+        store.dispatch(&Op::click(ids::NAV_SETTINGS)).unwrap();
+        assert!(store.rev > r);
+        let r = store.rev;
+        store
+            .dispatch(&Op::click(ids::SETTINGS_CONFIRM_DELETE))
+            .unwrap();
         assert!(store.rev > r);
     }
 
