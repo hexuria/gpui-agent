@@ -5,6 +5,7 @@ members = [
     "crates/gpui-agent-cli",
     "crates/gpui-agent-recipe",
     "crates/gpui-agent-bench",
+    "crates/gpui-agent-policy",
     "crates/todo-core",
     "apps/todo",
     "apps/todo-headless",
@@ -21,6 +22,7 @@ homepage = "https://github.com/hexuria/gpui-agent"
 [workspace.dependencies]
 gpui-agent = { path = "crates/gpui-agent", version = "0.1.0" }
 gpui-agent-recipe = { path = "crates/gpui-agent-recipe", version = "0.1.0" }
+gpui-agent-policy = { path = "crates/gpui-agent-policy", version = "0.1.0" }
 todo-core = { path = "crates/todo-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,0 +1,21 @@
+[package]
+name = "gpui-agent-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Deterministic Instinct-backed policy for gpui-agent (no model, no network)."
+
+[dependencies]
+gpui-agent.workspace = true
+instinct-core = "0.1"
+instinct-lexicon = "0.1"
+instinct-text = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1"

@@ -8,11 +8,21 @@ repository.workspace = true
 homepage.workspace = true
 description = "Experimental recipes, TMP-inspired schema mapping, and receipts for gpui-agent."
 
+[features]
+# Opt-in only — never in `default`. Existing consumers get the original
+# keyword scorer byte-for-byte. `instinct` switches `resolve_intent` to
+# the Instinct-backed evidence/arbitration resolver (gpui-agent-policy:
+# deterministic, local, no model, no network).
+instinct = ["dep:gpui-agent-policy"]
+
 [dependencies]
 gpui-agent.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+# Optional: Instinct-backed policy (M2). Pulled only by `--features instinct`.
+gpui-agent-policy = { workspace = true, optional = true }
 
 [dev-dependencies]
 todo-core.workspace = true

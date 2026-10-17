@@ -215,10 +215,19 @@ fn git_sha() -> String {
 
 // ---- resolve (R0/R1) ------------------------------------------------------
 
+/// The resolver this binary was built against: `r0` keyword scorer by
+/// default, `r1` Instinct-backed under `--features instinct`. The arm
+/// label can never lie about which code ran.
+#[cfg(feature = "instinct")]
+const RESOLVER_ARM: &str = "r1";
+#[cfg(not(feature = "instinct"))]
+const RESOLVER_ARM: &str = "r0";
+
 fn cmd_resolve(corpus: &Path, arm: &str, attempts: u32, out: &Path) -> i32 {
-    if arm != "r0" {
+    if arm != RESOLVER_ARM {
         eprintln!(
-            "arm {arm:?} unavailable: the instinct-backed resolver lands in M2; run --arm r0"
+            "arm {arm:?} unavailable: this binary was built as {RESOLVER_ARM:?} \
+             (r0 = default build, r1 = --features instinct)"
         );
         return 2;
     }
