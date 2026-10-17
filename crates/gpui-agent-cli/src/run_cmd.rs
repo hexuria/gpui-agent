@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow};
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::DeliveryMode;
-use gpui_agent_policy::{InstinctPolicy, OfferedInvoke, Profile, RunReceipt, Runner};
+use gpui_agent_policy::{
+    CommandEscalation, EscalatingPolicy, InstinctPolicy, OfferedInvoke, Profile, RunReceipt,
+    Runner, UiPolicy,
+};
 use gpui_agent_recipe::{Effect, SchemaKind, invoke_args, registry_from_schema_paths};
 use serde_json::{Value, json};
 
@@ -17,6 +20,8 @@ pub fn run(
     goal: &str,
     profile: &str,
     json_out: bool,
+    escalate_cmd: &[String],
+    escalate_timeout_ms: u64,
     schema: &[PathBuf],
 ) -> Result<()> {
     let profile = match profile {
@@ -53,13 +58,33 @@ pub fn run(
             .ok_or_else(|| format!("invoke `{name}` not in schema"))?;
         invoke_args(s, clause)
     };
+    // M7: `--escalate-cmd` wraps the local policy in an abstain-only
+    // fallback and enables the `kind:"text"` tier on deterministic
+    // Missing. Without it the run is exactly the M6 local loop.
+    let escalation = if escalate_cmd.is_empty() {
+        None
+    } else {
+        Some(
+            CommandEscalation::new(escalate_cmd)
+                .map_err(anyhow::Error::msg)?
+                .with_timeout(std::time::Duration::from_millis(escalate_timeout_ms)),
+        )
+    };
+    let policy: Box<dyn UiPolicy> = match escalation.clone() {
+        Some(esc) => Box::new(EscalatingPolicy::new(
+            InstinctPolicy::new(profile),
+            Some(esc),
+        )),
+        None => Box::new(InstinctPolicy::new(profile)),
+    };
     let receipt = Runner::new(
         &mut client,
-        InstinctPolicy::new(profile),
+        policy,
         DeliveryMode::Semantic,
         invokes,
         &mut args_for,
     )
+    .with_text_escalation(escalation)
     .run(goal)
     .map_err(|e| anyhow!("{e}"))?;
     let code = exit_code_of(&receipt);

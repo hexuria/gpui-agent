@@ -112,6 +112,17 @@ pub trait UiPolicy {
     ) -> Result<PolicyOutcome, PolicyError>;
 }
 
+impl<T: UiPolicy + ?Sized> UiPolicy for Box<T> {
+    fn decide(
+        &mut self,
+        space: &ActionSpace,
+        goal: &UiGoal,
+        history: &[HistoryEntry],
+    ) -> Result<PolicyOutcome, PolicyError> {
+        (**self).decide(space, goal, history)
+    }
+}
+
 /// Instinct-backed finite policy.
 #[derive(Clone, Debug)]
 pub struct InstinctPolicy {

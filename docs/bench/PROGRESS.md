@@ -8,3 +8,4 @@ One line per merged PR: `YYYY-MM-DD  M<n>.<k>  PR #<num>  <outcome>`.
 2026-10-17  M4.1-M4.6  PR #64  ActionSpace + UiPolicy + TextResolver + locate/act/compact MCP; GATE-T blocked (no ANTHROPIC_API_KEY); T08/T09/T10/T14 + todo-headless MCP tests green.
 2026-10-17  M5  PR #65  UiNode::fingerprint (FNV-1a, bounds/focus excluded) + expect_fingerprint atomic dispatch gate; act retries stale ≤2; race test green: stale → 0 dispatches.
 2026-10-17  M6  —  run --goal runner + clause model + evidence channels; GATE-L: A2 16/16 wrong=0 (T09 refuse correct); A3 blocked on ANTHROPIC_API_KEY
+2026-10-17  M7  —  EscalatingPolicy + CommandEscalation (closed wire, 30s/64KiB caps, off-menu→blocked, dangerous→needs_confirmation, text tier on Missing); A2 still 16/16; GATE-E blocked on ANTHROPIC_API_KEY

@@ -337,7 +337,7 @@ fn cmd_local(
             }
         }
         for attempt in 1..=attempts {
-            let rec = run_local_attempt(task, arm, attempt, goal_cmd, &host_bin);
+            let rec = run_local_attempt(task, arm, attempt, goal_cmd, &host_bin, out.parent());
             emit(&mut file, &rec);
             let status = if rec["pass"].as_bool() == Some(true) {
                 "pass"
@@ -414,6 +414,7 @@ fn run_local_attempt(
     attempt: u32,
     goal_cmd: &str,
     host_bin: &Path,
+    bench_dir: Option<&Path>,
 ) -> serde_json::Map<String, Value> {
     let mut rec = base_row(arm, &task.id, attempt);
     rec.insert("goal".into(), json!(task.goal));
@@ -472,7 +473,8 @@ fn run_local_attempt(
         }
 
         let started = Instant::now();
-        let (goal_status, cap_hit) = run_goal(goal_cmd, &task.goal, &addr, &token, CAP_WALL_MS);
+        let (goal_status, cap_hit) =
+            run_goal(goal_cmd, &task.goal, &addr, &token, CAP_WALL_MS, bench_dir);
         let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
         rec.insert("wall_ms".into(), json!(wall_ms));
         rec.insert("cap_hit".into(), json!(cap_hit));
@@ -528,14 +530,21 @@ fn run_local_attempt(
     rec
 }
 
-fn run_goal(goal_cmd: &str, goal: &str, addr: &str, token: &str, cap_ms: u64) -> (i32, bool) {
+fn run_goal(
+    goal_cmd: &str,
+    goal: &str,
+    addr: &str,
+    token: &str,
+    cap_ms: u64,
+    bench_dir: Option<&Path>,
+) -> (i32, bool) {
     let (shell, flag) = if cfg!(windows) {
         ("cmd", "/C")
     } else {
         ("sh", "-c")
     };
-    let mut child = match Command::new(shell)
-        .arg(flag)
+    let mut cmd = Command::new(shell);
+    cmd.arg(flag)
         .arg(goal_cmd)
         .env("GPUI_AGENT_ADDR", addr)
         .env("GPUI_AGENT_TOKEN", token)
@@ -543,9 +552,13 @@ fn run_goal(goal_cmd: &str, goal: &str, addr: &str, token: &str, cap_ms: u64) ->
         .env("GPUI_AGENT", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+        .stderr(Stdio::null());
+    // Escalation endpoints write their usage side-file under the
+    // results dir (M7.3).
+    if let Some(dir) = bench_dir {
+        cmd.env("GPUI_AGENT_BENCH_DIR", dir);
+    }
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => return (-1, false),
     };

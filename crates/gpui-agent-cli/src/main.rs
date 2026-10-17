@@ -219,6 +219,14 @@ enum Command {
         /// Print the raw JSON receipt instead of the text summary.
         #[arg(long)]
         json: bool,
+        /// Escalate local-policy abstains to `<program> [args…]` over the
+        /// closed JSON stdin/stdout wire (M7). Off by default; the
+        /// endpoint may only pick from the offered menu or abstain.
+        #[arg(long = "escalate-cmd", value_name = "PROGRAM [ARGS…]", num_args = 1..)]
+        escalate_cmd: Vec<String>,
+        /// Per-escalation timeout in milliseconds (default 30000).
+        #[arg(long = "escalate-timeout-ms", default_value_t = 30000)]
+        escalate_timeout_ms: u64,
         /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
         #[arg(long = "schema", value_name = "PATH")]
         schema: Vec<std::path::PathBuf>,
@@ -293,12 +301,22 @@ fn run() -> Result<()> {
         ref goal,
         ref profile,
         json,
+        ref escalate_cmd,
+        escalate_timeout_ms,
         ref schema,
     } = cli.command
     {
         let token = require_recipe_mcp_token(token.as_deref())?;
         let client = AgentClient::connect(addr).with_token(token);
-        return run_cmd::run(client, goal, profile, json, schema);
+        return run_cmd::run(
+            client,
+            goal,
+            profile,
+            json,
+            escalate_cmd,
+            escalate_timeout_ms,
+            schema,
+        );
     }
 
     let mut client = AgentClient::connect(addr);
