@@ -15,10 +15,17 @@ path = "src/main.rs"
 [dependencies]
 gpui-agent.workspace = true
 gpui-agent-recipe.workspace = true
+gpui-agent-policy = { workspace = true, optional = true }
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[features]
+# Opt-in Instinct policy: `locate`/`act` MCP tools + Instinct recipe
+# resolver. Off by default — feature-free builds keep the legacy tool
+# set and resolver byte-identical.
+instinct = ["dep:gpui-agent-policy", "gpui-agent-recipe/instinct"]
 
 [dev-dependencies]
 todo-core.workspace = true

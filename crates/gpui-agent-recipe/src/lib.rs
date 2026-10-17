@@ -25,6 +25,6 @@ pub use recipe::{
 pub use registry::{
     Registry, load_schema_file, protocol_registry, registry_from_schema_paths, todo_registry,
 };
-pub use resolve::{ResolveResult, TokenFill, resolve_intent};
+pub use resolve::{ResolveResult, TokenFill, invoke_args, resolve_intent};
 pub use run::{RunError, ScreenshotCapture, run_plan, run_plan_with_screenshots};
 pub use schema::{ArgSchema, Effect, OpSchema, SchemaKind};
