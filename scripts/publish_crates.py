@@ -56,6 +56,7 @@ def set_version(new: str) -> None:
         elif section == "workspace.dependencies" and (
             stripped.startswith("gpui-agent =")
             or stripped.startswith("gpui-agent-recipe =")
+            or stripped.startswith("gpui-agent-policy =")
         ):
             line, count = re.subn(
                 r'version\s*=\s*"[^"]+"', f'version = "{new}"', line, count=1
@@ -64,8 +65,8 @@ def set_version(new: str) -> None:
                 raise SystemExit(f"missing version on dependency line: {stripped}")
             changed += 1
         out.append(line)
-    if changed != 3:
-        raise SystemExit(f"updated {changed} version fields, expected 3")
+    if changed != 4:
+        raise SystemExit(f"updated {changed} version fields, expected 4")
     CARGO.write_text("".join(out))
 
 
