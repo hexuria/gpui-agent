@@ -27,6 +27,7 @@ pub mod arbitration;
 pub mod evidence;
 pub mod goal;
 pub mod policy;
+pub mod runner;
 pub mod text;
 
 pub use action_space::{
@@ -44,5 +45,9 @@ pub use instinct_text::{NormalizeConfig, Normalized, normalize};
 pub use policy::{
     HABITUATION_STEP, HistoryEntry, InstinctPolicy, PolicyDecision, PolicyError, PolicyOutcome,
     RankedAction, UiPolicy,
+};
+pub use runner::{
+    Candidate, EngineInfo, InvokeArgs, RunOutcome, RunReceipt, Runner, RunnerCaps, StepRecord,
+    WAIT_POLL_MS,
 };
 pub use text::{DeterministicTextResolver, TextContext, TextError, TextResolution, TextResolver};

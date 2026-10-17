@@ -16,7 +16,10 @@ use instinct_core::{
 };
 
 use crate::action_space::{ActionId, ActionKind, ActionSpace, OfferedAction};
-use crate::evidence::{EvidenceTarget, score_action, score_operation};
+use crate::evidence::{
+    EvidenceTarget, GoalEvidence, fold, object_covered, quoted_literals, score_action_ctx,
+    score_operation_ctx, tokenize, verb_matches,
+};
 use crate::goal::UiGoal;
 
 pub const HABITUATION_STEP: i16 = 250;
@@ -157,6 +160,7 @@ impl UiPolicy for InstinctPolicy {
         }
 
         let goal_text = goal.as_str();
+        let ctx = goal_evidence(goal_text, space);
 
         // --- Operation head -------------------------------------------------
         let kinds = offered_kinds(space);
@@ -165,7 +169,7 @@ impl UiPolicy for InstinctPolicy {
         for kind in kinds.iter().copied() {
             let best = space
                 .targets_of(kind)
-                .max_by_key(|a| score_action(goal_text, &evidence_of(a)).get());
+                .max_by_key(|a| score_action_ctx(goal_text, &evidence_of(a), &ctx).get());
             let id = if kind.is_control() {
                 ActionId::try_new(kind.as_str())
                     .map_err(|e| PolicyError::Internal(e.to_string()))?
@@ -175,13 +179,39 @@ impl UiPolicy for InstinctPolicy {
             };
             op_scores.insert(
                 kind,
-                score_operation(
+                score_operation_ctx(
                     goal_text,
                     kind.operation_kind(),
                     best.map(|a| evidence_of(a)).as_ref(),
+                    &ctx,
                 ),
             );
             op_ids.insert(kind, id);
+        }
+
+        // Clause done-detection: the last dispatched action verified a
+        // real effect. If its target is gone (a `Delete "X"` button
+        // vanishes with the item) or the action's label covers the
+        // clause's object — the step *was* the intent — the clause is
+        // satisfied. Chosen before arbitration so a tie at the cap or
+        // a sub-threshold top still closes the clause instead of
+        // looping or abstaining.
+        if let Some(last) = history.last() {
+            if satisfied_entry(last) {
+                let gone = space.get(&last.action_id).is_none();
+                if gone || clause_effect_done(goal_text, &last.label, &ctx, space) {
+                    if let Some(done) = space.get_str(ActionKind::Done.as_str()) {
+                        return Ok(PolicyOutcome::Choice(PolicyDecision {
+                            action_id: done.id().clone(),
+                            kind: ActionKind::Done,
+                            target_label: done.label().to_owned(),
+                            confidence_millis: Confidence::MAX.get(),
+                            operation_ranked: Vec::new(),
+                            target_ranked: Vec::new(),
+                        }));
+                    }
+                }
+            }
         }
 
         let (op_answer, op_ranked) =
@@ -241,7 +271,7 @@ impl UiPolicy for InstinctPolicy {
 
         let target_scores: Vec<(&OfferedAction, Confidence)> = targets
             .iter()
-            .map(|a| (*a, score_action(goal_text, &evidence_of(a))))
+            .map(|a| (*a, score_action_ctx(goal_text, &evidence_of(a), &ctx)))
             .collect();
 
         let (chosen, target_ranked) = choose_targets(&target_scores, history, self.profile)?;
@@ -272,10 +302,13 @@ impl UiPolicy for InstinctPolicy {
         }
 
         // Repeated-action avoidance: the winner is exactly the action
-        // that just executed with a verified effect. The goal's single
-        // intent is satisfied; repeating it would double-submit. Choose
-        // DONE instead.
-        if satisfied_by_history(history, action.id()) {
+        // that just executed with a verified effect *and* that effect
+        // is the clause's intent (its label covers the object, or a
+        // verb-named affordance landed the payload). Repeating it
+        // would double-submit; choose DONE instead.
+        if satisfied_by_history(history, action.id())
+            && clause_effect_done(goal_text, action.label(), &ctx, space)
+        {
             if let Some(done) = space.get_str(ActionKind::Done.as_str()) {
                 return Ok(PolicyOutcome::Choice(PolicyDecision {
                     action_id: done.id().clone(),
@@ -299,19 +332,135 @@ impl UiPolicy for InstinctPolicy {
     }
 }
 
+/// Verbs whose clause carries a text payload a field must hold first
+/// ("Add a todo "Buy milk"", "type rust into Search").
+const PAYLOAD_VERBS: &[&str] = &[
+    "add", "create", "new", "insert", "type", "enter", "fill", "input", "submit",
+];
+
+/// Clause words that ask for a check/toggle effect on a checkbox.
+const TOGGLE_WORDS: &[&str] = &[
+    "mark",
+    "marked",
+    "done",
+    "check",
+    "checked",
+    "complete",
+    "completed",
+    "toggle",
+    "tick",
+    "ticked",
+];
+
+/// Prepositions whose next word may name a location ("in Settings").
+const LOCATIVES: &[&str] = &["in", "on", "inside", "under", "to", "from", "into"];
+
+/// Folded substrings that signal an enable/disable intent.
+const TURN_WORDS: &[&str] = &["turnon", "turnedon", "turnoff", "enable", "disable"];
+
+/// Clause-level evidence for `decide`: quoted literals (and whether
+/// one still needs a field), the verb-position word, check/toggle
+/// intent, locative words, and the sole payload/checkbox targets when
+/// the space offers exactly one.
+fn goal_evidence(goal: &str, space: &ActionSpace) -> GoalEvidence {
+    let literals = quoted_literals(goal);
+    let has_literal = !literals.is_empty();
+    let unplaced_literal = literals
+        .iter()
+        .any(|lit| !space.literal_placed(&tokenize(lit)));
+    let tokens = tokenize(goal);
+    let verb = tokens.first().cloned().unwrap_or_default();
+
+    let type_targets: Vec<&OfferedAction> = space.targets_of(ActionKind::Type).collect();
+    let payload_target = if PAYLOAD_VERBS.iter().any(|v| verb == *v)
+        && unplaced_literal
+        && type_targets.len() == 1
+    {
+        Some(type_targets[0].id().as_str().to_owned())
+    } else {
+        None
+    };
+
+    let mut checkboxes = space
+        .targets_of(ActionKind::Click)
+        .filter(|a| a.role() == Some("checkbox"));
+    let sole_checkbox = match (checkboxes.next(), checkboxes.next()) {
+        (Some(only), None) => Some(only.id().as_str().to_owned()),
+        _ => None,
+    };
+
+    let folded = fold(goal);
+    let toggle_intent = tokens.iter().any(|t| TOGGLE_WORDS.iter().any(|w| t == w))
+        || TURN_WORDS.iter().any(|w| folded.contains(w));
+
+    // A locative names a direction word even after its page is shown
+    // (it still leaves the clause's object words), but it only earns
+    // navigation evidence while the page is not yet visible.
+    let locatives: Vec<String> = tokens
+        .windows(2)
+        .filter(|w| LOCATIVES.iter().any(|p| w[0] == *p))
+        .map(|w| w[1].clone())
+        .collect();
+    let nav_locatives = locatives
+        .iter()
+        .filter(|w| !space.location_shown(w))
+        .cloned()
+        .collect();
+
+    GoalEvidence {
+        literals,
+        unplaced_literal,
+        verb,
+        toggle_intent,
+        locatives,
+        nav_locatives,
+        payload_target,
+        sole_checkbox,
+        has_literal,
+    }
+}
+
 fn chosen_kind_is_terminal(kind: ActionKind) -> bool {
     matches!(kind, ActionKind::Done | ActionKind::Blocked)
 }
 
+/// The acted-on label is what the clause asked for — either it covers
+/// every object word (a `Settings` click satisfies `open settings`;
+/// a `Settings` click does *not* satisfy `turn on X in settings`
+/// because `X` is the object, not the locative), or it is the
+/// verb-named affordance and the clause's payload has landed inside a
+/// node label (the `Add` button after `Buy milk` becomes a list item).
+fn clause_effect_done(
+    goal: &str,
+    last_label: &str,
+    ctx: &GoalEvidence,
+    space: &ActionSpace,
+) -> bool {
+    if object_covered(goal, last_label, ctx) {
+        return true;
+    }
+    !ctx.literals.is_empty()
+        && verb_matches(&ctx.verb, last_label)
+        && ctx
+            .literals
+            .iter()
+            .all(|lit| space.literal_in_label(&tokenize(lit)))
+}
+
+/// Verification saw a real effect (`success`/`state-changed`/
+/// `navigation`) — the strings the runner records.
+fn satisfied_entry(entry: &HistoryEntry) -> bool {
+    matches!(
+        entry.verification.as_str(),
+        "success" | "state-changed" | "navigation"
+    )
+}
+
 /// The last executed step was `id` and verification saw a real effect.
 fn satisfied_by_history(history: &[HistoryEntry], id: &ActionId) -> bool {
-    history.last().is_some_and(|entry| {
-        &entry.action_id == id
-            && matches!(
-                entry.verification.as_str(),
-                "success" | "state-changed" | "navigation"
-            )
-    })
+    history
+        .last()
+        .is_some_and(|entry| &entry.action_id == id && satisfied_entry(entry))
 }
 
 fn offered_kinds(space: &ActionSpace) -> Vec<ActionKind> {

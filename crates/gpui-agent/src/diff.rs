@@ -78,6 +78,13 @@ pub fn diff_trees(old: &UiTree, new: &UiTree) -> TreeDiff {
 
     for (id, (node, parent)) in &after {
         match before.get(id) {
+            // A descendant of a newly added or moved subtree is already
+            // embedded in its ancestor's AddedNode — emitting it again
+            // would make `apply_diff` graft the same id twice.
+            None if parent.as_ref().is_some_and(|p| match before.get(p) {
+                None => true,
+                Some((_, old_pp)) => after.get(p).is_some_and(|(_, pp)| pp != old_pp),
+            }) => {}
             None => diff.added.push(AddedNode {
                 node: node.clone(),
                 parent: parent.clone(),
@@ -137,6 +144,11 @@ pub fn apply_diff(old: &UiTree, diff: &TreeDiff) -> UiTree {
     while !pending.is_empty() && progress {
         progress = false;
         pending.retain(|add| {
+            // Ids are unique by contract — a peer that emits a node
+            // already present must not graft a second copy.
+            if find_mut(&mut out.nodes, &add.node.id).is_some() {
+                return false;
+            }
             let can_place = match &add.parent {
                 None => true,
                 Some(p) => find_mut(&mut out.nodes, p).is_some() || p.is_empty(),

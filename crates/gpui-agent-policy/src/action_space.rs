@@ -212,6 +212,17 @@ impl OfferedAction {
 pub struct ActionSpace {
     rev: Option<u64>,
     actions: BTreeMap<ActionId, OfferedAction>,
+    /// Tokenized `name`/`value` of every viable node — quoted-literal
+    /// placement evidence for [`crate::evidence::GoalEvidence`].
+    texts: Vec<NodeText>,
+}
+
+/// Tokenized label, value, and role of one viable node.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NodeText {
+    pub label: Vec<String>,
+    pub value: Vec<String>,
+    pub role: String,
 }
 
 /// Construction errors — id validity only.
@@ -244,8 +255,9 @@ impl ActionSpace {
         invokes: &[OfferedInvoke],
     ) -> Self {
         let mut actions = BTreeMap::new();
+        let mut texts = Vec::new();
         for node in &tree.nodes {
-            collect_node(node, None, true, &mut actions);
+            collect_node(node, None, true, &mut actions, &mut texts);
         }
         for kb in keybindings {
             // Identifier separators split into words so a goal naming
@@ -299,10 +311,50 @@ impl ActionSpace {
                 },
             );
         }
+        // Sorted so `PartialEq` is invariant under sibling order.
+        texts.sort();
         Self {
             rev: tree.rev,
             actions,
+            texts,
         }
+    }
+
+    /// A quoted clause literal is "placed" once its token run appears
+    /// inside some visible node's label or value — e.g. "Buy milk"
+    /// lands in the draft field's value after TYPE. Until then the
+    /// clause still carries an unplaced payload.
+    pub fn literal_placed(&self, literal_tokens: &[String]) -> bool {
+        !literal_tokens.is_empty()
+            && self.texts.iter().any(|text| {
+                contains_run(&text.label, literal_tokens)
+                    || contains_run(&text.value, literal_tokens)
+            })
+    }
+
+    /// Stronger than [`literal_placed`]: the literal appears inside a
+    /// node's *label* — it names an entity that exists on screen
+    /// ("Buy milk" the list item), not merely a field's draft value.
+    /// Completion evidence for payload clauses: the add landed.
+    pub fn literal_in_label(&self, literal_tokens: &[String]) -> bool {
+        !literal_tokens.is_empty()
+            && self
+                .texts
+                .iter()
+                .any(|text| contains_run(&text.label, literal_tokens))
+    }
+
+    /// A `page`-role node already displays `word`: the "in Settings"
+    /// locative names the page the tree is on, so its navigation
+    /// evidence is spent — `nav-settings` stops earning the boost
+    /// once Settings is shown.
+    pub fn location_shown(&self, word: &str) -> bool {
+        let needle = crate::evidence::tokenize(word);
+        !needle.is_empty()
+            && self
+                .texts
+                .iter()
+                .any(|text| text.role == "page" && contains_run(&text.label, &needle))
     }
 
     /// Snapshot revision the space was built from (`None` when the host
@@ -366,15 +418,30 @@ fn explode_ident(name: &str) -> String {
         .collect()
 }
 
+/// `hay` holds `needle` as a contiguous token run.
+fn contains_run(hay: &[String], needle: &[String]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
 fn collect_node(
     node: &UiNode,
     parent: Option<&UiNode>,
     ancestors_viable: bool,
     actions: &mut BTreeMap<ActionId, OfferedAction>,
+    texts: &mut Vec<NodeText>,
 ) {
     // Filtered before scoring — never penalized.
     let viable = ancestors_viable && node.enabled && node.visible;
     if viable {
+        texts.push(NodeText {
+            label: crate::evidence::tokenize(&node.name),
+            value: node
+                .value
+                .as_deref()
+                .map(crate::evidence::tokenize)
+                .unwrap_or_default(),
+            role: node.role.clone(),
+        });
         let parent_role = parent.map(|p| p.role.as_str());
         let parent_id = parent.map(|p| p.id.as_str());
         let fingerprint = Some(node.fingerprint(parent_id));
@@ -430,6 +497,6 @@ fn collect_node(
         }
     }
     for child in &node.children {
-        collect_node(child, Some(node), viable, actions);
+        collect_node(child, Some(node), viable, actions, texts);
     }
 }

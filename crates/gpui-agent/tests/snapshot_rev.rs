@@ -433,6 +433,64 @@ fn diff_move_is_remove_plus_add() {
 }
 
 #[test]
+fn diff_added_subtree_does_not_emit_descendants() {
+    // A brand-new subtree arrives as ONE AddedNode whose `node` already
+    // embeds its children. Emitting the descendants separately makes
+    // `apply_diff` graft the same id twice — `find` sees one copy while
+    // `diff_trees`'s id-index sees the other, so later `changed` edits
+    // go to the copy verification can't see (the `checked` toggle the
+    // runner verified as `no-effect`).
+    let old = tree_with(
+        Some(1),
+        vec![node("w", "window", "W").with_children(vec![node("p", "page", "Todos")])],
+    );
+    let checkbox = node("cb", "checkbox", "Confirm before delete").with_checked(false);
+    let new = tree_with(
+        Some(2),
+        vec![node("w", "window", "W").with_children(vec![
+            node("ps", "page", "Settings").with_children(vec![checkbox]),
+        ])],
+    );
+    let diff = diff_trees(&old, &new);
+    assert_eq!(diff.added.len(), 1, "subtree root only: {:?}", diff.added);
+    assert_eq!(diff.added[0].node.id, "ps");
+
+    // Applying must not duplicate: the graft already carried the child.
+    let applied = apply_diff(&old, &diff);
+    let mut count = 0usize;
+    applied.visit(&mut |n| {
+        if n.id == "cb" {
+            count += 1;
+        }
+    });
+    assert_eq!(count, 1, "cb grafted once");
+
+    // And a `changed` edit on the embedded child must be visible to the
+    // very next diff — the `no-effect` bug was a stale duplicate.
+    let mut toggled = applied.clone();
+    if let Some(cb) = find_node_mut(&mut toggled.nodes, "cb") {
+        cb.checked = Some(true);
+        cb.states = vec!["checked".into()];
+    }
+    let next = diff_trees(&applied, &toggled);
+    assert_eq!(next.changed.len(), 1);
+    assert_eq!(next.changed[0].id, "cb");
+    assert_eq!(next.changed[0].fields["checked"], true);
+}
+
+fn find_node_mut<'a>(nodes: &'a mut [UiNode], id: &str) -> Option<&'a mut UiNode> {
+    for node in nodes.iter_mut() {
+        if node.id == id {
+            return Some(node);
+        }
+        if let Some(found) = find_node_mut(&mut node.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+#[test]
 fn diff_empty_when_identical() {
     let t = tree_with(Some(1), vec![node("w", "window", "W")]);
     let diff = diff_trees(&t, &t);

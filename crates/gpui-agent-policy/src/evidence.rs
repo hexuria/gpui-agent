@@ -91,32 +91,331 @@ pub struct EvidenceTarget<'a> {
 /// operation evidence and `"rust"` is the text resolver's payload; only
 /// `Search` names a target.
 pub fn score_action(goal: &str, target: &EvidenceTarget<'_>) -> Confidence {
-    let best = score_action_best(goal, target);
+    score_action_ctx(goal, target, &GoalEvidence::default())
+}
+
+/// Clause-level evidence the policy computes once per `decide` from
+/// the goal text and the observed space. Every channel is additive —
+/// it may raise or withhold evidence but never dispatches — and all
+/// defaults make [`score_action`]/`[`score_operation`] behave exactly
+/// as the context-free form.
+#[derive(Clone, Debug, Default)]
+pub struct GoalEvidence {
+    /// Quoted literals in the clause (unquoted text).
+    pub literals: Vec<String>,
+    /// A quoted literal appears in no visible node label or value —
+    /// the clause still carries an unplaced payload, so verb-position
+    /// evidence is withheld until the payload lands.
+    pub unplaced_literal: bool,
+    /// First content token of the clause (verb position), lowercase.
+    pub verb: String,
+    /// The clause asks for a check/toggle effect ("mark done",
+    /// "turn on", "enable", "check").
+    pub toggle_intent: bool,
+    /// Words following a locative preposition ("in Settings") —
+    /// excluded from the clause's object words regardless of whether
+    /// that location is already shown.
+    pub locatives: Vec<String>,
+    /// Locatives whose page is not yet visible — navigation evidence.
+    /// A locative naming the shown page is spent ("in Settings" stops
+    /// boosting `nav-settings` once the Settings page is on screen).
+    pub nav_locatives: Vec<String>,
+    /// Payload intent + exactly one TYPE target — its action id.
+    pub payload_target: Option<String>,
+    /// The single checkbox target when exactly one is offered.
+    pub sole_checkbox: Option<String>,
+    /// The clause carries any quoted literal — suppresses `done`
+    /// keyword evidence ("mark X as done" is not "I am done").
+    pub has_literal: bool,
+}
+
+/// `score_action` plus clause-level channels:
+///
+/// - Each quoted literal is scored as an additional phrase — a literal
+///   that *names a node* ("Mark "Write docs" as done") is target
+///   evidence, capped at [`NON_EXACT_CAP`] because it is a clause
+///   fragment, not the whole intent.
+/// - `verb`: the clause's first token appearing in the label is the
+///   goal's action word naming this affordance ("Add a todo …" names
+///   the `Add` button) — withheld while a payload is unplaced so the
+///   field goes before the button.
+/// - `toggle_intent`/`sole_checkbox`: check/toggle phrasing raises
+///   checkboxes — stronger when the space offers exactly one.
+/// - `locatives`: a word after `in`/`on`/`to` that equals a label is
+///   navigation evidence ("Turn on … in Settings" opens Settings).
+/// - `payload_target`: an unplaced literal plus payload phrasing plus
+///   a sole TYPE target makes the field the obvious first step.
+pub fn score_action_ctx(goal: &str, target: &EvidenceTarget<'_>, ctx: &GoalEvidence) -> Confidence {
+    let mut best = score_action_best_ctx(goal, target, ctx);
+    for literal in &ctx.literals {
+        let lit = score_action_text_ctx(literal, target, ctx)
+            .get()
+            .min(NON_EXACT_CAP);
+        if lit > best.get() {
+            best = Confidence::saturating(i32::from(lit));
+        }
+    }
     // Only an exact label can saturate: "Skip navigation" contains the
-    // goal "Skip" but must stay a margin below the button labelled "Skip".
-    if best == Confidence::MAX && !exact_label(goal, target) {
-        return Confidence::saturating(i32::from(NON_EXACT_CAP));
+    // goal "Skip" but must stay a margin below the button labelled
+    // "Skip". A label token-equal to the whole goal is exact too
+    // (`Delete Write docs` names `Delete "Write docs"` whole). A
+    // checkbox that covers every object word under toggle intent is
+    // exact in effect: `Toggle Item 137` *is* `mark "Item 137" done`,
+    // while `Toggle Item 42` stays capped a margin below.
+    let exact = exact_label_ctx(goal, target, ctx)
+        || tokens_equal(goal, target.label)
+        || (ctx.toggle_intent
+            && target.role == Some("checkbox")
+            && object_covered(goal, target.label, ctx));
+    if best == Confidence::MAX && !exact {
+        best = Confidence::saturating(i32::from(NON_EXACT_CAP));
+    }
+    // Verb-position and locative evidence lifts weak matches but may
+    // never push a non-exact label past the exact ceiling — otherwise
+    // near-identical labels ("Delete task 149" vs "Delete task 150")
+    // saturate together and the margin collapses.
+    let mut soft = |bonus: i32| {
+        let lifted = best.get().saturating_add(bonus as i16);
+        best = if exact {
+            Confidence::saturating(i32::from(lifted))
+        } else {
+            Confidence::saturating(i32::from(lifted.min(NON_EXACT_CAP)))
+        };
+    };
+    if !ctx.unplaced_literal && !ctx.verb.is_empty() && verb_matches(&ctx.verb, target.label) {
+        // The verb names the affordance; when the label also covers
+        // every object word ("collapse the sidebar" → "Hide sidebar")
+        // the match is near-exact and earns more.
+        soft(if object_covered(goal, target.label, ctx) {
+            650
+        } else {
+            500
+        });
+    }
+    if ctx.nav_locatives.iter().any(|w| eq_fold(w, target.label)) {
+        soft(600);
+    }
+    // Check/toggle intent and the unplaced-payload field are decisive
+    // channels: they name the *kind* of affordance the clause wants, so
+    // they may reach the ceiling.
+    if ctx.toggle_intent && target.role == Some("checkbox") {
+        let bonus = if ctx.sole_checkbox.as_deref() == Some(target.id) {
+            700
+        } else {
+            300
+        } + if object_covered(goal, target.label, ctx) {
+            150
+        } else {
+            0
+        };
+        // Uncapped only for the exact target — otherwise the bonus
+        // saturates every near-match checkbox and collapses the margin
+        // (`Toggle Item 137` must stay above `Toggle Item 42`).
+        if exact {
+            best = best.saturating_add(Confidence::saturating(bonus));
+        } else {
+            soft(bonus);
+        }
+    }
+    if target.kind == OperationKind::TypeText && ctx.payload_target.as_deref() == Some(target.id) {
+        best = best.saturating_add(Confidence::saturating(850));
     }
     best
 }
 
+/// `a` and `b` name the same word when equal or one is a prefix of at
+/// least four characters of the other ("confirm" ~ "confirmation").
+/// Clause-level channels only — base label evidence stays exact.
+fn stem_eq(a: &str, b: &str) -> bool {
+    a == b || (a.len().min(b.len()) >= 4 && (a.starts_with(b) || b.starts_with(a)))
+}
+
+/// UI affordance names the clause verb may pick: `collapse the
+/// sidebar` names the `Hide sidebar` button even though the words
+/// differ.
+const VERB_SYNONYMS: &[(&str, &[&str])] = &[
+    ("collapse", &["hide", "collapse", "minimize"]),
+    ("expand", &["show", "expand", "maximize"]),
+    ("open", &["open", "show"]),
+    ("close", &["close", "hide", "dismiss"]),
+    ("quit", &["quit", "exit", "close"]),
+    ("delete", &["delete", "remove", "trash"]),
+    ("add", &["add", "create", "new"]),
+    ("mark", &["mark", "check", "tick"]),
+    ("toggle", &["toggle", "flip", "switch"]),
+];
+
+/// Effect-state words are the clause's *wanted outcome*, not the
+/// object it acts on — "mark X done" acts on `X`, `done` is what the
+/// click should make true.
+const STATE_WORDS: &[&str] = &[
+    "done",
+    "on",
+    "off",
+    "checked",
+    "unchecked",
+    "complete",
+    "completed",
+    "enabled",
+    "disabled",
+    "open",
+    "closed",
+    "marked",
+    "set",
+    "toggled",
+    "shown",
+    "hidden",
+];
+
+/// The clause's object words: significant goal tokens plus quoted
+/// literals (a quoted `"A"` is the object even though `a` is a
+/// stopword), minus the verb position, locative directions, and
+/// effect-state words.
+fn object_tokens(goal: &str, ctx: &GoalEvidence) -> Vec<String> {
+    let mut object: Vec<String> = Vec::new();
+    for lit in &ctx.literals {
+        for t in tokenize(lit) {
+            if !object.contains(&t) {
+                object.push(t);
+            }
+        }
+    }
+    for t in significant_tokens(goal) {
+        if !object.contains(&t) {
+            object.push(t);
+        }
+    }
+    object
+        .into_iter()
+        .filter(|t| {
+            !stem_eq(t, &ctx.verb)
+                && !ctx.locatives.iter().any(|l| l == t)
+                && !STATE_WORDS.iter().any(|s| s == t)
+        })
+        .collect()
+}
+
+/// Every object word of the clause appears in `label` (`stem_eq`),
+/// and at least one real object word exists — the label names what
+/// the clause acts on, not merely its verb or location.
+pub(crate) fn object_covered(goal: &str, label: &str, ctx: &GoalEvidence) -> bool {
+    let label_tokens = tokenize(label);
+    let object = object_tokens(goal, ctx);
+    !object.is_empty()
+        && object
+            .iter()
+            .all(|t| label_tokens.iter().any(|lt| stem_eq(lt, t)))
+}
+
+/// The clause's verb-position word names this label directly or via
+/// [`VERB_SYNONYMS`].
+pub(crate) fn verb_matches(verb: &str, label: &str) -> bool {
+    let label_tokens = tokenize(label);
+    if label_tokens.iter().any(|t| stem_eq(t, verb)) {
+        return true;
+    }
+    VERB_SYNONYMS.iter().any(|(key, synonyms)| {
+        stem_eq(key, verb) && synonyms.iter().any(|s| label_tokens.iter().any(|t| t == s))
+    })
+}
+
+/// Words that carry no target identity — dropped before the
+/// token-equivalence check so `Delete "Write docs"` equals
+/// `Delete Write docs` but `Skip` does not equal `Skip navigation`
+/// (extra content) and `Write docs` does not equal
+/// `Mark "Write docs" as done` (missing intent words).
+const COVER_STOP: &[&str] = &[
+    "the", "a", "an", "as", "in", "on", "to", "into", "from", "at", "by", "of", "for", "and",
+    "then", "it", "them", "that", "this", "with",
+];
+
+fn significant_tokens(text: &str) -> Vec<String> {
+    tokenize(text)
+        .into_iter()
+        .filter(|t| !COVER_STOP.iter().any(|s| t == s))
+        .collect()
+}
+
+/// The goal and label name the same thing: their significant token
+/// sets cover each other (`stem_eq` pairwise — "confirm" ~
+/// "confirmation"). Such a label earns the exact-label ceiling.
+fn tokens_equal(goal: &str, label: &str) -> bool {
+    let g = significant_tokens(goal);
+    let l = significant_tokens(label);
+    !g.is_empty()
+        && !l.is_empty()
+        && g.iter().all(|t| l.iter().any(|lt| stem_eq(lt, t)))
+        && l.iter().all(|t| g.iter().any(|lt| stem_eq(lt, t)))
+}
+
+#[cfg(test)]
 fn exact_label(goal: &str, target: &EvidenceTarget<'_>) -> bool {
+    exact_label_ctx(goal, target, &GoalEvidence::default())
+}
+
+fn exact_label_ctx(goal: &str, target: &EvidenceTarget<'_>, ctx: &GoalEvidence) -> bool {
     let label = target.label;
+    // Operation keywords count as evidence only outside quotes —
+    // `"call"` inside a payload does not name `invoke`.
+    let residue;
+    let kw_goal: &str = if ctx.has_literal {
+        residue = unquoted_text(goal);
+        &residue
+    } else {
+        goal
+    };
     eq_fold(goal, label)
         || target_phrase(goal).is_some_and(|p| eq_fold(&p, label))
         || (target.kind.is_control()
-            && (eq_fold(goal, target.kind.as_str()) || control_keyword_hit(goal, target.kind)))
+            && !done_suppressed(target.kind, ctx)
+            && (eq_fold(goal, target.kind.as_str()) || control_keyword_hit(kw_goal, target.kind)))
 }
 
+/// `done` keyword evidence is suppressed while the clause carries a
+/// quoted literal: "Mark "Write docs" as done" describes the todo's
+/// state, not the agent's completion.
+fn done_suppressed(kind: OperationKind, ctx: &GoalEvidence) -> bool {
+    kind == OperationKind::Done && ctx.has_literal
+}
+
+#[cfg(test)]
 fn score_action_best(goal: &str, target: &EvidenceTarget<'_>) -> Confidence {
-    let whole = score_action_text(goal, target);
+    score_action_best_ctx(goal, target, &GoalEvidence::default())
+}
+
+fn score_action_best_ctx(
+    goal: &str,
+    target: &EvidenceTarget<'_>,
+    ctx: &GoalEvidence,
+) -> Confidence {
+    let whole = score_action_text_ctx(goal, target, ctx);
     match target_phrase(goal) {
         Some(phrase) if phrase != goal => {
-            let p = score_action_text(&phrase, target);
+            let p = score_action_text_ctx(&phrase, target, ctx);
             if p.get() > whole.get() { p } else { whole }
         }
         _ => whole,
     }
+}
+
+/// The goal with `"…"`/`“…”` quoted spans removed — the residue carries
+/// the clause's non-literal evidence (verb, object words, locatives).
+fn unquoted_text(goal: &str) -> String {
+    let mut out = String::with_capacity(goal.len());
+    let mut chars = goal.chars();
+    while let Some(c) = chars.next() {
+        if c == '"' || c == '\u{201c}' {
+            let close = if c == '"' { '"' } else { '\u{201d}' };
+            for d in chars.by_ref() {
+                if d == close {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Operation verbs stripped from the front of a goal for target evidence.
@@ -154,11 +453,14 @@ pub fn target_phrase(goal: &str) -> Option<String> {
             stripped = true;
         }
     }
+    let first_word = words.iter().find(|w| **w != "\u{0}").copied();
     let mut out = Vec::new();
     let mut after_marker = stripped;
+    let mut had_marker = false;
     for w in words {
         if w == "\u{0}" {
             after_marker = true;
+            had_marker = true;
             continue;
         }
         if after_marker && CONNECTIVES.iter().any(|c| w.eq_ignore_ascii_case(c)) {
@@ -166,6 +468,19 @@ pub fn target_phrase(goal: &str) -> Option<String> {
         }
         after_marker = false;
         out.push(w);
+    }
+    // A quoted span is the clause's payload or named target; a leading
+    // word that is not a LEADING_VERB is the clause's own operation
+    // verb ("Add "Pay rent"") — it names nothing and must not become
+    // the target phrase.
+    if had_marker
+        && !stripped
+        && out
+            .first()
+            .zip(first_word)
+            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+    {
+        out.remove(0);
     }
     let phrase = out.join(" ");
     if phrase.is_empty() {
@@ -175,7 +490,16 @@ pub fn target_phrase(goal: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn score_action_text(goal: &str, target: &EvidenceTarget<'_>) -> Confidence {
+    score_action_text_ctx(goal, target, &GoalEvidence::default())
+}
+
+fn score_action_text_ctx(
+    goal: &str,
+    target: &EvidenceTarget<'_>,
+    ctx: &GoalEvidence,
+) -> Confidence {
     let label = target.label;
     let kind = target.kind;
 
@@ -185,11 +509,43 @@ fn score_action_text(goal: &str, target: &EvidenceTarget<'_>) -> Confidence {
     if kind.is_control() && eq_fold(goal, kind.as_str()) {
         return Confidence::MAX;
     }
+
+    // Quoted literals are scored by their own channel; their words are
+    // not label evidence. A long payload title must not crush the
+    // residue's coverage — `add` is 1/3 of `add a todo`, not 1/8 of
+    // the goal with the payload folded in.
+    let residue;
+    let goal: &str = if ctx.has_literal {
+        residue = unquoted_text(goal);
+        &residue
+    } else {
+        goal
+    };
+    // While a payload or named target is still unplaced, the clause's
+    // verb names the *future* submit affordance, not current evidence:
+    // `add` must not lift the `Add` button before `Pay rent` is typed,
+    // and `delete` must not lift `Delete Buy milk` when `Walk dog`
+    // does not exist.
+    let stripped;
+    let goal: &str = if ctx.unplaced_literal {
+        let mut toks: Vec<&str> = goal.split_whitespace().collect();
+        if toks
+            .first()
+            .is_some_and(|t| stem_eq(&t.to_lowercase(), &ctx.verb))
+        {
+            toks.remove(0);
+        }
+        stripped = toks.join(" ");
+        &stripped
+    } else {
+        goal
+    };
+
     // Control verbs ("done", "wait", "scroll down") pick the control
     // itself. Operation verbs on target-bound kinds ("type", "select")
     // are operation evidence (see `score_operation`), not a cap on label
     // evidence.
-    if kind.is_control() && control_keyword_hit(goal, kind) {
+    if kind.is_control() && !done_suppressed(kind, ctx) && control_keyword_hit(goal, kind) {
         return Confidence::saturating(920);
     }
 
@@ -239,7 +595,7 @@ fn score_action_text(goal: &str, target: &EvidenceTarget<'_>) -> Confidence {
         }
     }
 
-    if kind == OperationKind::Done && done_language(goal) {
+    if kind == OperationKind::Done && !done_suppressed(kind, ctx) && done_language(goal) {
         score = score.saturating_add(Confidence::saturating(100));
     }
 
@@ -308,15 +664,36 @@ pub fn score_operation(
     kind: OperationKind,
     best_target: Option<&EvidenceTarget<'_>>,
 ) -> Confidence {
+    score_operation_ctx(goal, kind, best_target, &GoalEvidence::default())
+}
+
+/// [`score_operation`] with clause-level evidence — the target score
+/// includes the [`GoalEvidence`] channels and `done` keywords are
+/// suppressed while the clause carries a quoted literal.
+pub fn score_operation_ctx(
+    goal: &str,
+    kind: OperationKind,
+    best_target: Option<&EvidenceTarget<'_>>,
+    ctx: &GoalEvidence,
+) -> Confidence {
+    // Operation keywords count as evidence only outside quotes — the
+    // `call` in `Add a todo titled "Call Ana"` is payload, not `invoke`.
+    let residue;
+    let kw_goal: &str = if ctx.has_literal {
+        residue = unquoted_text(goal);
+        &residue
+    } else {
+        goal
+    };
     let mut score = Confidence::ZERO;
-    if control_keyword_hit(goal, kind) {
+    if control_keyword_hit(kw_goal, kind) && !done_suppressed(kind, ctx) {
         score = score.saturating_add(Confidence::saturating(920));
     }
     if eq_fold(goal, kind.as_str()) {
         return Confidence::MAX;
     }
     if let Some(target) = best_target {
-        let t = score_action(goal, target);
+        let t = score_action_ctx(goal, target, ctx);
         if t.get() > score.get() {
             score = t;
         }
@@ -324,7 +701,7 @@ pub fn score_operation(
         // into Search" offers CLICK and TYPE_TEXT on the same field):
         // an unnamed operation cannot outrank the named one on label
         // evidence alone.
-        let named = named_target_operations(goal);
+        let named = named_target_operations(kw_goal);
         if !named.is_empty() && !named.contains(&kind) {
             score = Confidence::saturating(i32::from(score.get().min(UNNAMED_OPERATION_CAP)));
         }
@@ -333,6 +710,38 @@ pub fn score_operation(
         score = score.saturating_add(Confidence::saturating(50));
     }
     score
+}
+
+/// All `"…"`/`"…"` quoted literals in `goal`, in order, unquoted.
+/// Empty and unterminated segments are skipped.
+pub fn quoted_literals(goal: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while cursor < goal.len() {
+        let Some((offset, opening)) = goal[cursor..]
+            .char_indices()
+            .find(|(_, c)| matches!(*c, '"' | '\u{201c}'))
+        else {
+            break;
+        };
+        let start = cursor + offset;
+        let (closing, content_start) = match opening {
+            '"' => ('"', start + 1),
+            _ => ('\u{201d}', start + opening.len_utf8()),
+        };
+        let Some((end_off, _)) = goal[content_start..]
+            .char_indices()
+            .find(|(_, c)| *c == closing)
+        else {
+            break;
+        };
+        let content_end = content_start + end_off;
+        if content_end > content_start {
+            out.push(goal[content_start..content_end].to_owned());
+        }
+        cursor = content_end + closing.len_utf8();
+    }
+    out
 }
 
 /// `instinct_lexicon::overlap` on normalized `goal`/`candidate`:
@@ -401,7 +810,7 @@ fn eq_fold(a: &str, b: &str) -> bool {
     fold(a) == fold(b)
 }
 
-fn fold(s: &str) -> String {
+pub(crate) fn fold(s: &str) -> String {
     s.chars()
         .flat_map(char::to_lowercase)
         .filter(|c| !c.is_whitespace())
@@ -409,7 +818,7 @@ fn fold(s: &str) -> String {
 }
 
 /// Lowercase alphanumeric tokens — port of `aui_core::tokenize`.
-fn tokenize(text: &str) -> Vec<String> {
+pub(crate) fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut buf = String::new();
     for ch in text.chars() {
