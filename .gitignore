@@ -7,3 +7,4 @@
 agent-tools/
 /artifacts/
 results/
+mutants.out/

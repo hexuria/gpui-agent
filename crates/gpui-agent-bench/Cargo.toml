@@ -9,6 +9,11 @@ homepage.workspace = true
 description = "Benchmark harness for the gpui-agent milestone arms (R0/R1 resolve, A2 local, report)."
 publish = false
 
+[features]
+# Build the bench against the Instinct resolver for R1 runs:
+# `cargo run -p gpui-agent-bench --features instinct -- resolve --arm r1`.
+instinct = ["gpui-agent-recipe/instinct"]
+
 [dependencies]
 clap.workspace = true
 gpui-agent.workspace = true
