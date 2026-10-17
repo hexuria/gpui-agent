@@ -5,7 +5,9 @@ use std::time::Duration;
 use crate::hmac_auth::{hmac_hex, parse_challenge_line};
 use crate::mailbox::MAX_MAILBOX_DEPTH;
 use crate::ndjson::{read_limited_line_into, write_json_line};
-use crate::protocol::{AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response, ScreenshotMode};
+use crate::protocol::{
+    AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response, ScreenshotMode, SnapshotFormat,
+};
 use crate::server::{MAX_LINE_BYTES, default_addr};
 
 /// Blocking NDJSON client used by the CLI, MCP shim, recipes, and tests.
@@ -397,6 +399,17 @@ impl AgentClient {
 
     pub fn snapshot(&mut self) -> Result<Response, String> {
         self.expect_ok(Op::snapshot())
+    }
+
+    /// Parameterized snapshot: `since` asks for a diff against a held
+    /// revision, `format` selects json/compact (M3). `None`/`None` is
+    /// the v1 byte-identical op.
+    pub fn snapshot_with(
+        &mut self,
+        since: Option<u64>,
+        format: Option<SnapshotFormat>,
+    ) -> Result<Response, String> {
+        self.expect_ok(Op::Snapshot { since, format })
     }
 
     /// Observe-only PNG of the app surface. `path` is on the host machine.

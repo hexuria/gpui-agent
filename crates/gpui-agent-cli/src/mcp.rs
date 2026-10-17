@@ -116,8 +116,14 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "snapshot",
-            "Read the semantic UI tree (stable ids, roles, names, state).",
-            json!({ "type": "object", "properties": {} }),
+            "Read the semantic UI tree (stable ids, roles, names, state). Pass since=<rev> for a diff against a revision you already hold, format=compact for one line per visible node.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "since": { "type": "integer", "description": "Return only what changed since this snapshot revision." },
+                    "format": { "type": "string", "enum": ["json", "compact"], "description": "json (default) is the full UiTree; compact is one line per visible node." }
+                }
+            }),
         ),
         tool(
             "screenshot",
@@ -263,6 +269,34 @@ pub(crate) fn tools() -> Vec<Value> {
                 "required": ["intent"]
             }),
         ),
+        #[cfg(feature = "instinct")]
+        tool(
+            "locate",
+            "[experimental, instinct] Read-only: decide which finite action best matches a natural-language query. Prefer `act` with a plain instruction; use `snapshot format=compact since=<rev>` to look.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "k": { "type": "integer", "description": "Max candidates to return (default 5)." },
+                    "schema": schema_arg()
+                },
+                "required": ["query"]
+            }),
+        ),
+        #[cfg(feature = "instinct")]
+        tool(
+            "act",
+            "[experimental, instinct] Execute ONE clause of a natural-language instruction against the observed UI. Abstains (never dispatches) when evidence is insufficient or the action is destructive. Prefer this over manual snapshot+click; use `snapshot format=compact since=<rev>` to look.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "instruction": { "type": "string", "description": "One clause, e.g. `click Add` or `type \"milk\" into What needs doing?`. `then`/`and then` chains run the first clause only." },
+                    "delivery": { "type": "string", "enum": ["semantic", "virtual"] },
+                    "schema": schema_arg()
+                },
+                "required": ["instruction"]
+            }),
+        ),
     ]
 }
 
@@ -348,7 +382,16 @@ fn call_tool(
             client.wait_until(spec, timeout_ms)?
         }
         "hello" => client.expect_ok(Op::Hello)?,
-        "snapshot" => client.snapshot()?,
+        "snapshot" => {
+            let since = args.get("since").and_then(Value::as_u64);
+            let format = match args.get("format").and_then(Value::as_str) {
+                None => None,
+                Some("json") => Some(gpui_agent::protocol::SnapshotFormat::Json),
+                Some("compact") => Some(gpui_agent::protocol::SnapshotFormat::Compact),
+                Some(other) => return Err(format!("unknown snapshot format {other}")),
+            };
+            client.snapshot_with(since, format)?
+        }
         "screenshot" => {
             let path = args.string("path")?;
             let mode = parse_screenshot_mode(&args)?;
@@ -407,6 +450,10 @@ fn call_tool(
         "recipe_plan" => return recipe_plan(&args, schema_paths),
         "recipe_run" => return recipe_run_tool(client, &args, schema_paths),
         "recipe_resolve" => return recipe_resolve_tool(&args, schema_paths),
+        #[cfg(feature = "instinct")]
+        "locate" => return instinct::locate_tool(client, &args, schema_paths),
+        #[cfg(feature = "instinct")]
+        "act" => return instinct::act_tool(client, &args, schema_paths),
         other => return Err(format!("unknown tool {other}")),
     };
     serde_json::to_value(resp).map_err(|err| err.to_string())
@@ -557,6 +604,382 @@ fn parse_assert_spec(args: &Value) -> Result<AssertSpec, String> {
     })
 }
 
+/// M4 `locate`/`act` (feature `instinct`): observe → finite
+/// [`ActionSpace`] → [`InstinctPolicy`] decide → revalidate → dispatch.
+/// Abstention is a value: `act` never dispatches after an abstain.
+#[cfg(feature = "instinct")]
+mod instinct {
+    use super::*;
+    use gpui_agent::keybinding::KeybindingInfo;
+    use gpui_agent::protocol::Response;
+    use gpui_agent_policy::{
+        ActionKind, ActionSpace, DeterministicTextResolver, InstinctPolicy, OfferedInvoke,
+        PolicyOutcome, RankedAction, TextContext, TextError, TextResolver, UiGoal, UiPolicy,
+        split_sequential_clauses,
+    };
+    use gpui_agent_recipe::{Effect, SchemaKind, invoke_args};
+
+    /// One observation + decision. Returned so `act` can revalidate and
+    /// dispatch exactly once.
+    struct Observed {
+        rev: Option<u64>,
+        keybindings: Vec<KeybindingInfo>,
+        space: ActionSpace,
+    }
+
+    fn offered_invokes(
+        args: &Value,
+        schema_paths: &[PathBuf],
+    ) -> Result<Vec<OfferedInvoke>, String> {
+        let paths = recipe_schema_paths(schema_paths, args);
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let registry = registry_from_schema_paths(&paths)?;
+        Ok(registry
+            .iter()
+            .filter(|s| s.kind == SchemaKind::Invoke)
+            .map(|s| OfferedInvoke {
+                name: s.name.clone(),
+                description: format!("{} {}", s.description, s.keywords.join(" ")),
+                dangerous: s.effects.contains(&Effect::Exit),
+            })
+            .collect())
+    }
+
+    fn observe(
+        client: &mut AgentClient,
+        args: &Value,
+        schema_paths: &[PathBuf],
+    ) -> Result<Observed, String> {
+        let snap = client.snapshot()?;
+        let tree = snap
+            .tree
+            .ok_or_else(|| "host returned no ui tree".to_string())?;
+        let rev = snap.rev.or(tree.rev);
+        let keybindings = keybinding_catalog(client)?;
+        let invokes = offered_invokes(args, schema_paths)?;
+        let space = ActionSpace::from_tree(&tree, &keybindings, &invokes);
+        Ok(Observed {
+            rev,
+            keybindings,
+            space,
+        })
+    }
+
+    fn keybinding_catalog(client: &mut AgentClient) -> Result<Vec<KeybindingInfo>, String> {
+        let resp = client.keybindings()?;
+        let rows = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.get("keybindings"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        if rows.is_null() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_value(rows).map_err(|err| format!("keybinding catalog: {err}"))
+    }
+
+    fn decide(
+        obs: &Observed,
+        clause: &str,
+        history: &[gpui_agent_policy::HistoryEntry],
+    ) -> Result<PolicyOutcome, String> {
+        let goal = UiGoal::new(clause);
+        InstinctPolicy::default()
+            .decide(&obs.space, &goal, history)
+            .map_err(|err| err.to_string())
+    }
+
+    fn candidates_json(obs: &Observed, ranked: &[RankedAction], k: usize) -> Value {
+        Value::Array(
+            ranked
+                .iter()
+                .take(k)
+                .map(|r| {
+                    let role = obs
+                        .space
+                        .get(&r.id)
+                        .and_then(|a| a.role())
+                        .unwrap_or_default();
+                    json!({
+                        "id": r.id.as_str(),
+                        "op": r.kind.as_str(),
+                        "role": role,
+                        "name": r.label,
+                        "confidence": r.confidence_millis,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// `locate {query, k?=5, schema?}` — read-only decide. Never
+    /// dispatches anything.
+    pub(crate) fn locate_tool(
+        client: &mut AgentClient,
+        args: &Value,
+        schema_paths: &[PathBuf],
+    ) -> Result<Value, String> {
+        let query = args.string("query")?;
+        let k = args.get("k").and_then(Value::as_u64).unwrap_or(5).min(64) as usize;
+        let obs = observe(client, args, schema_paths)?;
+        match decide(&obs, &query, &[])? {
+            PolicyOutcome::Choice(d) => {
+                let action = obs
+                    .space
+                    .get(&d.action_id)
+                    .ok_or_else(|| "chosen action left the space".to_string())?;
+                Ok(json!({
+                    "answer": "choice",
+                    "chosen": {
+                        "id": d.action_id.as_str(),
+                        "op": d.kind.as_str(),
+                        "role": action.role(),
+                        "name": d.target_label,
+                        "confidence": d.confidence_millis,
+                    },
+                    "candidates": candidates_json(&obs, &d.target_ranked, k),
+                    "rev": obs.rev,
+                }))
+            }
+            PolicyOutcome::Abstain {
+                reason,
+                target_ranked,
+                operation_ranked,
+            } => Ok(json!({
+                "answer": "abstain",
+                "reason": reason,
+                "candidates": if target_ranked.is_empty() {
+                    candidates_json(&obs, &operation_ranked, k)
+                } else {
+                    candidates_json(&obs, &target_ranked, k)
+                },
+                "rev": obs.rev,
+            })),
+        }
+    }
+
+    /// `act {instruction, delivery?, schema?}` — executes the FIRST
+    /// clause only. Abstains → no dispatch, ever.
+    pub(crate) fn act_tool(
+        client: &mut AgentClient,
+        args: &Value,
+        schema_paths: &[PathBuf],
+    ) -> Result<Value, String> {
+        let instruction = args.string("instruction")?;
+        let delivery = parse_delivery(args)?;
+        let clauses = split_sequential_clauses(&instruction);
+        let clause = clauses
+            .first()
+            .ok_or_else(|| "instruction has no clause".to_string())?;
+        let k = args.get("k").and_then(Value::as_u64).unwrap_or(5).min(64) as usize;
+
+        let obs = observe(client, args, schema_paths)?;
+        let outcome = decide(&obs, clause, &[])?;
+        let decision = match outcome {
+            PolicyOutcome::Choice(d) => d,
+            PolicyOutcome::Abstain {
+                reason,
+                target_ranked,
+                operation_ranked,
+            } => {
+                return Ok(json!({
+                    "answer": "abstain",
+                    "reason": reason,
+                    "candidates": if target_ranked.is_empty() {
+                        candidates_json(&obs, &operation_ranked, k)
+                    } else {
+                        candidates_json(&obs, &target_ranked, k)
+                    },
+                    "rev": obs.rev,
+                }));
+            }
+        };
+        let action = obs
+            .space
+            .get(&decision.action_id)
+            .ok_or_else(|| "chosen action left the space".to_string())?
+            .clone();
+
+        // Controls terminate the clause without a dispatch.
+        match decision.kind {
+            ActionKind::Done => {
+                return Ok(json!({"answer": "done", "op": "done", "rev": obs.rev}));
+            }
+            ActionKind::Blocked => {
+                return Ok(json!({"answer": "blocked", "op": "blocked", "rev": obs.rev}));
+            }
+            ActionKind::Wait => {
+                return Ok(json!({"answer": "wait", "op": "wait", "rev": obs.rev}));
+            }
+            _ => {}
+        }
+
+        // TYPE/SET_VALUE payloads come from the TextResolver — never
+        // from Instinct. No resolution → abstain, no dispatch.
+        let mut text_payload: Option<String> = None;
+        if matches!(decision.kind, ActionKind::Type | ActionKind::SetValue) {
+            let ctx = TextContext {
+                goal: UiGoal::new(clause),
+                field_label: action.label().to_owned(),
+                field_role: action.role().unwrap_or("").to_owned(),
+                typed: Vec::new(),
+                context_fingerprint: obs.rev.unwrap_or(0),
+            };
+            match DeterministicTextResolver.resolve(&ctx) {
+                Ok(res) => text_payload = Some(res.text),
+                Err(err) => {
+                    let (reason, ranked) = text_abstain(&err, &decision);
+                    return Ok(json!({
+                        "answer": "abstain",
+                        "reason": reason,
+                        "candidates": candidates_json(&obs, &ranked, k),
+                        "rev": obs.rev,
+                    }));
+                }
+            }
+        }
+
+        // M4.4 (pre-M5): re-read the target immediately before dispatch
+        // and abort on role/name drift.
+        revalidate_node(client, &obs, &action)?;
+
+        let required_target = || {
+            action
+                .target()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("{} has no dispatch target", decision.action_id))
+        };
+        let resp: Response = match decision.kind {
+            ActionKind::Click => client.click_with_delivery(required_target()?, delivery)?,
+            ActionKind::Type => client.type_with_delivery(
+                required_target()?,
+                text_payload.as_deref().unwrap_or_default(),
+                delivery,
+            )?,
+            ActionKind::SetValue => client.set_value(
+                required_target()?,
+                text_payload.as_deref().unwrap_or_default(),
+            )?,
+            ActionKind::Key => {
+                let key = key_of(&action)?;
+                client.key_with_delivery(required_target()?, key, delivery)?
+            }
+            ActionKind::Keybinding => {
+                let id = required_target()?;
+                let kb = obs
+                    .keybindings
+                    .iter()
+                    .find(|kb| kb.id == id)
+                    .ok_or_else(|| format!("keybinding `{id}` not in catalog"))?;
+                client.keybinding(
+                    kb.id.clone(),
+                    kb.scope,
+                    Some(kb.chord.clone()),
+                    false,
+                    false,
+                )?
+            }
+            ActionKind::Invoke => {
+                let name = required_target()?;
+                let invoke_args = invoke_args_for(&name, clause, args, schema_paths)?;
+                client.invoke(name, invoke_args)?
+            }
+            ActionKind::Done | ActionKind::Blocked | ActionKind::Wait => unreachable!(),
+            // Fail closed on kinds added after this build.
+            _ => return Err(format!("cannot dispatch kind {}", decision.kind)),
+        };
+        if !resp.ok {
+            return Err(resp.error.unwrap_or_else(|| "dispatch failed".into()));
+        }
+        let mut out = json!({
+            "answer": "done",
+            "op": decision.kind.as_str(),
+            "id": decision.action_id.as_str(),
+            "confidence": decision.confidence_millis,
+            "rev": obs.rev,
+        });
+        if let Some(text) = text_payload {
+            out["text"] = Value::String(text);
+        }
+        Ok(out)
+    }
+
+    fn text_abstain(
+        err: &TextError,
+        decision: &gpui_agent_policy::PolicyDecision,
+    ) -> (String, Vec<RankedAction>) {
+        (
+            match err {
+                TextError::Missing => "text_missing".to_owned(),
+                TextError::Ambiguous => "text_ambiguous".to_owned(),
+                TextError::Invalid(msg) => format!("text_invalid:{msg}"),
+                TextError::Abstain(msg) => format!("text_abstain:{msg}"),
+            },
+            decision.target_ranked.clone(),
+        )
+    }
+
+    /// Re-read the tree and confirm the chosen node target still has
+    /// the role+name the policy scored (M4.4 staleness gate; M5 adds
+    /// fingerprints).
+    fn revalidate_node(
+        client: &mut AgentClient,
+        _obs: &Observed,
+        action: &gpui_agent_policy::OfferedAction,
+    ) -> Result<(), String> {
+        let Some(target) = action.target() else {
+            return Ok(());
+        };
+        if action.kind() == ActionKind::Invoke || action.kind() == ActionKind::Keybinding {
+            return Ok(()); // entity-bound: catalog/schema is static
+        }
+        let fresh = client.snapshot()?;
+        let tree = fresh
+            .tree
+            .ok_or_else(|| "host returned no ui tree on revalidate".to_string())?;
+        let node = tree
+            .find(target)
+            .ok_or_else(|| format!("stale target `{target}`: node vanished"))?;
+        let scored_role = action.role().unwrap_or_default();
+        if node.role != scored_role || node.name != action.label() {
+            return Err(format!(
+                "stale target `{target}`: was {scored_role}/{} now {}/{}",
+                action.label(),
+                node.role,
+                node.name
+            ));
+        }
+        Ok(())
+    }
+
+    /// `KEY:<id>:<key>` → the key suffix (`<id>` may itself hold `:`,
+    /// so split from the right).
+    fn key_of(action: &gpui_agent_policy::OfferedAction) -> Result<String, String> {
+        let id = action.id().as_str();
+        id.strip_prefix("KEY:")
+            .and_then(|rest| rest.rsplit_once(':'))
+            .map(|(_, key)| key.to_owned())
+            .ok_or_else(|| format!("bad key action id {id}"))
+    }
+
+    fn invoke_args_for(
+        name: &str,
+        clause: &str,
+        args: &Value,
+        schema_paths: &[PathBuf],
+    ) -> Result<Value, String> {
+        let paths = recipe_schema_paths(schema_paths, args);
+        let registry = registry_from_schema_paths(&paths)?;
+        let schema = registry
+            .get(name)
+            .ok_or_else(|| format!("invoke schema `{name}` not in registry"))?;
+        invoke_args(schema, clause)
+    }
+}
+
 trait ArgsExt {
     fn string(&self, key: &str) -> Result<String, String>;
     fn opt_string(&self, key: &str) -> Option<String>;
@@ -586,29 +1009,29 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("name").and_then(Value::as_str))
             .collect();
-        assert_eq!(
-            names,
-            [
-                "wait",
-                "wait_until",
-                "hello",
-                "snapshot",
-                "screenshot",
-                "click",
-                "type",
-                "set_value",
-                "key",
-                "keybinding",
-                "keybindings",
-                "assert",
-                "invoke",
-                "shutdown",
-                "recipe_validate",
-                "recipe_plan",
-                "recipe_run",
-                "recipe_resolve",
-            ]
-        );
+        let mut expected = vec![
+            "wait",
+            "wait_until",
+            "hello",
+            "snapshot",
+            "screenshot",
+            "click",
+            "type",
+            "set_value",
+            "key",
+            "keybinding",
+            "keybindings",
+            "assert",
+            "invoke",
+            "shutdown",
+            "recipe_validate",
+            "recipe_plan",
+            "recipe_run",
+            "recipe_resolve",
+        ];
+        #[cfg(feature = "instinct")]
+        expected.extend(["locate", "act"]);
+        assert_eq!(names, expected);
         assert!(names.iter().all(|n| !n.starts_with("todo_")));
         for tool in listed {
             let name = tool["name"].as_str().unwrap_or("");

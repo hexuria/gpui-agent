@@ -13,19 +13,36 @@
 //! payload, leading verb, connectives). A target's evidence text is its
 //! own `name` + `role` — ancestor names are not concatenated.
 //!
-//! Modules that arrive with later milestones are stubs: `action_space`
-//! and `policy`/`text`/`goal`/`runner` (M4 `locate`/`act`/`run`),
-//! `escalate` (M7 abstain escalation).
+//! `action_space`/`policy`/`text`/`goal` are the M4 observe → decide
+//! surface: `ActionSpace::from_tree` maps a `UiTree` into offered
+//! actions, `UiPolicy`/`InstinctPolicy` is the two-head decide ported
+//! from `aui-policy/src/instinct_policy.rs`, `TextResolver` supplies
+//! TYPE/SET_VALUE payloads, and `split_sequential_clauses` cuts
+//! `then`/`and then` goals into single intents. `escalate` (M7 abstain
+//! escalation) is still a stub.
 #![forbid(unsafe_code)]
 
+pub mod action_space;
 pub mod arbitration;
 pub mod evidence;
+pub mod goal;
+pub mod policy;
+pub mod text;
 
+pub use action_space::{
+    ActionId, ActionKind, ActionSpace, ActionSpaceError, OfferedAction, OfferedInvoke,
+};
 pub use arbitration::{ArbitrationError, Choice, RankedCandidate, choose};
 pub use evidence::{
     EvidenceTarget, NON_EXACT_CAP, OperationKind, UNNAMED_OPERATION_CAP, label_covers_target,
     label_names_target, lexical_overlap, name_in_intent, name_in_intent_lowered,
     overlap_normalized, score_action, score_operation, target_phrase, tokens,
 };
+pub use goal::{UiGoal, split_sequential_clauses};
 pub use instinct_core::{Confidence, Profile};
 pub use instinct_text::{NormalizeConfig, Normalized, normalize};
+pub use policy::{
+    HABITUATION_STEP, HistoryEntry, InstinctPolicy, PolicyDecision, PolicyError, PolicyOutcome,
+    RankedAction, UiPolicy,
+};
+pub use text::{DeterministicTextResolver, TextContext, TextError, TextResolution, TextResolver};
