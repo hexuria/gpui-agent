@@ -11,12 +11,12 @@ use gpui_agent_recipe::{
 
 #[derive(Debug, Subcommand)]
 pub enum RecipeCommand {
-    /// [experimental] Lint a JSON recipe (`.wants` also accepted). No host required.
+    /// \[experimental\] Lint a JSON recipe (`.wants` also accepted). No host required.
     Validate {
         /// Recipe path (`.json` canonical; `.wants` also accepted). `-` reads stdin.
         path: PathBuf,
     },
-    /// [experimental] Compile a JSON recipe to a dependency DAG / wave plan. No host required.
+    /// \[experimental\] Compile a JSON recipe to a dependency DAG / wave plan. No host required.
     Plan {
         path: PathBuf,
         /// Bind `$params` (`title=Buy milk`). Repeatable.
@@ -26,7 +26,7 @@ pub enum RecipeCommand {
         #[arg(long)]
         order_check: bool,
     },
-    /// [experimental] Run the compiled plan sequentially on one reused TCP session.
+    /// \[experimental\] Run the compiled plan sequentially on one reused TCP session.
     /// Requires a non-empty `--token` / `GPUI_AGENT_TOKEN` (same value as the host).
     Run {
         path: PathBuf,
@@ -47,7 +47,7 @@ pub enum RecipeCommand {
         #[arg(long)]
         screenshot_flagged: bool,
     },
-    /// [experimental] Map a natural-language intent through the local schema registry.
+    /// \[experimental\] Map a natural-language intent through the local schema registry.
     Resolve { intent: String },
 }
 

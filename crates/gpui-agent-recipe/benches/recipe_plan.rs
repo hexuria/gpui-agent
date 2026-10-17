@@ -149,6 +149,7 @@ impl AgentHost for EmptyHost {
             auth: gpui_agent::HelloAuth::None,
             bundle_id: None,
             executable: None,
+            features: vec![],
         }
     }
 
@@ -158,6 +159,7 @@ impl AgentHost for EmptyHost {
             platform: PlatformKind::Headless,
             ready: true,
             nodes: vec![],
+            rev: None,
         }
     }
 

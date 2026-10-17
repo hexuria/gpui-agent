@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::dispatch::{authorize_request, handle_request};
+use crate::dispatch::{TreeCache, authorize_request, handle_request_cached};
 use crate::hmac_auth::{challenge_for_nonce, random_nonce};
 use crate::host::AgentHost;
 use crate::mailbox::AgentMailbox;
@@ -260,6 +260,9 @@ fn handle_stream_host<H: AgentHost>(
         Ok(nonce) => nonce,
         Err(()) => return,
     };
+    // One TreeCache per connection: snapshot/assert/wait_until reuse the
+    // cached tree while the host's revision is unchanged (M3).
+    let mut cache = TreeCache::new();
     loop {
         match read_limited_line_into(&mut reader, &mut line_buf, limits.max_line_bytes) {
             Ok(true) => {}
@@ -298,8 +301,9 @@ fn handle_stream_host<H: AgentHost>(
         let confirmed_quit = crate::op_is_confirmed_quit(&req.op);
         let resp = {
             let mut host = host.lock().expect("host");
-            handle_request(
+            handle_request_cached(
                 &mut *host,
+                &mut cache,
                 req,
                 token,
                 session_nonce.as_ref().map(|n| n.as_slice()),
@@ -393,6 +397,12 @@ fn handle_stream_mailbox(
 
 /// Poll assert on the UI thread from the TCP thread so `wait_until` does
 /// not sleep inside `render` (toasts / overlays can paint between polls).
+///
+/// When the host tracks a revision, the loop posts a cheap `Revision`
+/// probe each poll and only posts the tree-building `Assert` when the
+/// revision actually changed — an unchanged tree costs zero rebuilds
+/// (M3.5). A host that answers `revision` with `null` gets the old
+/// every-poll behavior.
 fn wait_until_via_mailbox(
     mailbox: &AgentMailbox,
     req: &Request,
@@ -408,7 +418,31 @@ fn wait_until_via_mailbox(
         }
     };
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    // Revision the last Assert covered. `None` = "never checked".
+    let mut checked_rev: Option<Option<u64>> = None;
     loop {
+        let probe = Request {
+            v: req.v,
+            id: req.id.clone(),
+            token: req.token.clone(),
+            auth: req.auth.clone(),
+            op: Op::Revision,
+        };
+        let mut probed_rev = None;
+        if let Ok(probe_resp) = mailbox.wait(probe, drain_timeout) {
+            let rev = probe_resp.rev;
+            if rev.is_some() && checked_rev == Some(rev) {
+                // Same revision already asserted — nothing to re-check.
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return Response::err(req.id.clone(), "wait_until timed out");
+                }
+                thread::sleep(remaining.min(Duration::from_millis(10)));
+                continue;
+            }
+            probed_rev = rev;
+        }
+
         let poll = Request {
             v: req.v,
             id: req.id.clone(),
@@ -422,6 +456,13 @@ fn wait_until_via_mailbox(
         };
         if resp.ok {
             return resp;
+        }
+        // The assert covered the tree at the probed revision — a later
+        // mutation bumps it, so the next probe either matches (skip) or
+        // differs (assert again). A rev change between probe and assert
+        // is caught the same way.
+        if probed_rev.is_some() {
+            checked_rev = Some(probed_rev);
         }
         let last_err = resp.error.unwrap_or_else(|| "assert failed".into());
         if crate::is_in_viewport_unavailable(&last_err) && last_err.contains("headless") {
@@ -507,6 +548,7 @@ mod tests {
                 auth: crate::protocol::HelloAuth::None,
                 bundle_id: None,
                 executable: None,
+                features: vec![],
             }
         }
 
@@ -516,6 +558,7 @@ mod tests {
                 platform: PlatformKind::Headless,
                 ready: true,
                 nodes: vec![],
+                rev: None,
             }
         }
 
@@ -825,7 +868,7 @@ mod tests {
             let mut host = EmptyHost;
             while !stop_t.load(Ordering::SeqCst) {
                 for posted in drain.take() {
-                    let resp = handle_request(&mut host, posted.request.clone(), None, None);
+                    let resp = crate::handle_request(&mut host, posted.request.clone(), None, None);
                     posted.reply(resp);
                 }
                 thread::sleep(Duration::from_millis(1));

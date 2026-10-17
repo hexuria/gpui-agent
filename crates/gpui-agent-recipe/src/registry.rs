@@ -107,6 +107,14 @@ pub fn protocol_registry() -> Registry {
             &[],
         ),
         protocol(
+            "revision",
+            "Read the snapshot revision counter (None = untracked).",
+            vec![Effect::Read],
+            true,
+            &["revision", "rev"],
+            &[],
+        ),
+        protocol(
             "screenshot",
             "Write an observe-only PNG of the app surface (not the desktop).",
             vec![Effect::Read],

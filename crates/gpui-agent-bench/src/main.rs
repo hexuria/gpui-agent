@@ -489,7 +489,7 @@ fn run_local_attempt(
         }
         if needs_tree_checks(&task.expect) {
             harness_ops += 1;
-            match client.expect_ok(Op::Snapshot) {
+            match client.expect_ok(Op::snapshot()) {
                 Ok(resp) => {
                     let tree_ok = judge_tree(&task.expect, resp.result);
                     if !tree_ok.0 {

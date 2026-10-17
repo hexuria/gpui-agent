@@ -104,7 +104,7 @@ fn materialize(
         SchemaKind::Protocol => match schema.name.as_str() {
             "hello" => Ok((Op::Hello, fills)),
             "wait" => Ok((Op::Wait { timeout_ms: None }, fills)),
-            "snapshot" => Ok((Op::Snapshot, fills)),
+            "snapshot" => Ok((Op::snapshot(), fills)),
             "screenshot" => Ok((
                 Op::Screenshot {
                     path: None,

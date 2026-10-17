@@ -229,7 +229,12 @@ fn validate_placeholders_declared(op: &Op, params: &[String]) -> Result<(), Stri
 /// `Op` field must be visited or `$param` substitution silently skips it.
 fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
     match op {
-        Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } | Op::Keybindings => {}
+        Op::Hello
+        | Op::Snapshot { .. }
+        | Op::Shutdown
+        | Op::Wait { .. }
+        | Op::Keybindings
+        | Op::Revision => {}
         Op::WaitUntil { spec, .. } | Op::Assert { spec } => {
             collect_placeholders(&spec.target, out);
             if let Some(name) = &spec.name {
@@ -356,7 +361,12 @@ fn is_ident(name: &str) -> bool {
 /// Keep this match in sync with [`collect_placeholders_in_op`].
 fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result<(), String> {
     match op {
-        Op::Hello | Op::Snapshot | Op::Shutdown | Op::Wait { .. } | Op::Keybindings => Ok(()),
+        Op::Hello
+        | Op::Snapshot { .. }
+        | Op::Shutdown
+        | Op::Wait { .. }
+        | Op::Keybindings
+        | Op::Revision => Ok(()),
         Op::WaitUntil { spec, .. } | Op::Assert { spec } => {
             substitute_string_in_place(&mut spec.target, set)?;
             if let Some(name) = &mut spec.name {
@@ -520,7 +530,8 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         "wait" => Op::Wait { timeout_ms: None },
         "wait_until" => parse_wait_until_op(&tokens[1..])?,
         "hello" => Op::Hello,
-        "snapshot" => Op::Snapshot,
+        "snapshot" => Op::snapshot(),
+        "revision" => Op::Revision,
         "shutdown" => Op::Shutdown,
         "click" => {
             let (delivery, rest) = take_delivery(&tokens[1..])?;
@@ -1097,7 +1108,7 @@ assert todo-item-1 name=$title checked=false
         let recipe = parse_wants("\n# heading\n\nhello\n  # mid\n\nsnapshot\n", "c").unwrap();
         assert_eq!(recipe.steps.len(), 2);
         assert!(matches!(recipe.steps[0].op, Op::Hello));
-        assert!(matches!(recipe.steps[1].op, Op::Snapshot));
+        assert!(matches!(recipe.steps[1].op, Op::Snapshot { .. }));
     }
 
     #[test]

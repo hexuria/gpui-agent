@@ -1,6 +1,11 @@
+use std::collections::VecDeque;
+use std::sync::Arc;
+
 use crate::hmac_auth::{NONCE_LEN, hmac_verify};
 use crate::host::AgentHost;
-use crate::protocol::{AssertSpec, Op, PROTOCOL_VERSION, PlatformKind, Request, Response};
+use crate::protocol::{
+    AssertSpec, Op, PROTOCOL_VERSION, PlatformKind, Request, Response, SnapshotFormat,
+};
 use crate::scroll_capture::ScreenshotSpec;
 use crate::tree::{UiNode, UiTree, in_viewport_unavailable, is_in_viewport_unavailable, role};
 
@@ -70,10 +75,91 @@ pub fn authorize_request(
     Ok(())
 }
 
+/// How many past revisions the server ring keeps for `snapshot since`.
+const REV_RING_DEPTH: usize = 8;
+
+/// Per-connection snapshot cache + revision ring (M3).
+///
+/// `snapshot(host)` reuses the cached tree iff `host.revision()` returns
+/// `Some` of the cached rev. A `None` revision always rebuilds — the old
+/// behavior for hosts that cannot track changes.
+///
+/// Every rebuild at a known rev pushes `(rev, tree)` onto the ring so a
+/// later `snapshot { since }` can answer with a diff instead of the full
+/// tree. `rebuild_count` is the GATE-P counter: `wait_until` polling an
+/// unchanged tree must not rebuild.
+#[derive(Debug, Default)]
+pub struct TreeCache {
+    ring: VecDeque<(u64, Arc<UiTree>)>,
+    rebuilds: u64,
+}
+
+impl TreeCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Shared tree, rebuilt only when the host reports a different rev
+    /// (or no rev at all).
+    pub fn snapshot(&mut self, host: &dyn AgentHost) -> Arc<UiTree> {
+        if let Some(rev) = host.revision() {
+            if let Some((cached_rev, tree)) = self.ring.back() {
+                if *cached_rev == rev {
+                    return tree.clone();
+                }
+            }
+        }
+        self.rebuilds += 1;
+        let mut tree = host.snapshot();
+        let rev = host.revision().or(tree.rev);
+        if let Some(rev) = rev {
+            tree.rev = Some(rev);
+            self.ring.push_back((rev, Arc::new(tree)));
+            while self.ring.len() > REV_RING_DEPTH {
+                self.ring.pop_front();
+            }
+            self.ring.back().expect("just pushed").1.clone()
+        } else {
+            Arc::new(tree)
+        }
+    }
+
+    /// A past revision still in the ring (for `snapshot since` diffs).
+    pub fn tree_at(&self, rev: u64) -> Option<Arc<UiTree>> {
+        self.ring
+            .iter()
+            .find(|(r, _)| *r == rev)
+            .map(|(_, t)| t.clone())
+    }
+
+    /// Number of real `host.snapshot()` calls this cache made.
+    pub fn rebuild_count(&self) -> u64 {
+        self.rebuilds
+    }
+}
+
 /// Single place that turns a request into a response. Used by the TCP
 /// server, the mailbox drain, and unit tests — no network required.
+///
+/// Uses a fresh [`TreeCache`] per call: `wait_until` polls inside still
+/// avoid rebuilds, but `snapshot since` only diffs against trees this
+/// call itself produced. The TCP server keeps one cache per connection
+/// via [`handle_request_cached`].
 pub fn handle_request(
     host: &mut dyn AgentHost,
+    req: Request,
+    expected_token: Option<&str>,
+    session_nonce: Option<&[u8]>,
+) -> Response {
+    let mut cache = TreeCache::new();
+    handle_request_cached(host, &mut cache, req, expected_token, session_nonce)
+}
+
+/// [`handle_request`] with a caller-owned [`TreeCache`] so a session can
+/// reuse trees across requests and answer `snapshot since` with diffs.
+pub fn handle_request_cached(
+    host: &mut dyn AgentHost,
+    cache: &mut TreeCache,
     req: Request,
     expected_token: Option<&str>,
     session_nonce: Option<&[u8]>,
@@ -88,12 +174,15 @@ pub fn handle_request(
         Op::Wait {
             timeout_ms: Some(ms),
         } => wait_until_ready(host, &req.id, expected_token, ms),
-        Op::WaitUntil { timeout_ms, spec } => wait_until_assert(host, &req.id, spec, timeout_ms),
-        Op::Snapshot => {
+        Op::WaitUntil { timeout_ms, spec } => {
+            wait_until_assert(host, &req.id, spec, timeout_ms, cache)
+        }
+        Op::Revision => {
             let mut resp = Response::ok(&req.id);
-            resp.tree = Some(host.snapshot());
+            resp.rev = host.revision();
             resp
         }
+        Op::Snapshot { since, format } => snapshot_response(host, cache, &req.id, since, format),
         Op::Screenshot {
             path,
             mode,
@@ -113,10 +202,13 @@ pub fn handle_request(
                 Err(error) => Response::err(req.id, error),
             }
         }
-        Op::Assert { spec } => match assert_tree(&host.snapshot(), &spec) {
-            Ok(()) => Response::ok(req.id),
-            Err(error) => Response::err(req.id, error),
-        },
+        Op::Assert { spec } => {
+            let tree = cache.snapshot(host);
+            match assert_tree(&tree, &spec) {
+                Ok(()) => Response::ok(req.id),
+                Err(error) => Response::err(req.id, error),
+            }
+        }
         Op::Keybindings => {
             let mut resp = Response::ok(&req.id);
             resp.result = Some(crate::keybinding_list_json(&host.keybindings()));
@@ -154,11 +246,61 @@ pub fn handle_request(
     }
 }
 
+/// `snapshot` — with `format:"compact"` the payload is one line per
+/// visible node in `result.compact`; with `since` it is `unchanged`, a
+/// `diff` against a ring-cached revision, or the full tree + `full:true`
+/// when the client's revision is no longer remembered.
+fn snapshot_response(
+    host: &dyn AgentHost,
+    cache: &mut TreeCache,
+    id: &str,
+    since: Option<u64>,
+    format: Option<SnapshotFormat>,
+) -> Response {
+    let tree = cache.snapshot(host);
+    let rev = tree.rev;
+    let mut resp = Response::ok(id);
+    resp.rev = rev;
+    if format == Some(SnapshotFormat::Compact) {
+        resp.result = Some(serde_json::json!({
+            "compact": crate::diff::compact_lines(&tree),
+        }));
+        return resp;
+    }
+    match since {
+        Some(s) if rev == Some(s) => {
+            resp.result = Some(serde_json::json!({ "unchanged": true }));
+        }
+        Some(s) => match rev.and_then(|_| cache.tree_at(s)) {
+            Some(old) => {
+                let diff = crate::diff::diff_trees(&old, &tree);
+                resp.result = Some(serde_json::json!({ "diff": diff }));
+            }
+            None => {
+                resp.tree = Some((*tree).clone());
+                resp.result = Some(serde_json::json!({ "full": true }));
+            }
+        },
+        None => {
+            resp.tree = Some((*tree).clone());
+        }
+    }
+    resp
+}
+
 fn hello_response(host: &dyn AgentHost, id: &str, expected_token: Option<&str>) -> Response {
     let mut resp = Response::ok(id);
     let mut hello = host.hello();
     hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
     crate::discovery::fill_hello_identity(&mut hello);
+    for feature in ["snapshot_since", "snapshot_compact"] {
+        if !hello.features.iter().any(|f| f == feature) {
+            hello.features.push(feature.to_string());
+        }
+    }
+    if host.revision().is_some() && !hello.features.iter().any(|f| f == "rev") {
+        hello.features.push("rev".into());
+    }
     resp.hello = Some(hello);
     resp
 }
@@ -193,10 +335,11 @@ fn wait_until_assert(
     id: &str,
     spec: AssertSpec,
     timeout_ms: u64,
+    cache: &mut TreeCache,
 ) -> Response {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     loop {
-        let tree = host.snapshot();
+        let tree = cache.snapshot(host);
         match assert_tree(&tree, &spec) {
             Ok(()) => return Response::ok(id),
             Err(error) => {
@@ -367,6 +510,7 @@ mod tests {
                 auth: crate::protocol::HelloAuth::None,
                 bundle_id: None,
                 executable: None,
+                features: vec![],
             }
         }
 
@@ -376,6 +520,7 @@ mod tests {
                 platform: PlatformKind::Headless,
                 ready: true,
                 nodes: vec![UiNode::new("test-window", "window", "Test")],
+                rev: None,
             }
         }
 
@@ -597,6 +742,7 @@ mod tests {
                 auth: crate::protocol::HelloAuth::None,
                 bundle_id: None,
                 executable: None,
+                features: vec![],
             }
         }
 
@@ -606,6 +752,7 @@ mod tests {
                 platform: PlatformKind::Headless,
                 ready: self.ready,
                 nodes: vec![],
+                rev: None,
             }
         }
 
@@ -678,6 +825,7 @@ mod tests {
                     auth: crate::protocol::HelloAuth::None,
                     bundle_id: None,
                     executable: None,
+                    features: vec![],
                 }
             }
 
@@ -687,6 +835,7 @@ mod tests {
                     platform: PlatformKind::Headless,
                     ready: self.ready.load(Ordering::SeqCst),
                     nodes: vec![],
+                    rev: None,
                 }
             }
 
@@ -726,6 +875,7 @@ mod tests {
             platform: PlatformKind::Headless,
             ready: true,
             nodes: vec![UiNode::button("dup", "A").with_child(UiNode::button("dup", "B"))],
+            rev: None,
         };
         let spec = AssertSpec {
             target: "dup".into(),
@@ -784,6 +934,7 @@ mod tests {
                             .with_bounds(bounds),
                     ),
             ],
+            rev: None,
         }
     }
 
@@ -936,6 +1087,7 @@ mod tests {
                 auth: crate::protocol::HelloAuth::None,
                 bundle_id: None,
                 executable: None,
+                features: vec![],
             }
         }
 
@@ -998,6 +1150,7 @@ mod tests {
                     auth: crate::protocol::HelloAuth::None,
                     bundle_id: None,
                     executable: None,
+                    features: vec![],
                 }
             }
 

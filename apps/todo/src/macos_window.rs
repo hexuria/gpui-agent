@@ -1,5 +1,9 @@
 //! CGWindowID for this process's NSWindow. Used only as `screencapture -l`.
 
+// `objc`'s `msg_send!`/`sel_impl` expansion emits `cfg(feature = "cargo-clippy")`
+// internally — the check-cfg lint attributes it to this crate's features.
+#![allow(unexpected_cfgs)]
+
 use std::ffi::c_void;
 
 use gpui_kit::Window;

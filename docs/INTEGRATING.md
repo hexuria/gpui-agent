@@ -77,6 +77,26 @@ stitch, and restore offset (no OS HID). Other OSes return
 `spawn_host` with `Arc<Mutex<YourStore>>` and return
 `virtual_unavailable` / `screenshot_unavailable`.
 
+### Snapshot revision (`fn revision(&self) -> Option<u64>`)
+
+Default is `None`: every `snapshot`/`assert`/`wait_until` poll rebuilds
+the tree — always correct, never fast. To opt into caching, return a
+monotonically increasing `u64` and **bump it on every mutation that can
+change what `snapshot()` returns**: items, draft, page/route, sidebar,
+settings, focus if you reflect it, shutdown-relevant state, and anything
+applied on top of the tree (e.g. painted bounds maps — compare before
+insert and bump only on real change so repaints don't churn `rev`).
+
+The contract is strict: **if a snapshot-affecting change can happen
+without a bump, return `None` instead.** A stale `rev` produces stale
+asserts and stale diffs — worse than no cache. When `Some(rev)` is
+returned, the server reuses the cached tree for `assert`, `wait_until`,
+and `snapshot`, keeps the last 8 revisions, and answers
+`snapshot {since}` with `{"unchanged":true}`, a `{"diff":...}` against a
+remembered revision, or the full tree plus `{"full":true}` when the
+client's base has aged out. `hello.features` advertises `rev`,
+`snapshot_since`, `snapshot_compact` automatically.
+
 ## 3. Assign stable ids
 
 Ids are **your** contract with agents. Prefer names that survive layout

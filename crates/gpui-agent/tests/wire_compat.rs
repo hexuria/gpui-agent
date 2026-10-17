@@ -17,9 +17,10 @@ fn protocol_version_is_two() {
 
 #[test]
 fn request_bytes_are_pinned() {
-    let cases: [(Op, &str); 19] = [
+    let cases: [(Op, &str); 20] = [
         (Op::Hello, r#"{"v":2,"id":"1","op":"hello"}"#),
-        (Op::Snapshot, r#"{"v":2,"id":"1","op":"snapshot"}"#),
+        (Op::snapshot(), r#"{"v":2,"id":"1","op":"snapshot"}"#),
+        (Op::Revision, r#"{"v":2,"id":"1","op":"revision"}"#),
         (
             Op::click("todo-add"),
             r#"{"v":2,"id":"1","op":"click","target":"todo-add"}"#,

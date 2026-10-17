@@ -198,11 +198,32 @@ impl std::str::FromStr for ScreenshotMode {
 fn is_false(value: &bool) -> bool {
     !*value
 }
+
+/// `snapshot` response shape. `Json` (default) is the v2 `UiTree`;
+/// `Compact` is the one-line-per-visible-node text for token-lean drivers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotFormat {
+    Json,
+    Compact,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
     Hello,
-    Snapshot,
+    /// Read the semantic tree. `since` asks for a diff against a revision
+    /// the client already holds; `format: "compact"` returns one line per
+    /// visible node instead of the JSON tree (M3). Omitting both keeps the
+    /// v2 response byte-identical.
+    Snapshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<SnapshotFormat>,
+    },
+    /// Cheap probe for `AgentHost::revision` — used by mailbox `wait_until`
+    /// so an unchanged tree costs no rebuild. Additive v2 op.
+    Revision,
     Click {
         target: String,
         /// Omitted / `semantic` is v1. `virtual` is the in-window event path.
@@ -329,6 +350,10 @@ pub struct Response {
     pub tree: Option<UiTree>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    /// Host snapshot revision when the host tracks one (M3). `None` means
+    /// "do not cache": every snapshot may differ even at the same rev.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<u64>,
 }
 
 /// Whether the host will enforce `GPUI_AGENT_TOKEN` on every request.
@@ -388,6 +413,10 @@ pub struct HelloInfo {
     /// Executable basename (`current_exe`), so `--connect <name>` can match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executable: Option<String>,
+    /// Feature strings this responder supports (e.g. `rev`,
+    /// `snapshot_since`, `snapshot_compact`). Empty/old hosts omit it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 /// The operating system this process runs on, as `hello.os` reports it.
@@ -418,6 +447,20 @@ impl Request {
 }
 
 impl Op {
+    pub fn snapshot() -> Self {
+        Self::Snapshot {
+            since: None,
+            format: None,
+        }
+    }
+
+    pub fn snapshot_since(rev: u64, format: Option<SnapshotFormat>) -> Self {
+        Self::Snapshot {
+            since: Some(rev),
+            format,
+        }
+    }
+
     pub fn click(target: impl Into<String>) -> Self {
         Self::Click {
             target: target.into(),
@@ -531,6 +574,7 @@ impl Response {
             hello: None,
             tree: None,
             result: None,
+            rev: None,
         }
     }
 
@@ -543,6 +587,7 @@ impl Response {
             hello: None,
             tree: None,
             result: None,
+            rev: None,
         }
     }
 }
@@ -734,6 +779,7 @@ mod tests {
             auth: HelloAuth::Required,
             bundle_id: None,
             executable: None,
+            features: vec![],
         };
         let json = serde_json::to_value(&hello).unwrap();
         assert_eq!(json["auth"], "required");

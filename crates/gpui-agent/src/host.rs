@@ -47,4 +47,16 @@ pub trait AgentHost: Send {
     fn is_app_focused(&self) -> bool {
         false
     }
+
+    /// Monotonic snapshot revision, if the host tracks one.
+    ///
+    /// Bump on **every** mutation that can alter the snapshot (items,
+    /// drafts, page, sidebar, settings, bounds that feed the tree).
+    /// Return `None` when any snapshot-affecting change could bypass the
+    /// counter — the server then rebuilds the tree on every request,
+    /// exactly as before revisions existed. Never lie: a stale `Some`
+    /// revision makes `snapshot since` diffs wrong.
+    fn revision(&self) -> Option<u64> {
+        None
+    }
 }

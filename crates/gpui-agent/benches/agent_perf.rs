@@ -28,6 +28,7 @@ impl AgentHost for EmptyHost {
             auth: gpui_agent::HelloAuth::None,
             bundle_id: None,
             executable: None,
+            features: vec![],
         }
     }
 
@@ -57,7 +58,109 @@ fn bench_tree(items: usize) -> UiTree {
         platform: PlatformKind::Headless,
         ready: true,
         nodes: vec![UiNode::new("root", "window", "Bench").with_children(children)],
+        rev: None,
     }
+}
+
+/// Host that reports a revision — enables the M3 snapshot cache.
+struct RevHost {
+    items: usize,
+    rev: u64,
+}
+
+impl RevHost {
+    fn tree(&self) -> UiTree {
+        let mut t = bench_tree(self.items);
+        t.rev = Some(self.rev);
+        t
+    }
+}
+
+impl AgentHost for RevHost {
+    fn hello(&self) -> HelloInfo {
+        EmptyHost.hello()
+    }
+
+    fn snapshot(&self) -> UiTree {
+        self.tree()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Some(self.rev)
+    }
+
+    fn dispatch(&mut self, _op: &Op) -> Result<DispatchResult, String> {
+        Ok(DispatchResult::empty())
+    }
+}
+
+/// GATE-P: polling an unchanged tree must not rebuild it.
+/// `wait_until` on a 1000-node tree: one rebuild total, then ~free polls.
+fn revision_cache(c: &mut Criterion) {
+    use gpui_agent::dispatch::TreeCache;
+    use gpui_agent::{AssertSpec, handle_request_cached};
+
+    let host = RevHost {
+        items: 1000,
+        rev: 1,
+    };
+    c.bench_function("snapshot_rebuild_1000_nodes", |b| {
+        b.iter(|| black_box(host.snapshot().nodes.len()));
+    });
+    c.bench_function("snapshot_cached_1000_nodes", |b| {
+        let mut cache = TreeCache::new();
+        cache.snapshot(&host); // warm: the one rebuild
+        b.iter(|| black_box(cache.snapshot(&host).nodes.len()));
+    });
+    c.bench_function("wait_until_poll_1000_nodes_cached", |b| {
+        let mut host = RevHost {
+            items: 1000,
+            rev: 1,
+        };
+        let mut cache = TreeCache::new();
+        let spec = AssertSpec {
+            target: "row-0-toggle".into(),
+            checked: Some(true),
+            ..AssertSpec::default()
+        };
+        let req = || Request {
+            v: PROTOCOL_VERSION,
+            id: "b".into(),
+            token: None,
+            auth: None,
+            op: Op::Assert { spec: spec.clone() },
+        };
+        b.iter(|| {
+            let resp = handle_request_cached(&mut host, &mut cache, req(), None, None);
+            black_box(resp.ok)
+        });
+    });
+    c.bench_function("wait_until_poll_1000_nodes_uncached", |b| {
+        let mut host = RevHost {
+            items: 1000,
+            rev: 1,
+        };
+        let spec = AssertSpec {
+            target: "row-0-toggle".into(),
+            checked: Some(true),
+            ..AssertSpec::default()
+        };
+        let req = || Request {
+            v: PROTOCOL_VERSION,
+            id: "b".into(),
+            token: None,
+            auth: None,
+            op: Op::Assert { spec: spec.clone() },
+        };
+        b.iter(|| {
+            let resp = handle_request(&mut host, req(), None, None);
+            black_box(resp.ok)
+        });
+    });
+    c.bench_function("snapshot_compact_1000_nodes", |b| {
+        let tree = bench_tree(1000);
+        b.iter(|| black_box(gpui_agent::compact_lines(&tree).len()));
+    });
 }
 
 /// Historical flatten: allocate an intermediate vec per child.
@@ -198,6 +301,7 @@ criterion_group!(
     benches,
     flatten_trees,
     snapshot_serialize,
+    revision_cache,
     mailbox_pressure,
     session_vs_reconnect
 );
