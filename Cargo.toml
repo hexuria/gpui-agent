@@ -30,3 +30,6 @@ thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 gpui-kit = "0.6"
+
+# Optional (feature `jev` on gpui-agent-policy): System One escalation.
+typesafe-sdk = { version = "0.3", features = ["blocking"] }

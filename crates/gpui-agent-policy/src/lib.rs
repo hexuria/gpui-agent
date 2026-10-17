@@ -28,6 +28,8 @@ pub mod arbitration;
 pub mod escalate;
 pub mod evidence;
 pub mod goal;
+#[cfg(feature = "jev")]
+pub mod jev;
 pub mod policy;
 pub mod runner;
 pub mod text;
@@ -48,6 +50,8 @@ pub use evidence::{
 pub use goal::{UiGoal, split_sequential_clauses};
 pub use instinct_core::{Confidence, Profile};
 pub use instinct_text::{NormalizeConfig, Normalized, normalize};
+#[cfg(feature = "jev")]
+pub use jev::JevEscalation;
 pub use policy::{
     HABITUATION_STEP, HistoryEntry, InstinctPolicy, PolicyDecision, PolicyError, PolicyOutcome,
     RankedAction, UiPolicy,

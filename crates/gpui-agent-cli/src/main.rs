@@ -219,6 +219,11 @@ enum Command {
         /// Print the raw JSON receipt instead of the text summary.
         #[arg(long)]
         json: bool,
+        /// Escalate local-policy abstains to a named engine (M8).
+        /// `jev` uses System One via typesafe-sdk (requires
+        /// TYPESAFE_API_KEY; feature `jev`).
+        #[arg(long = "escalate", value_name = "ENGINE", value_parser = ["jev"], conflicts_with = "escalate_cmd")]
+        escalate: Option<String>,
         /// Escalate local-policy abstains to `<program> [args…]` over the
         /// closed JSON stdin/stdout wire (M7). Off by default; the
         /// endpoint may only pick from the offered menu or abstain.
@@ -301,6 +306,7 @@ fn run() -> Result<()> {
         ref goal,
         ref profile,
         json,
+        ref escalate,
         ref escalate_cmd,
         escalate_timeout_ms,
         ref schema,
@@ -310,12 +316,15 @@ fn run() -> Result<()> {
         let client = AgentClient::connect(addr).with_token(token);
         return run_cmd::run(
             client,
-            goal,
-            profile,
-            json,
-            escalate_cmd,
-            escalate_timeout_ms,
-            schema,
+            run_cmd::RunOpts {
+                goal,
+                profile,
+                json_out: json,
+                escalate: escalate.as_deref(),
+                escalate_cmd,
+                escalate_timeout_ms,
+                schema,
+            },
         );
     }
 

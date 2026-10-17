@@ -27,6 +27,10 @@ serde_json.workspace = true
 # set and resolver byte-identical.
 instinct = ["dep:gpui-agent-policy", "gpui-agent-recipe/instinct"]
 
+# M8: `--escalate jev` — System One fallback via typesafe-sdk. Requires
+# instinct; off by default (no typesafe dep without this feature).
+jev = ["instinct", "gpui-agent-policy/jev"]
+
 [dev-dependencies]
 todo-core.workspace = true
 
