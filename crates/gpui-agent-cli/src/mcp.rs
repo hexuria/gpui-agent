@@ -121,7 +121,8 @@ pub(crate) fn tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "since": { "type": "integer", "description": "Return only what changed since this snapshot revision." },
-                    "format": { "type": "string", "enum": ["json", "compact"], "description": "json (default) is the full UiTree; compact is one line per visible node." }
+                    "format": { "type": "string", "enum": ["json", "compact"], "description": "json (default) is the full UiTree; compact is one line per visible node." },
+                    "fingerprints": { "type": "boolean", "description": "true adds an id→fingerprint map so callers can gate mutating ops with expect_fingerprint." }
                 }
             }),
         ),
@@ -390,7 +391,16 @@ fn call_tool(
                 Some("compact") => Some(gpui_agent::protocol::SnapshotFormat::Compact),
                 Some(other) => return Err(format!("unknown snapshot format {other}")),
             };
-            client.snapshot_with(since, format)?
+            let fingerprints = args.get("fingerprints").and_then(Value::as_bool);
+            if fingerprints == Some(true) {
+                client.expect_ok(Op::Snapshot {
+                    since,
+                    format,
+                    fingerprints,
+                })?
+            } else {
+                client.snapshot_with(since, format)?
+            }
         }
         "screenshot" => {
             let path = args.string("path")?;
@@ -761,19 +771,55 @@ mod instinct {
         }
     }
 
+    /// Terminal outcome of one observe→decide→dispatch attempt.
+    /// `Stale` means the host refused a fingerprinted dispatch
+    /// (`stale_target`/`target_gone`) — nothing was dispatched.
+    enum ActStep {
+        Done(Value),
+        Stale,
+    }
+
     /// `act {instruction, delivery?, schema?}` — executes the FIRST
-    /// clause only. Abstains → no dispatch, ever.
+    /// clause only. Abstains → no dispatch, ever. A `stale_target` /
+    /// `target_gone` refusal re-observes and re-decides at most twice
+    /// (M5); the old id is never re-dispatched unchanged because every
+    /// retry carries the fingerprint of a fresh observation.
     pub(crate) fn act_tool(
         client: &mut AgentClient,
         args: &Value,
         schema_paths: &[PathBuf],
     ) -> Result<Value, String> {
+        const MAX_STALE_RETRIES: u8 = 2;
         let instruction = args.string("instruction")?;
-        let delivery = parse_delivery(args)?;
         let clauses = split_sequential_clauses(&instruction);
         let clause = clauses
             .first()
             .ok_or_else(|| "instruction has no clause".to_string())?;
+        let mut stale_retries = 0u8;
+        loop {
+            match act_attempt(client, args, schema_paths, clause)? {
+                ActStep::Done(value) => return Ok(value),
+                ActStep::Stale if stale_retries < MAX_STALE_RETRIES => {
+                    stale_retries += 1;
+                }
+                ActStep::Stale => {
+                    return Ok(json!({
+                        "answer": "abstain",
+                        "reason": "stale_target: target kept changing between decide and dispatch",
+                        "candidates": [],
+                    }));
+                }
+            }
+        }
+    }
+
+    fn act_attempt(
+        client: &mut AgentClient,
+        args: &Value,
+        schema_paths: &[PathBuf],
+        clause: &str,
+    ) -> Result<ActStep, String> {
+        let delivery = parse_delivery(args)?;
         let k = args.get("k").and_then(Value::as_u64).unwrap_or(5).min(64) as usize;
 
         let obs = observe(client, args, schema_paths)?;
@@ -785,7 +831,7 @@ mod instinct {
                 target_ranked,
                 operation_ranked,
             } => {
-                return Ok(json!({
+                return Ok(ActStep::Done(json!({
                     "answer": "abstain",
                     "reason": reason,
                     "candidates": if target_ranked.is_empty() {
@@ -794,7 +840,7 @@ mod instinct {
                         candidates_json(&obs, &target_ranked, k)
                     },
                     "rev": obs.rev,
-                }));
+                })));
             }
         };
         let action = obs
@@ -806,13 +852,19 @@ mod instinct {
         // Controls terminate the clause without a dispatch.
         match decision.kind {
             ActionKind::Done => {
-                return Ok(json!({"answer": "done", "op": "done", "rev": obs.rev}));
+                return Ok(ActStep::Done(
+                    json!({"answer": "done", "op": "done", "rev": obs.rev}),
+                ));
             }
             ActionKind::Blocked => {
-                return Ok(json!({"answer": "blocked", "op": "blocked", "rev": obs.rev}));
+                return Ok(ActStep::Done(
+                    json!({"answer": "blocked", "op": "blocked", "rev": obs.rev}),
+                ));
             }
             ActionKind::Wait => {
-                return Ok(json!({"answer": "wait", "op": "wait", "rev": obs.rev}));
+                return Ok(ActStep::Done(
+                    json!({"answer": "wait", "op": "wait", "rev": obs.rev}),
+                ));
             }
             _ => {}
         }
@@ -832,40 +884,66 @@ mod instinct {
                 Ok(res) => text_payload = Some(res.text),
                 Err(err) => {
                     let (reason, ranked) = text_abstain(&err, &decision);
-                    return Ok(json!({
+                    return Ok(ActStep::Done(json!({
                         "answer": "abstain",
                         "reason": reason,
                         "candidates": candidates_json(&obs, &ranked, k),
                         "rev": obs.rev,
-                    }));
+                    })));
                 }
             }
         }
 
-        // M4.4 (pre-M5): re-read the target immediately before dispatch
-        // and abort on role/name drift.
-        revalidate_node(client, &obs, &action)?;
-
+        // M5: node-bound mutating ops carry the build-time fingerprint
+        // as `expect_fingerprint`; the host recomputes it on the
+        // dispatch path in the same call — that atomic check replaces
+        // M4.4's extra snapshot + role/name re-read.
         let required_target = || {
             action
                 .target()
                 .map(str::to_owned)
                 .ok_or_else(|| format!("{} has no dispatch target", decision.action_id))
         };
-        let resp: Response = match decision.kind {
-            ActionKind::Click => client.click_with_delivery(required_target()?, delivery)?,
-            ActionKind::Type => client.type_with_delivery(
-                required_target()?,
-                text_payload.as_deref().unwrap_or_default(),
-                delivery,
-            )?,
-            ActionKind::SetValue => client.set_value(
-                required_target()?,
-                text_payload.as_deref().unwrap_or_default(),
-            )?,
+        let fingerprinted = |op: Op| -> Result<Op, String> {
+            let fp = action
+                .fingerprint()
+                .ok_or_else(|| format!("{} has no fingerprint", decision.action_id))?;
+            Ok(op.with_fingerprint(fp))
+        };
+        let resp: Result<Response, String> = match decision.kind {
+            ActionKind::Click => {
+                let op = fingerprinted(Op::Click {
+                    target: required_target()?,
+                    delivery,
+                    expect_fingerprint: None,
+                })?;
+                client.expect_ok(op)
+            }
+            ActionKind::Type => {
+                let op = fingerprinted(Op::Type {
+                    target: required_target()?,
+                    text: text_payload.clone().unwrap_or_default(),
+                    delivery,
+                    expect_fingerprint: None,
+                })?;
+                client.expect_ok(op)
+            }
+            ActionKind::SetValue => {
+                let op = fingerprinted(Op::SetValue {
+                    target: required_target()?,
+                    value: text_payload.clone().unwrap_or_default(),
+                    expect_fingerprint: None,
+                })?;
+                client.expect_ok(op)
+            }
             ActionKind::Key => {
-                let key = key_of(&action)?;
-                client.key_with_delivery(required_target()?, key, delivery)?
+                let op = fingerprinted(Op::Key {
+                    target: required_target()?,
+                    key: key_of(&action)?,
+                    delivery,
+                    expect_fingerprint: None,
+                })?;
+                client.expect_ok(op)
             }
             ActionKind::Keybinding => {
                 let id = required_target()?;
@@ -880,19 +958,23 @@ mod instinct {
                     Some(kb.chord.clone()),
                     false,
                     false,
-                )?
+                )
             }
             ActionKind::Invoke => {
                 let name = required_target()?;
                 let invoke_args = invoke_args_for(&name, clause, args, schema_paths)?;
-                client.invoke(name, invoke_args)?
+                client.invoke(name, invoke_args)
             }
             ActionKind::Done | ActionKind::Blocked | ActionKind::Wait => unreachable!(),
             // Fail closed on kinds added after this build.
             _ => return Err(format!("cannot dispatch kind {}", decision.kind)),
         };
-        if !resp.ok {
-            return Err(resp.error.unwrap_or_else(|| "dispatch failed".into()));
+        match resp {
+            Ok(_) => {}
+            Err(err) if err.starts_with("stale_target") || err.starts_with("target_gone") => {
+                return Ok(ActStep::Stale);
+            }
+            Err(err) => return Err(err),
         }
         let mut out = json!({
             "answer": "done",
@@ -904,7 +986,7 @@ mod instinct {
         if let Some(text) = text_payload {
             out["text"] = Value::String(text);
         }
-        Ok(out)
+        Ok(ActStep::Done(out))
     }
 
     fn text_abstain(
@@ -920,39 +1002,6 @@ mod instinct {
             },
             decision.target_ranked.clone(),
         )
-    }
-
-    /// Re-read the tree and confirm the chosen node target still has
-    /// the role+name the policy scored (M4.4 staleness gate; M5 adds
-    /// fingerprints).
-    fn revalidate_node(
-        client: &mut AgentClient,
-        _obs: &Observed,
-        action: &gpui_agent_policy::OfferedAction,
-    ) -> Result<(), String> {
-        let Some(target) = action.target() else {
-            return Ok(());
-        };
-        if action.kind() == ActionKind::Invoke || action.kind() == ActionKind::Keybinding {
-            return Ok(()); // entity-bound: catalog/schema is static
-        }
-        let fresh = client.snapshot()?;
-        let tree = fresh
-            .tree
-            .ok_or_else(|| "host returned no ui tree on revalidate".to_string())?;
-        let node = tree
-            .find(target)
-            .ok_or_else(|| format!("stale target `{target}`: node vanished"))?;
-        let scored_role = action.role().unwrap_or_default();
-        if node.role != scored_role || node.name != action.label() {
-            return Err(format!(
-                "stale target `{target}`: was {scored_role}/{} now {}/{}",
-                action.label(),
-                node.role,
-                node.name
-            ));
-        }
-        Ok(())
     }
 
     /// `KEY:<id>:<key>` → the key suffix (`<id>` may itself hold `:`,
@@ -1009,6 +1058,7 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("name").and_then(Value::as_str))
             .collect();
+        #[cfg_attr(not(feature = "instinct"), allow(unused_mut))]
         let mut expected = vec![
             "wait",
             "wait_until",

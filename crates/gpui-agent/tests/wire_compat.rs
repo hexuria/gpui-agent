@@ -37,6 +37,7 @@ fn request_bytes_are_pinned() {
             Op::SetValue {
                 target: "todo-input".into(),
                 value: "milk".into(),
+                expect_fingerprint: None,
             },
             r#"{"v":2,"id":"1","op":"set_value","target":"todo-input","value":"milk"}"#,
         ),

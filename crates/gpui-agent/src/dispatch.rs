@@ -182,7 +182,11 @@ pub fn handle_request_cached(
             resp.rev = host.revision();
             resp
         }
-        Op::Snapshot { since, format } => snapshot_response(host, cache, &req.id, since, format),
+        Op::Snapshot {
+            since,
+            format,
+            fingerprints,
+        } => snapshot_response(host, cache, &req.id, since, format, fingerprints),
         Op::Screenshot {
             path,
             mode,
@@ -235,14 +239,39 @@ pub fn handle_request_cached(
             }
             Err(error) => Response::err(req.id, error),
         },
-        other => match host.dispatch(&other) {
-            Ok(result) => {
-                let mut resp = Response::ok(req.id);
-                resp.result = result.value;
-                resp
+        other => {
+            // M5 staleness gate — recomputed in the same call, before
+            // dispatch. `cache.snapshot` re-reads whenever the revision
+            // moved, so this is never a stale-of-stale check.
+            if let Some((target, expected)) = other.fingerprint_gate() {
+                let tree = cache.snapshot(host);
+                match tree.fingerprint_of(target) {
+                    None => {
+                        return Response::err(
+                            req.id,
+                            format!("target_gone: `{target}` is no longer in the tree"),
+                        );
+                    }
+                    Some(actual) if actual != expected => {
+                        return Response::err(
+                            req.id,
+                            format!(
+                                "stale_target: `{target}` changed between snapshot and dispatch"
+                            ),
+                        );
+                    }
+                    _ => {}
+                }
             }
-            Err(error) => Response::err(req.id, error),
-        },
+            match host.dispatch(&other) {
+                Ok(result) => {
+                    let mut resp = Response::ok(req.id);
+                    resp.result = result.value;
+                    resp
+                }
+                Err(error) => Response::err(req.id, error),
+            }
+        }
     }
 }
 
@@ -256,11 +285,15 @@ fn snapshot_response(
     id: &str,
     since: Option<u64>,
     format: Option<SnapshotFormat>,
+    fingerprints: Option<bool>,
 ) -> Response {
     let tree = cache.snapshot(host);
     let rev = tree.rev;
     let mut resp = Response::ok(id);
     resp.rev = rev;
+    if fingerprints == Some(true) {
+        resp.fingerprints = Some(tree.fingerprint_map());
+    }
     if format == Some(SnapshotFormat::Compact) {
         resp.result = Some(serde_json::json!({
             "compact": crate::diff::compact_lines(&tree),
@@ -293,7 +326,7 @@ fn hello_response(host: &dyn AgentHost, id: &str, expected_token: Option<&str>) 
     let mut hello = host.hello();
     hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
     crate::discovery::fill_hello_identity(&mut hello);
-    for feature in ["snapshot_since", "snapshot_compact"] {
+    for feature in ["snapshot_since", "snapshot_compact", "expect_fingerprint"] {
         if !hello.features.iter().any(|f| f == feature) {
             hello.features.push(feature.to_string());
         }

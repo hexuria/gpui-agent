@@ -174,6 +174,10 @@ pub struct OfferedAction {
     /// Destructive actions are listed but never auto-chosen — choosing
     /// one abstains `needs_confirmation` (PRD M4.1).
     dangerous: bool,
+    /// `UiNode::fingerprint` of the target at build time (M5). `Some`
+    /// only for node-bound kinds; `act` sends it as
+    /// `expect_fingerprint` on every mutating dispatch.
+    fingerprint: Option<u64>,
 }
 
 impl OfferedAction {
@@ -195,6 +199,10 @@ impl OfferedAction {
     }
     pub fn dangerous(&self) -> bool {
         self.dangerous
+    }
+    /// Build-time `UiNode::fingerprint` for node-bound actions (M5).
+    pub fn fingerprint(&self) -> Option<u64> {
+        self.fingerprint
     }
 }
 
@@ -252,6 +260,7 @@ impl ActionSpace {
                     label,
                     role: Some("keybinding".to_owned()),
                     dangerous: binding_is_dangerous(kb),
+                    fingerprint: None,
                 },
             );
         }
@@ -266,6 +275,7 @@ impl ActionSpace {
                     label,
                     role: Some("invoke".to_owned()),
                     dangerous: invoke.dangerous,
+                    fingerprint: None,
                 },
             );
         }
@@ -285,6 +295,7 @@ impl ActionSpace {
                     label,
                     role: None,
                     dangerous: false,
+                    fingerprint: None,
                 },
             );
         }
@@ -357,13 +368,16 @@ fn explode_ident(name: &str) -> String {
 
 fn collect_node(
     node: &UiNode,
-    parent_role: Option<&str>,
+    parent: Option<&UiNode>,
     ancestors_viable: bool,
     actions: &mut BTreeMap<ActionId, OfferedAction>,
 ) {
     // Filtered before scoring — never penalized.
     let viable = ancestors_viable && node.enabled && node.visible;
     if viable {
+        let parent_role = parent.map(|p| p.role.as_str());
+        let parent_id = parent.map(|p| p.id.as_str());
+        let fingerprint = Some(node.fingerprint(parent_id));
         let clickable = matches!(
             node.role.as_str(),
             "button" | "link" | "tab" | "checkbox" | "switch"
@@ -379,6 +393,7 @@ fn collect_node(
                     label: node.name.clone(),
                     role: Some(node.role.clone()),
                     dangerous: false,
+                    fingerprint,
                 },
             );
         }
@@ -393,6 +408,7 @@ fn collect_node(
                         label: node.name.clone(),
                         role: Some(node.role.clone()),
                         dangerous: false,
+                        fingerprint,
                     },
                 );
             }
@@ -408,11 +424,12 @@ fn collect_node(
                     label: format!("{} submit", node.name),
                     role: Some(node.role.clone()),
                     dangerous: false,
+                    fingerprint,
                 },
             );
         }
     }
     for child in &node.children {
-        collect_node(child, Some(node.role.as_str()), viable, actions);
+        collect_node(child, Some(node), viable, actions);
     }
 }

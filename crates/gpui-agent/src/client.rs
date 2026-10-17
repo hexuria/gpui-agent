@@ -409,7 +409,11 @@ impl AgentClient {
         since: Option<u64>,
         format: Option<SnapshotFormat>,
     ) -> Result<Response, String> {
-        self.expect_ok(Op::Snapshot { since, format })
+        self.expect_ok(Op::Snapshot {
+            since,
+            format,
+            fingerprints: None,
+        })
     }
 
     /// Observe-only PNG of the app surface. `path` is on the host machine.
@@ -454,6 +458,7 @@ impl AgentClient {
         self.expect_ok(Op::Click {
             target: target.into(),
             delivery,
+            expect_fingerprint: None,
         })
     }
 
@@ -475,6 +480,7 @@ impl AgentClient {
             target: target.into(),
             text: text.into(),
             delivery,
+            expect_fingerprint: None,
         })
     }
 
@@ -496,6 +502,7 @@ impl AgentClient {
             target: target.into(),
             key: key.into(),
             delivery,
+            expect_fingerprint: None,
         })
     }
 
@@ -507,6 +514,7 @@ impl AgentClient {
         self.expect_ok(Op::SetValue {
             target: target.into(),
             value: value.into(),
+            expect_fingerprint: None,
         })
     }
 

@@ -213,13 +213,16 @@ pub enum Op {
     Hello,
     /// Read the semantic tree. `since` asks for a diff against a revision
     /// the client already holds; `format: "compact"` returns one line per
-    /// visible node instead of the JSON tree (M3). Omitting both keeps the
-    /// v2 response byte-identical.
+    /// visible node instead of the JSON tree (M3); `fingerprints: true`
+    /// adds an `id → UiNode::fingerprint` map (M5). Omitting all three
+    /// keeps the v2 response byte-identical.
     Snapshot {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         format: Option<SnapshotFormat>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fingerprints: Option<bool>,
     },
     /// Cheap probe for `AgentHost::revision` — used by mailbox `wait_until`
     /// so an unchanged tree costs no rebuild. Additive v2 op.
@@ -229,22 +232,34 @@ pub enum Op {
         /// Omitted / `semantic` is v1. `virtual` is the in-window event path.
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
+        /// M5 staleness gate: the host recomputes
+        /// [`UiNode::fingerprint`] on the dispatch path; mismatch →
+        /// `stale_target`, missing node → `target_gone`. Nothing
+        /// dispatches on a mismatch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_fingerprint: Option<u64>,
     },
     Type {
         target: String,
         text: String,
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_fingerprint: Option<u64>,
     },
     SetValue {
         target: String,
         value: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_fingerprint: Option<u64>,
     },
     Key {
         target: String,
         key: String,
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_fingerprint: Option<u64>,
     },
     /// Fire a GPUI **Action** by stable id (keymap path). Never OS HID.
     ///
@@ -350,6 +365,10 @@ pub struct Response {
     pub tree: Option<UiTree>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    /// `id → UiNode::fingerprint` map — present only when the request
+    /// was `snapshot {fingerprints:true}` (M5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprints: Option<std::collections::BTreeMap<String, u64>>,
     /// Host snapshot revision when the host tracks one (M3). `None` means
     /// "do not cache": every snapshot may differ even at the same rev.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -451,6 +470,7 @@ impl Op {
         Self::Snapshot {
             since: None,
             format: None,
+            fingerprints: None,
         }
     }
 
@@ -458,6 +478,7 @@ impl Op {
         Self::Snapshot {
             since: Some(rev),
             format,
+            fingerprints: None,
         }
     }
 
@@ -465,6 +486,7 @@ impl Op {
         Self::Click {
             target: target.into(),
             delivery: DeliveryMode::Semantic,
+            expect_fingerprint: None,
         }
     }
 
@@ -472,6 +494,7 @@ impl Op {
         Self::Click {
             target: target.into(),
             delivery: DeliveryMode::Virtual,
+            expect_fingerprint: None,
         }
     }
 
@@ -480,6 +503,7 @@ impl Op {
             target: target.into(),
             text: text.into(),
             delivery: DeliveryMode::Semantic,
+            expect_fingerprint: None,
         }
     }
 
@@ -488,6 +512,7 @@ impl Op {
             target: target.into(),
             text: text.into(),
             delivery: DeliveryMode::Virtual,
+            expect_fingerprint: None,
         }
     }
 
@@ -496,6 +521,7 @@ impl Op {
             target: target.into(),
             key: key.into(),
             delivery: DeliveryMode::Semantic,
+            expect_fingerprint: None,
         }
     }
 
@@ -504,6 +530,77 @@ impl Op {
             target: target.into(),
             key: key.into(),
             delivery: DeliveryMode::Virtual,
+            expect_fingerprint: None,
+        }
+    }
+
+    /// Attach the M5 `expect_fingerprint` gate to a mutating op
+    /// (`click`/`type`/`set_value`/`key`); a no-op for other variants.
+    pub fn with_fingerprint(self, fingerprint: u64) -> Self {
+        match self {
+            Self::Click {
+                target, delivery, ..
+            } => Self::Click {
+                target,
+                delivery,
+                expect_fingerprint: Some(fingerprint),
+            },
+            Self::Type {
+                target,
+                text,
+                delivery,
+                ..
+            } => Self::Type {
+                target,
+                text,
+                delivery,
+                expect_fingerprint: Some(fingerprint),
+            },
+            Self::SetValue { target, value, .. } => Self::SetValue {
+                target,
+                value,
+                expect_fingerprint: Some(fingerprint),
+            },
+            Self::Key {
+                target,
+                key,
+                delivery,
+                ..
+            } => Self::Key {
+                target,
+                key,
+                delivery,
+                expect_fingerprint: Some(fingerprint),
+            },
+            other => other,
+        }
+    }
+
+    /// `(target, expected)` when this mutating op carries an M5
+    /// `expect_fingerprint` gate; `None` for unguarded ops.
+    pub fn fingerprint_gate(&self) -> Option<(&str, u64)> {
+        match self {
+            Self::Click {
+                target,
+                expect_fingerprint: Some(fp),
+                ..
+            }
+            | Self::Type {
+                target,
+                expect_fingerprint: Some(fp),
+                ..
+            }
+            | Self::SetValue {
+                target,
+                expect_fingerprint: Some(fp),
+                ..
+            }
+            | Self::Key {
+                target,
+                expect_fingerprint: Some(fp),
+                ..
+            } => Some((target.as_str(), *fp)),
+            _ => None,
         }
     }
 
@@ -574,6 +671,7 @@ impl Response {
             hello: None,
             tree: None,
             result: None,
+            fingerprints: None,
             rev: None,
         }
     }
@@ -587,6 +685,7 @@ impl Response {
             hello: None,
             tree: None,
             result: None,
+            fingerprints: None,
             rev: None,
         }
     }

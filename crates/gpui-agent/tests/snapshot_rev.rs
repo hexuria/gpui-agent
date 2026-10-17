@@ -90,7 +90,8 @@ fn snapshot_op_v2_bytes_unchanged() {
         parsed.op,
         Op::Snapshot {
             since: None,
-            format: None
+            format: None,
+            ..
         }
     ));
     // New hosts answering old requests serialize identically.
@@ -113,7 +114,8 @@ fn snapshot_since_and_format_serialize() {
         parsed.op,
         Op::Snapshot {
             since: None,
-            format: Some(SnapshotFormat::Compact)
+            format: Some(SnapshotFormat::Compact),
+            ..
         }
     ));
 }

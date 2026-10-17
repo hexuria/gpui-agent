@@ -155,7 +155,14 @@ fn materialize(
                     value: value.clone(),
                     source: "quoted".into(),
                 });
-                Ok((Op::SetValue { target, value }, fills))
+                Ok((
+                    Op::SetValue {
+                        target,
+                        value,
+                        expect_fingerprint: None,
+                    },
+                    fills,
+                ))
             }
             "assert" => {
                 let target = required_target(intent, &mut fills)?;
