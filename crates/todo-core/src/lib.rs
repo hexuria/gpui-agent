@@ -141,6 +141,9 @@ pub struct TodoStore {
     shutdown: bool,
     /// Headless stand-in for OS window focus. Desktop uses `Window::is_window_active`.
     app_focused: bool,
+    /// Snapshot revision (M3): bumped by every mutator that can change
+    /// the tree — items, draft, page, sidebar, settings, shutdown.
+    rev: u64,
 }
 
 impl Default for TodoStore {
@@ -161,7 +164,15 @@ impl TodoStore {
             platform,
             shutdown: false,
             app_focused: false,
+            rev: 0,
         }
+    }
+
+    /// Mark the snapshot stale. Embedders whose snapshot-affecting state
+    /// lives outside the store (e.g. painted bounds) call this when that
+    /// state changes so `revision()` never lies.
+    pub fn bump_revision(&mut self) {
+        self.rev += 1;
     }
 
     pub fn page(&self) -> Page {
@@ -174,10 +185,12 @@ impl TodoStore {
 
     pub fn go(&mut self, page: Page) {
         self.page = page;
+        self.bump_revision();
     }
 
     pub fn toggle_confirm_delete(&mut self) {
         self.confirm_delete = !self.confirm_delete;
+        self.bump_revision();
     }
 
     pub fn sidebar_open(&self) -> bool {
@@ -186,6 +199,7 @@ impl TodoStore {
 
     pub fn toggle_sidebar(&mut self) {
         self.sidebar_open = !self.sidebar_open;
+        self.bump_revision();
     }
 
     pub fn seed_overflow_demo(&mut self, count: usize) {
@@ -204,6 +218,7 @@ impl TodoStore {
 
     pub fn set_draft(&mut self, draft: impl Into<String>) {
         self.draft = draft.into();
+        self.bump_revision();
     }
 
     pub fn wants_shutdown(&self) -> bool {
@@ -251,6 +266,7 @@ impl TodoStore {
         match binding {
             ids::KEY_FOCUS_INPUT => {
                 self.page = Page::Todos;
+                self.bump_revision();
                 Ok(DispatchResult::json(serde_json::json!({
                     "id": ids::KEY_FOCUS_INPUT,
                     "scope": "focused",
@@ -259,6 +275,7 @@ impl TodoStore {
             }
             ids::KEY_GO_SETTINGS => {
                 self.page = Page::Settings;
+                self.bump_revision();
                 Ok(DispatchResult::json(serde_json::json!({
                     "id": ids::KEY_GO_SETTINGS,
                     "scope": "global",
@@ -267,6 +284,7 @@ impl TodoStore {
             }
             ids::KEY_QUIT => {
                 self.shutdown = true;
+                self.bump_revision();
                 Ok(DispatchResult::json(serde_json::json!({
                     "id": ids::KEY_QUIT,
                     "scope": "global",
@@ -313,6 +331,7 @@ impl TodoStore {
         self.next_id += 1;
         self.items.push(todo.clone());
         self.draft.clear();
+        self.bump_revision();
         Ok(todo)
     }
 
@@ -327,7 +346,9 @@ impl TodoStore {
             .find(|item| item.id == id)
             .ok_or_else(|| format!("todo {id} not found"))?;
         item.done = !item.done;
-        Ok(item.clone())
+        let done = item.clone();
+        self.bump_revision();
+        Ok(done)
     }
 
     pub fn delete(&mut self, id: u64) -> Result<Todo, String> {
@@ -336,7 +357,9 @@ impl TodoStore {
             .iter()
             .position(|item| item.id == id)
             .ok_or_else(|| format!("todo {id} not found"))?;
-        Ok(self.items.remove(idx))
+        let removed = self.items.remove(idx);
+        self.bump_revision();
+        Ok(removed)
     }
 
     pub fn tree(&self) -> UiTree {
@@ -370,6 +393,7 @@ impl TodoStore {
             platform: self.platform,
             ready: true,
             nodes: vec![window],
+            rev: Some(self.rev),
         }
     }
 
@@ -556,11 +580,16 @@ impl AgentHost for TodoStore {
             auth: gpui_agent::HelloAuth::None,
             bundle_id: None,
             executable: None,
+            features: vec![],
         }
     }
 
     fn snapshot(&self) -> UiTree {
         self.tree()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Some(self.rev)
     }
 
     fn keybindings(&self) -> Vec<KeybindingInfo> {
@@ -618,7 +647,8 @@ impl AgentHost for TodoStore {
                 Ok(DispatchResult::empty())
             }
             Op::Hello
-            | Op::Snapshot
+            | Op::Snapshot { .. }
+            | Op::Revision
             | Op::Assert { .. }
             | Op::Wait { .. }
             | Op::WaitUntil { .. } => Ok(DispatchResult::empty()),
@@ -634,6 +664,35 @@ mod tests {
 
     fn add(store: &mut TodoStore, title: &str) -> u64 {
         store.add(title).unwrap().id
+    }
+
+    #[test]
+    fn revision_bumps_on_mutations_only() {
+        let mut store = TodoStore::default();
+        assert_eq!(AgentHost::revision(&store), Some(0));
+        assert_eq!(store.tree().rev, Some(0));
+
+        let id = store.add("milk").unwrap().id;
+        let r = store.rev;
+        assert!(r > 0);
+        // Reads do not bump.
+        let _ = store.tree();
+        let _ = store.items();
+        assert_eq!(store.rev, r);
+        store.toggle(id).unwrap();
+        assert!(store.rev > r);
+        let r = store.rev;
+        store.set_draft("x");
+        assert!(store.rev > r);
+        let r = store.rev;
+        store.toggle_sidebar();
+        assert!(store.rev > r);
+        let r = store.rev;
+        store.go(Page::Settings);
+        assert!(store.rev > r);
+        let r = store.rev;
+        store.delete(id).unwrap();
+        assert!(store.rev > r);
     }
 
     #[test]

@@ -15,6 +15,7 @@
 //! a headless test host, and later web (GPUI WASM) or mobile hosts.
 
 pub mod client;
+pub mod diff;
 pub mod discovery;
 pub mod dispatch;
 pub mod hmac_auth;
@@ -33,10 +34,14 @@ pub mod tree;
 pub mod virtual_input;
 
 pub use client::AgentClient;
+pub use diff::{AddedNode, ChangedNode, TreeDiff, apply_diff, compact_lines, diff_trees};
 pub use discovery::{
     ClientTarget, ResolveError, resolve_client_addr, resolve_client_target, runtime_root,
 };
-pub use dispatch::{DispatchResult, assert_tree, authorize_request, handle_request};
+pub use dispatch::{
+    DispatchResult, TreeCache, assert_tree, authorize_request, handle_request,
+    handle_request_cached,
+};
 pub use hmac_auth::{
     Challenge, challenge_for_nonce, hex_decode, hex_encode, hmac_hex, hmac_verify,
 };
@@ -51,7 +56,7 @@ pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{line_is_blank, read_limited_line, read_limited_line_into, write_json_line};
 pub use protocol::{
     AssertSpec, DeliveryMode, HelloAuth, HelloInfo, KeybindingScope, Op, PROTOCOL_VERSION,
-    PlatformKind, Request, Response, ScreenshotMode,
+    PlatformKind, Request, Response, ScreenshotMode, SnapshotFormat,
 };
 pub use screenshot::{
     SCREENSHOT_BACKEND_SCREENCAPTURE, SCREENSHOT_UNAVAILABLE, TEST_PNG, accept_written_png,

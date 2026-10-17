@@ -396,7 +396,7 @@ impl AgentClient {
     }
 
     pub fn snapshot(&mut self) -> Result<Response, String> {
-        self.expect_ok(Op::Snapshot)
+        self.expect_ok(Op::snapshot())
     }
 
     /// Observe-only PNG of the app surface. `path` is on the host machine.

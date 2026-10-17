@@ -81,6 +81,7 @@ mod tests {
                 auth: crate::HelloAuth::None,
                 bundle_id: None,
                 executable: None,
+                features: vec![],
             }
         }
 
@@ -90,6 +91,7 @@ mod tests {
                 platform: PlatformKind::Headless,
                 ready: true,
                 nodes: vec![UiNode::window("ping-window", "Ping").with_value(self.n.to_string())],
+                rev: None,
             }
         }
 

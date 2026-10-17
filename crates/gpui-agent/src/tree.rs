@@ -291,6 +291,10 @@ pub struct UiTree {
     pub platform: crate::protocol::PlatformKind,
     pub ready: bool,
     pub nodes: Vec<UiNode>,
+    /// Host snapshot revision (M3). `None` means the host does not track
+    /// one — callers must rebuild rather than cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<u64>,
 }
 
 impl UiTree {
@@ -380,6 +384,7 @@ mod tests {
                         UiNode::new("c", "button", "C").with_child(UiNode::new("d", "note", "D")),
                     ),
             ],
+            rev: None,
         };
         assert_eq!(tree.node_count(), 4);
         let flat: Vec<&str> = tree.flatten().iter().map(|n| n.id.as_str()).collect();
@@ -434,6 +439,7 @@ mod tests {
                         UiNode::list("list", "List").with_child(UiNode::button("dup", "Second")),
                     ),
             ],
+            rev: None,
         }
     }
 

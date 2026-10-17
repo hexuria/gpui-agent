@@ -777,11 +777,29 @@ impl TodoApp {
         }
     }
 
+    /// Bounds live outside `TodoStore` but change the snapshot — the
+    /// revision must move when they do (M3 contract). Bumping only on a
+    /// real change keeps repaints from churning `rev`.
+    #[cfg(feature = "embedded-host")]
+    fn set_bound(&mut self, id: &str, bounds: gpui_agent::Bounds) {
+        if self.layout_bounds.get(id) != Some(&bounds) {
+            self.layout_bounds.insert(id.to_string(), bounds);
+            self.store.bump_revision();
+        }
+    }
+
+    #[cfg(feature = "embedded-host")]
+    fn remove_bound(&mut self, id: &str) {
+        if self.layout_bounds.remove(id).is_some() {
+            self.store.bump_revision();
+        }
+    }
+
     #[cfg(feature = "embedded-host")]
     fn forget_sidebar_bounds(&mut self) {
-        self.layout_bounds.remove(ids::NAV);
-        self.layout_bounds.remove(ids::NAV_TODOS);
-        self.layout_bounds.remove(ids::NAV_SETTINGS);
+        self.remove_bound(ids::NAV);
+        self.remove_bound(ids::NAV_TODOS);
+        self.remove_bound(ids::NAV_SETTINGS);
     }
 
     #[cfg(feature = "embedded-host")]
@@ -789,8 +807,8 @@ impl TodoApp {
         // Painted window clip in the same space as `on_prepaint` widget
         // bounds (local origin). Screen origin is not a clip.
         let bounds = window.bounds();
-        self.layout_bounds.insert(
-            ids::WINDOW.into(),
+        self.set_bound(
+            ids::WINDOW,
             gpui_agent::Bounds {
                 x: 0.0,
                 y: 0.0,
@@ -1103,8 +1121,8 @@ impl TodoApp {
         // from the real widget that virtual clicks must reach.
         div().child(child).on_prepaint(move |bounds, _window, app| {
             entity.update(app, |this, _| {
-                this.layout_bounds.insert(
-                    record_id.clone(),
+                this.set_bound(
+                    &record_id,
                     gpui_agent::Bounds {
                         x: f32::from(bounds.origin.x),
                         y: f32::from(bounds.origin.y),

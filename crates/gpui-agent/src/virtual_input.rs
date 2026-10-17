@@ -156,6 +156,7 @@ mod tests {
             platform: PlatformKind::Desktop,
             ready: true,
             nodes: vec![node],
+            rev: None,
         }
     }
 
@@ -195,6 +196,7 @@ mod tests {
             platform: PlatformKind::Desktop,
             ready: true,
             nodes: vec![first, second],
+            rev: None,
         };
         let err = plan_click(&tree, "dup").unwrap_err();
         assert!(

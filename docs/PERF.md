@@ -1,4 +1,4 @@
-# Performance notes (P0)
+# Performance notes
 
 P0 of the [no-brainer plan](NO_BRAINER_PLAN.md): session reuse, NDJSON
 buffer reuse, tree flatten, mailbox `take`. Recipes reuse that session;
@@ -67,3 +67,32 @@ win is session reuse, not serialize.
 This workspace does not set `lto`. A product binary that embeds
 `gpui-agent` may use thin LTO; expect a small serialize/parse win, not
 another 600×. Measure with `cargo bench` on the real host tree size.
+
+## M3 — snapshot revision cache (GATE-P)
+
+`AgentHost::revision()` returning `Some(rev)` lets the server reuse the
+last built `UiTree` while `rev` is unchanged. `wait_until` and `assert`
+polls stop paying the rebuild entirely; mailbox `wait_until` posts a
+cheap `revision` probe and only enqueues the assert after `rev` moves.
+`None` (the default) keeps the old every-poll rebuild — always correct.
+
+Measured: Apple Silicon, `cargo bench -p gpui-agent --bench agent_perf`,
+1000-node tree (3001 nodes with children):
+
+| Bench | Median | Notes |
+| --- | --- | --- |
+| `snapshot_rebuild_1000_nodes` | **436 µs** | Full `UiTree` build |
+| `snapshot_cached_1000_nodes` | **10.5 ns** | Rev hit — **~41,000×** |
+| `wait_until_poll_1000_nodes_uncached` | **450 µs** | Rebuild + assert per poll |
+| `wait_until_poll_1000_nodes_cached` | **6.9 µs** | Assert only — **~64×** |
+| `snapshot_compact_1000_nodes` | **179 µs** | Compact render (1 line/node) |
+
+GATE-P verdicts:
+- `wait_until` on an unchanged tree: **0 rebuilds** after the first
+  (`wait_until_unchanged_tree_never_rebuilds` pins it — 45 ms of polling
+  costs exactly one build).
+- `snapshot {since}` at the current rev answers
+  `{"unchanged":true}` — the whole response is **< 1 KiB**.
+- `since` against a ring-cached rev answers a `diff` (`added` /
+  `removed` / `changed`); past 8 revisions it degrades to the full tree
+  with `{"full":true}` — never wrong, only bigger.
