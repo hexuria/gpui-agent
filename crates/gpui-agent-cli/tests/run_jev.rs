@@ -327,6 +327,7 @@ fn run_goal_jev(
     ]);
     if with_key {
         cmd.env("TYPESAFE_API_KEY", "test-key");
+        cmd.env("TYPESAFE_MODEL", "jev-test-model");
     }
     if let Some(m) = mock {
         cmd.env("TYPESAFE_BASE_URL", &m.url);
@@ -365,9 +366,11 @@ fn jev_pick_from_the_menu_runs() {
     let steps = receipt["steps"].as_array().expect("steps");
     assert_eq!(steps[0]["id"], "CLICK:nav-settings", "{receipt}");
     assert_eq!(steps[0]["confidence_millis"], 0, "escalated pick");
-    // The System One request carried operation + target heads.
+    // The System One request carried operation + target heads, plus
+    // the env-selected model.
     let reqs = mock.requests();
     assert!(!reqs.is_empty(), "mock saw no calls");
+    assert_eq!(reqs[0]["model"], json!("jev-test-model"), "{reqs:?}");
     let questions = reqs[0]["questions"].as_object().expect("questions");
     assert!(questions.contains_key("operation"), "{reqs:?}");
     assert!(questions.contains_key("click_target"), "{reqs:?}");

@@ -105,6 +105,30 @@ Caps recipes must not bypass: [docs/SECURITY.md](docs/SECURITY.md#recipes-experi
 Laptop copy-paste: [docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md). Headless is
 enough; desktop `todo` is optional and needs a display.
 
+### Local agent (`run --goal`, opt-in `instinct` feature)
+
+Builds with `--features instinct` gain a deterministic local driver —
+no model, no network:
+
+```bash
+cargo run -p gpui-agent-cli --features instinct -- run --goal 'Add a todo "Buy milk"'
+```
+
+The loop is observe → finite `ActionSpace` → Instinct policy →
+fingerprint gate → dispatch → re-observe → verify. It **abstains**
+instead of guessing; an abstain never dispatches. With `--features jev`
+(needs `TYPESAFE_API_KEY`), `--escalate jev` consults System One only
+*after* a local abstain. `--escalate-cmd <program>` pipes abstains to
+any endpoint over a closed JSON wire (see `bench/escalate_claude.py`).
+
+The wire is additive (v2 unchanged): `snapshot {since}` (diff or
+`unchanged`), `snapshot {format:"compact"}` (one line per visible
+node), a `revision` probe op, `snapshot {fingerprints:true}`, and
+`expect_fingerprint` on mutation ops (`stale_target` / `target_gone`,
+fail closed). Old hosts/clients are unaffected — and all of it is
+exposed as MCP tool arguments too.
+Details: [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
 The demo host also registers `todo.add` / `todo.toggle` / `todo.delete` / `todo.list` as **`invoke` names** (not CLI subcommands):
 
 ```bash
@@ -132,6 +156,7 @@ apps/todo-headless         Logic daemon: serve / status / shutdown (no GPU)
 crates/gpui-agent          Embeddable SDK: protocol, server, client, tree, TestHost
 crates/gpui-agent-cli      gpui-agent CLI + tiny MCP stdio shim
 crates/gpui-agent-recipe   Experimental recipes + TMP-inspired mapping
+crates/gpui-agent-policy   Optional Instinct policy (features `instinct`/`jev`)
 crates/todo-core           Demo store and semantic ids
 docs/README.md             Doc index
 docs/ADR-001-daemon-sot.md Daemon is source of truth; GUI is a client
@@ -216,7 +241,10 @@ The CLI includes a tiny MCP stdio server with the **same generic tools** (no app
 `wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`, `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
-`recipe_resolve` (JSON canonical; see [docs/RECIPES.md](docs/RECIPES.md)).
+`recipe_resolve` (JSON canonical; see [docs/RECIPES.md](docs/RECIPES.md)),
+and — with the `instinct` feature — `locate` (ranked resolve, abstains)
+and `act` (resolve → gated dispatch → verify), plus `snapshot`'s
+`since` / `format:"compact"` parameters.
 
 ```bash
 # terminal 1

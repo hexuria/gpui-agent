@@ -243,6 +243,21 @@ fn validate_choice<'a>(answer: &'a ChoiceAnswer, ids: &[String]) -> Result<&'a s
     }
 }
 
+/// `TYPESAFE_MODEL` — empty/whitespace means unset (the model key is
+/// then omitted from the request, letting the server default apply).
+fn model_non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|m| !m.trim().is_empty())
+}
+
+/// The element kind whose `as_str` the operation head picked, if any —
+/// its `<kind>_target` head must be answered to compose the id.
+fn element_kind_of(operation: &str) -> Option<ActionKind> {
+    ELEMENT_KINDS
+        .iter()
+        .find(|kind| kind.as_str() == operation)
+        .copied()
+}
+
 fn keys_for<'a>(
     criteria_keys: &'a [(String, Vec<String>)],
     head: &str,
@@ -280,10 +295,10 @@ impl JevEscalation {
             .compression(typesafe_sdk::Compression::None)
             .build()
             .map_err(|err| format!("typesafe client: {err}"))?;
-        let model = std::env::var("TYPESAFE_MODEL")
-            .ok()
-            .filter(|m| !m.trim().is_empty());
-        Ok(Self { client, model })
+        Ok(Self {
+            client,
+            model: model_non_empty(std::env::var("TYPESAFE_MODEL").ok()),
+        })
     }
 
     /// A pre-built client (tests point it at a mock server).
@@ -315,9 +330,9 @@ impl JevEscalation {
                 .map_err(|err| format!("{ESCALATION_PROTOCOL} jev answer operation: {err}"))?,
             keys_for(&built.criteria_keys, "operation")?,
         )?;
-        let target = match ELEMENT_KINDS.iter().find(|kind| kind.as_str() == operation) {
+        let target = match element_kind_of(operation) {
             Some(kind) => {
-                let head = head_name(*kind);
+                let head = head_name(kind);
                 Some(validate_choice(
                     response
                         .choice(&head)
@@ -458,6 +473,27 @@ mod tests {
             .map(|(n, _)| n.as_str())
             .collect();
         assert_eq!(names, keys);
+        // The operation criterion carries *its* kind's label text — a
+        // mis-keyed lookup would hand TYPE the Click label.
+        let (_, Question::Choice { criteria, .. }) = &built.questions[0] else {
+            panic!("operation must be a choice question")
+        };
+        assert_eq!(
+            criteria["CLICK"],
+            Some(JsonContent::from(
+                "Click an element, button, or menu option."
+            ))
+        );
+        assert_eq!(
+            criteria["TYPE"],
+            Some(JsonContent::from(
+                "Type text into an editable field. A resolver supplies the value from the goal."
+            ))
+        );
+        assert_eq!(
+            criteria["DONE"],
+            Some(JsonContent::from("Every requirement is satisfied."))
+        );
         // State carries the offered menu + goal, ready for POST.
         assert_eq!(built.state["goal"], json!("add a todo"));
         assert!(
@@ -505,9 +541,163 @@ mod tests {
         let err =
             validate_choice(&answer("a", &[("a", 0.9), ("b", 0.5)]), &ids).expect_err("sum 1.4");
         assert!(err.contains("sum"), "{err}");
-        let err = validate_choice(&answer("a", &[("a", 1.2), ("b", -0.2)]), &ids)
-            .expect_err("out of range");
+        // >1 with a sum that still lands on 1.0 — must trip the range
+        // check, not the sum check.
+        let err =
+            validate_choice(&answer("a", &[("a", 0.8), ("b", 1.2)]), &ids).expect_err("1.2 > 1.0");
         assert!(err.contains("out of range"), "{err}");
+        // Negative alongside other small positives — sum still 1.0, so
+        // only the range check can catch it.
+        let ids3 = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        let err = validate_choice(&answer("a", &[("a", 0.8), ("b", 0.4), ("c", -0.2)]), &ids3)
+            .expect_err("-0.2 < 0");
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn validate_accepts_edge_probabilities() {
+        // Exact 1.0 / 0.0 are in range — the bounds are inclusive.
+        let ids = vec!["a".to_owned(), "b".to_owned()];
+        let binding = answer("a", &[("a", 1.0), ("b", 0.0)]);
+        assert_eq!(validate_choice(&binding, &ids).expect("valid"), "a");
+        // NaN is not finite.
+        let err =
+            validate_choice(&answer("a", &[("a", f64::NAN), ("b", 0.0)]), &ids).expect_err("NaN");
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn keys_for_finds_the_head_or_errors() {
+        let built = build_questions(&space(), &UiGoal::new("add"), &[]).expect("built");
+        assert_eq!(
+            keys_for(&built.criteria_keys, "click_target").expect("head"),
+            &["add"]
+        );
+        let err = keys_for(&built.criteria_keys, "keybinding_target").expect_err("not offered");
+        assert!(err.contains("not offered"), "{err}");
+    }
+
+    #[test]
+    fn element_kind_of_maps_only_element_ops() {
+        assert_eq!(element_kind_of("CLICK"), Some(ActionKind::Click));
+        assert_eq!(element_kind_of("KEY"), Some(ActionKind::Key));
+        assert_eq!(element_kind_of("DONE"), None);
+        assert_eq!(element_kind_of("WAIT"), None);
+    }
+
+    #[test]
+    fn model_non_empty_drops_blank() {
+        assert_eq!(model_non_empty(None), None);
+        assert_eq!(model_non_empty(Some("  ".to_owned())), None);
+        assert_eq!(
+            model_non_empty(Some("claude-x".to_owned())),
+            Some("claude-x".to_owned())
+        );
+    }
+
+    /// One-shot std-only System One endpoint: captures the request
+    /// body, replies a valid DONE argmax answer covering exactly the
+    /// offered operation keys of `space()`.
+    fn mock_system_one(captured: std::sync::Arc<std::sync::Mutex<String>>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("accept");
+            conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .expect("timeout");
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = conn.read(&mut chunk).expect("read");
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                // Headers end at \r\n\r\n; body runs Content-Length.
+                if let Some(hpos) = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4) {
+                    let head = String::from_utf8_lossy(&buf[..hpos]).to_lowercase();
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| {
+                            l.strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse().ok())
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= hpos + len {
+                        break;
+                    }
+                }
+            }
+            *captured.lock().expect("capture") = String::from_utf8_lossy(&buf).to_string();
+            // DONE argmax over the fixture's operation menu.
+            let probs = [
+                "CLICK",
+                "TYPE",
+                "SET_VALUE",
+                "KEY",
+                "INVOKE",
+                "DONE",
+                "BLOCKED",
+                "WAIT",
+            ]
+            .iter()
+            .map(|k| format!("\"{k}\":{}", if *k == "DONE" { 0.93 } else { 0.01 }))
+            .collect::<Vec<_>>()
+            .join(",");
+            let resp = format!(
+                "{{\"model\":\"m\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}},\
+                 \"answers\":{{\"operation\":{{\"type\":\"choice\",\"choice\":\"DONE\",\
+                 \"confidence\":0.9,\"probabilities\":{{{probs}}}}}}}}}"
+            );
+            write!(
+                conn,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                 content-length: {}\r\nconnection: close\r\n\r\n{}",
+                resp.len(),
+                resp
+            )
+            .expect("respond");
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn choose_sends_state_questions_and_model() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let base = mock_system_one(captured.clone());
+        let client = Client::builder()
+            .api_key("k")
+            .base_url(base)
+            .compression(typesafe_sdk::Compression::None)
+            .build()
+            .expect("client");
+        let mut esc = JevEscalation::with_client(client, Some("m-x".to_owned()));
+        let outcome = esc
+            .choose(&space(), &UiGoal::new("add a todo"), &[])
+            .expect("choose");
+        let PolicyOutcome::Choice(d) = outcome else {
+            panic!("expected Choice: {outcome:?}")
+        };
+        assert_eq!(d.action_id.as_str(), "DONE");
+        // Wait for the serving thread to record the request.
+        for _ in 0..50 {
+            if !captured.lock().expect("capture").is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let body = captured.lock().expect("capture").clone();
+        let sent: Value = serde_json::from_str(body.split("\r\n\r\n").nth(1).expect("json body"))
+            .expect("request json");
+        assert_eq!(sent["model"], json!("m-x"), "{sent}");
+        assert!(
+            sent["questions"]
+                .as_object()
+                .expect("questions")
+                .contains_key("operation")
+        );
+        assert!(sent["state"]["actions"].as_array().expect("actions").len() >= 7);
     }
 
     #[test]
