@@ -59,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           # Retry only when crates.io has not indexed the previous crate yet.
-          for pkg in gpui-agent gpui-agent-recipe gpui-agent-cli; do
+          for pkg in gpui-agent gpui-agent-policy gpui-agent-recipe gpui-agent-cli; do
             echo "publishing ${pkg}"
             ok=0
             for attempt in 1 2 3 4 5 6 7 8; do
