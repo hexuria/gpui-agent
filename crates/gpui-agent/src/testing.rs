@@ -1,7 +1,7 @@
 //! In-process test host helpers for SDK / recipe E2E.
 //!
-//! Spawns [`spawn_host`](crate::server::spawn_host) on `127.0.0.1:0` and
-//! hands back an [`AgentClient`](crate::client::AgentClient). Screenshot
+//! Spawns [`spawn_host`] on `127.0.0.1:0` and
+//! hands back an [`AgentClient`]. Screenshot
 //! stays honest: hosts without a surface must return `screenshot_unavailable`.
 
 use std::net::SocketAddr;

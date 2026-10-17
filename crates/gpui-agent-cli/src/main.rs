@@ -1059,6 +1059,7 @@ mod tests {
         assert_eq!(by_exe.connect.as_deref(), Some("eBIRForms"));
     }
 
+    #[test]
     fn help_mentions_recipe_mcp_token() {
         let help = Cli::command().render_long_help().to_string();
         assert!(

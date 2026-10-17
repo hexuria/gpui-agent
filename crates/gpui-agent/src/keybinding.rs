@@ -94,14 +94,14 @@ pub fn binding_is_dangerous(entry: &KeybindingInfo) -> bool {
 }
 
 pub fn op_is_confirmed_quit(op: &Op) -> bool {
-    match op {
+    matches!(
+        op,
         Op::Keybinding {
             binding,
             confirm: true,
             ..
-        } if is_quit_binding(binding) => true,
-        _ => false,
-    }
+        } if is_quit_binding(binding)
+    )
 }
 
 pub fn keybinding_list_json(catalog: &[KeybindingInfo]) -> serde_json::Value {

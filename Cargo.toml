@@ -4,6 +4,7 @@ members = [
     "crates/gpui-agent",
     "crates/gpui-agent-cli",
     "crates/gpui-agent-recipe",
+    "crates/gpui-agent-bench",
     "crates/todo-core",
     "apps/todo",
     "apps/todo-headless",

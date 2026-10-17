@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(UiNode::navigation("n", "N").role, role::NAVIGATION);
         assert_eq!(UiNode::button("b", "B").role, role::BUTTON);
         assert_eq!(UiNode::textbox("t", "T").role, role::TEXTBOX);
-        assert_eq!(UiNode::checkbox("c", "C").with_focused(true).focused, true);
+        assert!(UiNode::checkbox("c", "C").with_focused(true).focused);
         assert_eq!(UiNode::scroll("s", "S").role, role::SCROLL);
         assert!(!UiNode::note("n", "N").with_enabled(false).enabled);
         assert_eq!(UiNode::dialog("d", "About").role, role::DIALOG);

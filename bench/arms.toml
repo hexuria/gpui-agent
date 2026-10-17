@@ -1,0 +1,26 @@
+# Arm-to-binary mapping (PRD M1.3). The Python runner and the Rust harness
+# both read this to know which binary/tool list each arm uses.
+
+[arm.a0]
+kind = "llm"
+binary = "gpui-agent"
+binary_ref = "bench-baseline"   # build the CLI from the frozen tag
+mcp_args = ["mcp"]
+tools = "baseline"
+
+[arm.a1]
+kind = "llm"
+binary = "gpui-agent"
+binary_ref = "worktree"
+mcp_args = ["mcp"]
+tools = "extended"              # snapshot{since,format:"compact"} + locate + act
+
+[arm.a2]
+kind = "local"
+driver = "gpui-agent-bench"
+goal_cmd = "gpui-agent run --goal \"$GPUI_AGENT_BENCH_GOAL\""
+
+[arm.a3]
+kind = "local"
+driver = "gpui-agent-bench"
+goal_cmd = "gpui-agent run --goal \"$GPUI_AGENT_BENCH_GOAL\" --escalate-cmd bench/escalate_claude.py"

@@ -1,9 +1,9 @@
 //! Common types for embedders. `use gpui_agent::prelude::*;`
 //!
 //! This is the SDK surface for a controllable GPUI (or headless) app:
-//! implement [`AgentHost`](crate::AgentHost), build a [`UiTree`](crate::UiTree)
-//! with [`UiNode`](crate::UiNode) helpers, then [`spawn_host`](crate::server::spawn_host)
-//! or [`spawn_mailbox`](crate::server::spawn_mailbox).
+//! implement [`AgentHost`], build a [`UiTree`]
+//! with [`UiNode`] helpers, then [`spawn_host`]
+//! or [`spawn_mailbox`].
 
 pub use crate::client::AgentClient;
 pub use crate::dispatch::{DispatchResult, assert_tree, handle_request};

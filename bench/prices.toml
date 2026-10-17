@@ -1,0 +1,14 @@
+# Price table for cost-per-passed-task (PRD §5.2).
+# Cost is computed from this file, never hard-coded.
+# Source: https://www.anthropic.com/pricing (claude-haiku-5-5, <=100K prompt)
+# Rates in USD per million tokens.
+
+[model.claude-haiku-5-5]
+input_per_mtok = 0.10
+output_per_mtok = 0.50
+# cache-write and cache-read rates: fill from the official pricing page
+# at run time if the response reports nonzero cache token counts.
+cache_write_per_mtok = 0.125
+cache_read_per_mtok = 0.01
+source = "https://www.anthropic.com/pricing"
+as_of = "2026-10-06"

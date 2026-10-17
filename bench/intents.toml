@@ -1,0 +1,421 @@
+# Labeled intent corpus for R0/R1 (PRD M1.4).
+# Each row: intent text + expected schema name (registry name) or "abstain".
+# Coverage: every resolvable schema (14 protocol ops + 5 todo invokes),
+# paraphrases, near-duplicates, typos, out-of-domain prose, and >=20 abstain rows.
+
+# --- todo.add (8) ---
+[[row]]
+intent = 'Add a todo "Buy milk"'
+expect = "todo.add"
+[[row]]
+intent = 'add a todo titled Buy milk'
+expect = "todo.add"
+[[row]]
+intent = 'create a new task: call the dentist'
+expect = "todo.add"
+[[row]]
+intent = 'new todo "Write docs"'
+expect = "todo.add"
+[[row]]
+intent = 'add "Pay rent" to my list'
+expect = "todo.add"
+[[row]]
+intent = 'todo.add "Walk the dog"'
+expect = "todo.add"
+[[row]]
+intent = 'please add a todo for me: submit taxes'
+expect = "todo.add"
+[[row]]
+intent = 'I need a new todo item for groceries'
+expect = "todo.add"
+
+# --- todo.toggle (8) ---
+[[row]]
+intent = 'Mark "Write docs" as done'
+expect = "todo.toggle"
+[[row]]
+intent = 'toggle todo id 1'
+expect = "todo.toggle"
+[[row]]
+intent = 'mark todo 3 done'
+expect = "todo.toggle"
+[[row]]
+intent = 'complete the todo "Buy milk"'
+expect = "todo.toggle"
+[[row]]
+intent = 'check off "Ship it"'
+expect = "todo.toggle"
+[[row]]
+intent = 'todo.toggle id 2'
+expect = "todo.toggle"
+[[row]]
+intent = 'uncheck "Buy milk"'
+expect = "todo.toggle"
+[[row]]
+intent = 'flip the done state of todo 7'
+expect = "todo.toggle"
+
+# --- todo.delete (8) ---
+[[row]]
+intent = 'Delete "Write docs"'
+expect = "todo.delete"
+[[row]]
+intent = 'delete todo id 4'
+expect = "todo.delete"
+[[row]]
+intent = 'remove the todo "Buy milk"'
+expect = "todo.delete"
+[[row]]
+intent = 'todo.delete "Old task"'
+expect = "todo.delete"
+[[row]]
+intent = 'get rid of "Item 42"'
+expect = "todo.delete"
+[[row]]
+intent = 'delete the item "Walk dog"'
+expect = "todo.delete"
+[[row]]
+intent = 'erase todo "Buy milk"'
+expect = "todo.delete"
+[[row]]
+intent = 'drop the task "Pay rent"'
+expect = "todo.delete"
+
+# --- todo.list (5) ---
+[[row]]
+intent = 'list all todos'
+expect = "todo.list"
+[[row]]
+intent = 'show my todos'
+expect = "todo.list"
+[[row]]
+intent = 'what is on my todo list'
+expect = "todo.list"
+[[row]]
+intent = 'todo.list'
+expect = "todo.list"
+[[row]]
+intent = 'print the current todos'
+expect = "todo.list"
+
+# --- todo.toggle_sidebar (4) ---
+[[row]]
+intent = 'Collapse the sidebar'
+expect = "todo.toggle_sidebar"
+[[row]]
+intent = 'toggle the sidebar'
+expect = "todo.toggle_sidebar"
+[[row]]
+intent = 'hide the nav sidebar'
+expect = "todo.toggle_sidebar"
+[[row]]
+intent = 'todo.toggle_sidebar'
+expect = "todo.toggle_sidebar"
+
+# --- protocol: hello (3) ---
+[[row]]
+intent = 'say hello to the app'
+expect = "hello"
+[[row]]
+intent = 'handshake with the host'
+expect = "hello"
+[[row]]
+intent = 'hello'
+expect = "hello"
+
+# --- protocol: wait (3) ---
+[[row]]
+intent = 'wait until the app is ready'
+expect = "wait"
+[[row]]
+intent = 'wait for ready'
+expect = "wait"
+[[row]]
+intent = 'block until the host is ready'
+expect = "wait"
+
+# --- protocol: wait_until (3) ---
+[[row]]
+intent = 'wait_until todo-list is visible'
+expect = "wait_until"
+[[row]]
+intent = 'wait_until the item appears'
+expect = "wait_until"
+[[row]]
+intent = 'poll until todo-add exists'
+expect = "wait_until"
+
+# --- protocol: snapshot (5) ---
+[[row]]
+intent = 'take a snapshot of the UI'
+expect = "snapshot"
+[[row]]
+intent = 'snapshot'
+expect = "snapshot"
+[[row]]
+intent = 'read the UI tree'
+expect = "snapshot"
+[[row]]
+intent = 'perceive the current screen'
+expect = "snapshot"
+[[row]]
+intent = 'grab the semantic tree'
+expect = "snapshot"
+
+# --- protocol: screenshot (4) ---
+[[row]]
+intent = 'take a screenshot'
+expect = "screenshot"
+[[row]]
+intent = 'screenshot the app to out.png'
+expect = "screenshot"
+[[row]]
+intent = 'capture a png of the window'
+expect = "screenshot"
+[[row]]
+intent = 'save a frame of the app'
+expect = "screenshot"
+
+# --- protocol: click (8) ---
+[[row]]
+intent = 'click todo-add'
+expect = "click"
+[[row]]
+intent = 'click the add button'
+expect = "click"
+[[row]]
+intent = 'press the nav-toggle-sidebar button'
+expect = "click"
+[[row]]
+intent = 'tap todo-item-1'
+expect = "click"
+[[row]]
+intent = 'click on the delete button'
+expect = "click"
+[[row]]
+intent = 'click "submit"'
+expect = "click"
+[[row]]
+intent = 'push the toggle button for todo 2'
+expect = "click"
+[[row]]
+intent = 'activate the settings button'
+expect = "click"
+
+# --- protocol: type (5) ---
+[[row]]
+intent = 'type "Buy milk" into todo-input'
+expect = "type"
+[[row]]
+intent = 'type hello into the input'
+expect = "type"
+[[row]]
+intent = 'append "world" to the text field'
+expect = "type"
+[[row]]
+intent = 'type some text in the draft box'
+expect = "type"
+[[row]]
+intent = 'enter the text "milk" in todo-input'
+expect = "type"
+
+# --- protocol: set_value (4) ---
+[[row]]
+intent = 'set value of todo-input to "milk"'
+expect = "set_value"
+[[row]]
+intent = 'set the input to "Pay rent"'
+expect = "set_value"
+[[row]]
+intent = 'fill todo-input with "new task"'
+expect = "set_value"
+[[row]]
+intent = 'replace the value of the textbox with "hi"'
+expect = "set_value"
+
+# --- protocol: key (4) ---
+[[row]]
+intent = 'press enter on todo-input'
+expect = "key"
+[[row]]
+intent = 'send key enter to todo-input'
+expect = "key"
+[[row]]
+intent = 'hit backspace in the input'
+expect = "key"
+[[row]]
+intent = 'key tab on the form'
+expect = "key"
+
+# --- protocol: keybinding (4) ---
+[[row]]
+intent = 'fire keybinding quit'
+expect = "keybinding"
+[[row]]
+intent = 'run the save shortcut'
+expect = "keybinding"
+[[row]]
+intent = 'trigger the cmd-q chord'
+expect = "keybinding"
+[[row]]
+intent = 'keybinding toggle-sidebar scope focused'
+expect = "keybinding"
+
+# --- protocol: keybindings (3) ---
+[[row]]
+intent = 'list keybindings'
+expect = "keybindings"
+[[row]]
+intent = 'show the shortcuts'
+expect = "keybindings"
+[[row]]
+intent = 'what keybindings exist'
+expect = "keybindings"
+
+# --- protocol: assert (4) ---
+[[row]]
+intent = 'assert todo-list exists'
+expect = "assert"
+[[row]]
+intent = 'check that todo-nav is visible'
+expect = "assert"
+[[row]]
+intent = 'verify page-settings is on screen'
+expect = "assert"
+[[row]]
+intent = 'assert the input field is empty'
+expect = "assert"
+
+# --- protocol: invoke (4) ---
+[[row]]
+intent = 'invoke nav.go to settings'
+expect = "invoke"
+[[row]]
+intent = 'call the invoke command sync.now'
+expect = "invoke"
+[[row]]
+intent = 'invoke a host command'
+expect = "invoke"
+[[row]]
+intent = 'run invoke health.check'
+expect = "invoke"
+
+# --- protocol: shutdown (4) ---
+[[row]]
+intent = 'shutdown the app'
+expect = "shutdown"
+[[row]]
+intent = 'tell the host to exit'
+expect = "shutdown"
+[[row]]
+intent = 'shutdown'
+expect = "shutdown"
+[[row]]
+intent = 'close the automation host'
+expect = "shutdown"
+
+# --- abstain (24): out-of-domain, ambiguous, typos, dangerous ---
+[[row]]
+intent = 'book a flight to Lisbon'
+expect = "abstain"
+[[row]]
+intent = 'what is the weather tomorrow'
+expect = "abstain"
+[[row]]
+intent = 'rm -rf /'
+expect = "abstain"
+[[row]]
+intent = 'sudo make me a sandwich'
+expect = "abstain"
+[[row]]
+intent = 'buy milk'
+expect = "abstain"
+[[row]]
+intent = 'play some music'
+expect = "abstain"
+[[row]]
+intent = 'send an email to Ana'
+expect = "abstain"
+[[row]]
+intent = 'delete everything everywhere'
+expect = "abstain"
+[[row]]
+intent = 'addd a toodo pls'
+expect = "abstain"
+[[row]]
+intent = 'toggel the sdiebar'
+expect = "abstain"
+[[row]]
+intent = 'clik the buton'
+expect = "abstain"
+[[row]]
+intent = 'snpshot'
+expect = "abstain"
+[[row]]
+intent = 'the quick brown fox jumps over the lazy dog'
+expect = "abstain"
+[[row]]
+intent = 'hola como estas'
+expect = "abstain"
+[[row]]
+intent = ''
+expect = "abstain"
+[[row]]
+intent = '   '
+expect = "abstain"
+[[row]]
+intent = 'xyzzy plugh'
+expect = "abstain"
+[[row]]
+intent = 'restart the server on port 8080'
+expect = "abstain"
+[[row]]
+intent = 'commit my changes to git'
+expect = "abstain"
+[[row]]
+intent = 'open https://example.com in the browser'
+expect = "abstain"
+[[row]]
+intent = 'how do I bake bread'
+expect = "abstain"
+[[row]]
+intent = 'select * from users where id = 1'
+expect = "abstain"
+[[row]]
+intent = 'translate this page to French'
+expect = "abstain"
+[[row]]
+intent = 'turn off the wifi'
+expect = "abstain"
+
+# --- paraphrase / near-duplicate extras ---
+[[row]]
+intent = 'please delete the todo called "Ship it"'
+expect = "todo.delete"
+[[row]]
+intent = 'I want to add "Feed cat" as a todo'
+expect = "todo.add"
+[[row]]
+intent = 'mark the task "Call Ana" complete'
+expect = "todo.toggle"
+[[row]]
+intent = 'show me what todos I have'
+expect = "todo.list"
+[[row]]
+intent = 'open up the sidebar again'
+expect = "todo.toggle_sidebar"
+[[row]]
+intent = 'snap the ui'
+expect = "abstain"
+[[row]]
+intent = 'take a shot of the screen'
+expect = "abstain"
+[[row]]
+intent = 'press the button'
+expect = "abstain"
+[[row]]
+intent = 'do the thing'
+expect = "abstain"
+[[row]]
+intent = 'help'
+expect = "abstain"
