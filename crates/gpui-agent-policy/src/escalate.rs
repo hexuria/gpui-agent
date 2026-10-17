@@ -123,9 +123,27 @@ where
         let Some(fallback) = self.fallback.as_mut() else {
             return Ok(first);
         };
+        let report = AbstainReport::of(&first);
+        if ambiguous_contenders(&report.ranked) {
+            // Two contenders share kind+label: identical rows in the menu
+            // (e.g. two "Buy milk" entries). No endpoint can tell them
+            // apart either — a pick here is a coin flip, not evidence.
+            // Paying a model for it violates abstain-over-guess.
+            return Ok(first);
+        }
         self.calls += 1;
-        fallback.decide_escalating(space, goal, history, &AbstainReport::of(&first))
+        fallback.decide_escalating(space, goal, history, &report)
     }
+}
+
+/// True when the ranked contenders contain an identical (kind, label)
+/// pair — the menu itself cannot express which of the two is meant.
+fn ambiguous_contenders(ranked: &[RankedAction]) -> bool {
+    ranked.iter().enumerate().any(|(i, a)| {
+        ranked[..i]
+            .iter()
+            .any(|b| a.kind == b.kind && a.label == b.label)
+    })
 }
 
 /// Fallback contract: receives the local abstain as evidence. The
@@ -750,5 +768,64 @@ mod tests {
             outcome,
             PolicyOutcome::Choice(_) | PolicyOutcome::Abstain { .. }
         ));
+    }
+
+    fn ranked(id: &str, kind: crate::ActionKind, label: &str) -> RankedAction {
+        RankedAction {
+            id: crate::ActionId::try_new(id).expect("id"),
+            kind,
+            label: label.to_owned(),
+            confidence_millis: 500,
+        }
+    }
+
+    fn abstain_with(ranked: Vec<RankedAction>) -> PolicyOutcome {
+        PolicyOutcome::Abstain {
+            reason: "margin".to_owned(),
+            operation_ranked: Vec::new(),
+            target_ranked: ranked,
+        }
+    }
+
+    /// Two identical "Buy milk" rows tie locally; the fallback sees the
+    /// same identical menu and can only coin-flip — so it must not run.
+    #[test]
+    fn escalating_policy_skips_fallback_on_identical_contenders() {
+        let space = space();
+        let dup = vec![
+            ranked("CLICK:m1", crate::ActionKind::Click, "Buy milk"),
+            ranked("CLICK:m2", crate::ActionKind::Click, "Buy milk"),
+        ];
+        let mut policy =
+            EscalatingPolicy::new(Stub::new(abstain_with(dup)), Some(Stub::new(choice_done())));
+        let outcome = policy
+            .decide(&space, &UiGoal::new("Delete Buy milk"), &[])
+            .expect("decide");
+        let PolicyOutcome::Abstain { reason, .. } = outcome else {
+            panic!("expected local abstain: {outcome:?}")
+        };
+        assert_eq!(reason, "margin");
+        assert_eq!(policy.calls(), 0, "identical contenders must not escalate");
+        assert_eq!(policy.fallback.as_ref().unwrap().calls, 0);
+    }
+
+    /// Same label but a different kind is still distinguishable to the
+    /// endpoint — escalation proceeds.
+    #[test]
+    fn escalating_policy_escalates_same_label_different_kind() {
+        let space = space();
+        let contenders = vec![
+            ranked("CLICK:m1", crate::ActionKind::Click, "Buy milk"),
+            ranked("TYPE:m2", crate::ActionKind::Type, "Buy milk"),
+        ];
+        let mut policy = EscalatingPolicy::new(
+            Stub::new(abstain_with(contenders)),
+            Some(Stub::new(choice_done())),
+        );
+        let outcome = policy
+            .decide(&space, &UiGoal::new("anything"), &[])
+            .expect("decide");
+        assert!(matches!(outcome, PolicyOutcome::Choice(_)));
+        assert_eq!(policy.calls(), 1);
     }
 }

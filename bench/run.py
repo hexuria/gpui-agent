@@ -11,6 +11,8 @@ Requires: ANTHROPIC_API_KEY. Model is pinned to claude-haiku-5-5.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -114,17 +116,21 @@ def seed(client_addr: str, token: str, titles: list[str]) -> None:
 
 
 def wire(addr: str, token: str, op: dict) -> dict:
+    """One request/response. v2 hosts send a `challenge` line first; the
+    reply is HMAC-SHA256(key=token, msg=nonce) hex — never the raw token."""
     host, port = addr.rsplit(":", 1)
-    req = {"v": 2, "id": "bench", "token": token, **op}
+    req = {"v": 2, "id": "bench", **op}
     with socket.create_connection((host, int(port)), timeout=5) as s:
-        s.sendall(json.dumps(req).encode() + b"\n")
-        data = b""
-        while not data.endswith(b"\n"):
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            data += chunk
-    return json.loads(data)
+        f = s.makefile("rwb")
+        first = json.loads(f.readline())
+        if first.get("op") == "challenge":
+            nonce = bytes.fromhex(first["nonce"])
+            req["auth"] = hmac.new(token.encode(), nonce, hashlib.sha256).hexdigest()
+        else:
+            req["token"] = token
+        f.write(json.dumps(req).encode() + b"\n")
+        f.flush()
+        return json.loads(f.readline())
 
 
 def ground_truth(addr: str, token: str) -> tuple[list[dict], dict]:
@@ -262,7 +268,7 @@ def run_attempt(client: anthropic.Anthropic, task: dict, arm: dict, prices: dict
             usage["output_tokens"] += getattr(u, "output_tokens", 0) or 0
             usage["cache_read_tokens"] += getattr(u, "cache_read_input_tokens", 0) or 0
             usage["cache_write_tokens"] += getattr(u, "cache_creation_input_tokens", 0) or 0
-            mcp.bytes_to_model += sum(len(json.dumps(b)) for b in resp.content)
+            mcp.bytes_to_model += sum(len(json.dumps(b.model_dump())) for b in resp.content)
             messages.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
@@ -335,7 +341,7 @@ def main() -> int:
         tasks = [t for t in tasks if t["id"] in wanted]
     prices = tomllib.loads((HERE / "prices.toml").read_text())
     system = (HERE / "prompts" / "system.md").read_text()
-    client = anthropic.Anthropic()  # needs ANTHROPIC_API_KEY
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
