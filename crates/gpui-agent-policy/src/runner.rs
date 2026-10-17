@@ -10,12 +10,13 @@
 //! `target_gone` refusal re-observes and re-decides without consuming
 //! the id — up to `max_consecutive_stale` times.
 
-use crate::action_space::{ActionKind, ActionSpace, OfferedInvoke};
+use crate::action_space::{ActionId, ActionKind, ActionSpace, OfferedInvoke};
+use crate::escalate::{CommandEscalation, ESCALATION_PROTOCOL};
 use crate::goal::{UiGoal, split_sequential_clauses};
-use crate::policy::{
-    HistoryEntry, InstinctPolicy, PolicyDecision, PolicyOutcome, RankedAction, UiPolicy,
+use crate::policy::{HistoryEntry, PolicyDecision, PolicyOutcome, RankedAction, UiPolicy};
+use crate::text::{
+    DeterministicTextResolver, TextContext, TextError, TextResolution, TextResolver,
 };
-use crate::text::{DeterministicTextResolver, TextContext, TextError, TextResolver};
 use gpui_agent::client::AgentClient;
 use gpui_agent::keybinding::KeybindingInfo;
 use gpui_agent::protocol::{DeliveryMode, Op};
@@ -47,6 +48,13 @@ impl Default for RunnerCaps {
 
 /// Pause between re-observes inside a `wait for` clause or `WAIT`.
 pub const WAIT_POLL_MS: u64 = 250;
+
+/// `kind:"text"` escalation never touches a sensitive field (M7.2):
+/// a `password` role or a password-named label keeps the deterministic
+/// `Missing` verdict.
+fn sensitive_field(role: &str, label: &str) -> bool {
+    role.eq_ignore_ascii_case("password") || label.to_lowercase().contains("password")
+}
 
 /// How one clause runs (`Act` is the default; port of aui
 /// `clause_mode`'s act/wait subset — no `while`/`if present` modes:
@@ -237,7 +245,8 @@ pub type InvokeArgs = dyn FnMut(&str, &str) -> Result<serde_json::Value, String>
 
 pub struct Runner<'a> {
     client: &'a mut AgentClient,
-    policy: InstinctPolicy,
+    policy: Box<dyn UiPolicy>,
+    text_escalation: Option<CommandEscalation>,
     delivery: DeliveryMode,
     invokes: Vec<OfferedInvoke>,
     invoke_args: &'a mut InvokeArgs,
@@ -251,14 +260,15 @@ pub struct Runner<'a> {
 impl<'a> Runner<'a> {
     pub fn new(
         client: &'a mut AgentClient,
-        policy: InstinctPolicy,
+        policy: impl UiPolicy + 'static,
         delivery: DeliveryMode,
         invokes: Vec<OfferedInvoke>,
         invoke_args: &'a mut InvokeArgs,
     ) -> Self {
         Self {
             client,
-            policy,
+            policy: Box::new(policy),
+            text_escalation: None,
             delivery,
             invokes,
             invoke_args,
@@ -266,6 +276,36 @@ impl<'a> Runner<'a> {
             wait_poll_ms: WAIT_POLL_MS,
             calls: 0,
         }
+    }
+
+    /// Optional `kind:"text"` command fallback used only when the
+    /// deterministic resolver answers [`TextError::Missing`] (M7.2);
+    /// password-role fields are never escalated.
+    pub fn with_text_escalation(mut self, escalation: Option<CommandEscalation>) -> Self {
+        self.text_escalation = escalation;
+        self
+    }
+
+    /// `kind:"text"` round-trip after a deterministic `Missing`. Never
+    /// escalates sensitive fields — a `Missing` there stays a local
+    /// abstain (M7.2).
+    fn escalate_text(
+        &mut self,
+        ctx: &TextContext,
+        field_id: &ActionId,
+    ) -> Result<TextResolution, TextError> {
+        let Some(endpoint) = self.text_escalation.as_mut() else {
+            return Err(TextError::Missing);
+        };
+        if sensitive_field(&ctx.field_role, &ctx.field_label) {
+            return Err(TextError::Missing);
+        }
+        endpoint.resolve_text(
+            &ctx.goal,
+            field_id.as_str(),
+            &ctx.field_label,
+            ctx.fingerprint(),
+        )
     }
 
     pub fn with_caps(mut self, caps: RunnerCaps) -> Self {
@@ -452,16 +492,18 @@ impl<'a> Runner<'a> {
                     } else {
                         &target_ranked
                     };
-                    return Ok(self.receipt(
-                        goal,
-                        clauses,
+                    // An ESCALATION_PROTOCOL reason is a hard error from
+                    // the endpoint (timeout / off-menu / bad wire), not a
+                    // policy abstain — the run is Blocked (M7.2).
+                    let outcome = if reason.starts_with(ESCALATION_PROTOCOL) {
+                        RunOutcome::Blocked { reason }
+                    } else {
                         RunOutcome::Abstained {
                             reason,
                             candidates: Self::candidates_of(&space, ranked, 8),
-                        },
-                        steps,
-                        rev,
-                    ));
+                        }
+                    };
+                    return Ok(self.receipt(goal, clauses, outcome, steps, rev));
                 }
             };
 
@@ -512,7 +554,14 @@ impl<'a> Runner<'a> {
                     typed: typed.clone(),
                     context_fingerprint: rev.unwrap_or(0),
                 };
-                match DeterministicTextResolver.resolve(&ctx) {
+                let resolved = match DeterministicTextResolver.resolve(&ctx) {
+                    Ok(res) => Ok(res),
+                    // M7.2: escalate only Missing — Ambiguous / Invalid /
+                    // Abstain stay local verdicts.
+                    Err(TextError::Missing) => self.escalate_text(&ctx, &decision.action_id),
+                    Err(err) => Err(err),
+                };
+                match resolved {
                     Ok(res) => payload = Some(res.text),
                     Err(err) => {
                         let reason = match err {
@@ -521,16 +570,17 @@ impl<'a> Runner<'a> {
                             TextError::Invalid(m) => format!("text_invalid:{m}"),
                             TextError::Abstain(m) => format!("text_abstain:{m}"),
                         };
-                        return Ok(self.receipt(
-                            goal,
-                            clauses,
+                        // Escalation-protocol failures are hard errors →
+                        // Blocked, matching the choose path.
+                        let outcome = if reason.contains(ESCALATION_PROTOCOL) {
+                            RunOutcome::Blocked { reason }
+                        } else {
                             RunOutcome::Abstained {
                                 reason,
                                 candidates: Self::candidates_of(&space, &decision.target_ranked, 8),
-                            },
-                            steps,
-                            rev,
-                        ));
+                            }
+                        };
+                        return Ok(self.receipt(goal, clauses, outcome, steps, rev));
                     }
                 }
             }

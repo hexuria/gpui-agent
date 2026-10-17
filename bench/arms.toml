@@ -23,4 +23,4 @@ goal_cmd = "gpui-agent run --goal \"$GPUI_AGENT_BENCH_GOAL\""
 [arm.a3]
 kind = "local"
 driver = "gpui-agent-bench"
-goal_cmd = "gpui-agent run --goal \"$GPUI_AGENT_BENCH_GOAL\" --escalate-cmd bench/escalate_claude.py"
+goal_cmd = "gpui-agent run --goal \"$GPUI_AGENT_BENCH_GOAL\" --escalate-cmd python3 bench/escalate_claude.py"

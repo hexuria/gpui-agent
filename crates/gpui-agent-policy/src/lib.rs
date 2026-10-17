@@ -18,12 +18,14 @@
 //! actions, `UiPolicy`/`InstinctPolicy` is the two-head decide ported
 //! from `aui-policy/src/instinct_policy.rs`, `TextResolver` supplies
 //! TYPE/SET_VALUE payloads, and `split_sequential_clauses` cuts
-//! `then`/`and then` goals into single intents. `escalate` (M7 abstain
-//! escalation) is still a stub.
+//! `then`/`and then` goals into single intents. `escalate` (M7) adds an
+//! optional abstain-only fallback over a closed command wire — the
+//! local policy still decides first and an abstain is never re-scored.
 #![forbid(unsafe_code)]
 
 pub mod action_space;
 pub mod arbitration;
+pub mod escalate;
 pub mod evidence;
 pub mod goal;
 pub mod policy;
@@ -34,6 +36,10 @@ pub use action_space::{
     ActionId, ActionKind, ActionSpace, ActionSpaceError, OfferedAction, OfferedInvoke,
 };
 pub use arbitration::{ArbitrationError, Choice, RankedCandidate, choose};
+pub use escalate::{
+    AbstainReport, CommandEscalation, DEFAULT_TIMEOUT, ESCALATION_PROTOCOL, EscalatingPolicy,
+    STDOUT_CAP, UiEscalate,
+};
 pub use evidence::{
     EvidenceTarget, NON_EXACT_CAP, OperationKind, UNNAMED_OPERATION_CAP, label_covers_target,
     label_names_target, lexical_overlap, name_in_intent, name_in_intent_lowered,
