@@ -36,6 +36,14 @@ jobs:
         run: cargo audit
       - name: Unit tests (no GPU)
         run: cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
+      - name: Unit tests (instinct feature)
+        run: |
+          cargo test -p gpui-agent-cli --features instinct
+          cargo test -p gpui-agent-recipe --features instinct
+      - name: Unit tests + compile (jev feature)
+        run: |
+          cargo test -p gpui-agent-cli --features jev
+          cargo clippy -p gpui-agent-cli --features jev --all-targets -- -D warnings
       - name: Headless recipe receipt (ok + session_reused)
         env:
           GPUI_AGENT: "1"
@@ -128,6 +136,19 @@ jobs:
           cargo run -q -p gpui-agent-bench -- \
             resolve --corpus bench/intents.toml --arm r0 \
             --attempts 20 --out bench/results/ci/r0.jsonl
+      - name: R1 intent corpus (instinct resolver)
+        run: |
+          cargo run -q -p gpui-agent-bench --features instinct -- \
+            resolve --corpus bench/intents.toml --arm r1 \
+            --attempts 20 --out bench/results/ci/r1.jsonl
+      - name: A2 local-policy tasks (3 attempts/task)
+        run: |
+          cargo build -q -p gpui-agent-cli --features instinct
+          export PATH="$PWD/target/debug:$PATH"
+          cargo run -q -p gpui-agent-bench -- \
+            local --tasks bench/tasks.toml --arm a2 \
+            --goal-cmd 'gpui-agent run --goal "$GPUI_AGENT_BENCH_GOAL"' \
+            --attempts 3 --out bench/results/ci/a2.jsonl
       - name: Upload bench JSONL
         uses: actions/upload-artifact@v4
         with:

@@ -96,6 +96,16 @@ impl TextResolver for DeterministicTextResolver {
                 ));
             }
 
+            // PRD M4.3: more than one candidate quote is `Ambiguous`
+            // unless the field label disambiguates — never guess the
+            // first literal (aui's `untyped[0]` fallback is weakened
+            // here deliberately).
+            if untyped.len() == 1 {
+                return Ok(TextResolution {
+                    text: untyped[0].1.clone(),
+                    context_fingerprint: context.fingerprint(),
+                });
+            }
             let label_words = ascii_words(&context.field_label);
             let selected = untyped
                 .iter()
@@ -112,7 +122,7 @@ impl TextResolver for DeterministicTextResolver {
                         .take(3)
                         .any(|word| label_words.contains(word))
                 })
-                .unwrap_or(&untyped[0]);
+                .ok_or(TextError::Ambiguous)?;
             return Ok(TextResolution {
                 text: selected.1.clone(),
                 context_fingerprint: context.fingerprint(),

@@ -287,11 +287,12 @@ pub(crate) fn tools() -> Vec<Value> {
         #[cfg(feature = "instinct")]
         tool(
             "act",
-            "[experimental, instinct] Execute ONE clause of a natural-language instruction against the observed UI. Abstains (never dispatches) when evidence is insufficient or the action is destructive. Prefer this over manual snapshot+click; use `snapshot format=compact since=<rev>` to look.",
+            "[experimental, instinct] Execute ONE clause of a natural-language instruction against the observed UI. Abstains (never dispatches) when evidence is insufficient or the action is destructive. Replies {done:{op,id,text?},rev,diff} or {abstain:{reason,candidates},rev}. Prefer this over manual snapshot+click; use `snapshot format=compact since=<rev>` to look.",
             json!({
                 "type": "object",
                 "properties": {
                     "instruction": { "type": "string", "description": "One clause, e.g. `click Add` or `type \"milk\" into What needs doing?`. `then`/`and then` chains run the first clause only." },
+                    "k": { "type": "integer", "description": "Max candidates in an abstain reply (default 5)." },
                     "delivery": { "type": "string", "enum": ["semantic", "virtual"] },
                     "schema": schema_arg()
                 },
@@ -804,9 +805,10 @@ mod instinct {
                 }
                 ActStep::Stale => {
                     return Ok(json!({
-                        "answer": "abstain",
-                        "reason": "stale_target: target kept changing between decide and dispatch",
-                        "candidates": [],
+                        "abstain": {
+                            "reason": "stale_target: target kept changing between decide and dispatch",
+                            "candidates": [],
+                        },
                     }));
                 }
             }
@@ -832,12 +834,13 @@ mod instinct {
                 operation_ranked,
             } => {
                 return Ok(ActStep::Done(json!({
-                    "answer": "abstain",
-                    "reason": reason,
-                    "candidates": if target_ranked.is_empty() {
-                        candidates_json(&obs, &operation_ranked, k)
-                    } else {
-                        candidates_json(&obs, &target_ranked, k)
+                    "abstain": {
+                        "reason": reason,
+                        "candidates": if target_ranked.is_empty() {
+                            candidates_json(&obs, &operation_ranked, k)
+                        } else {
+                            candidates_json(&obs, &target_ranked, k)
+                        },
                     },
                     "rev": obs.rev,
                 })));
@@ -849,22 +852,23 @@ mod instinct {
             .ok_or_else(|| "chosen action left the space".to_string())?
             .clone();
 
-        // Controls terminate the clause without a dispatch.
+        // Controls terminate the clause without a dispatch. `Done` is
+        // the one success control; `Blocked`/`Wait` dispatch nothing so
+        // callers get the abstain envelope with the control as reason.
         match decision.kind {
             ActionKind::Done => {
                 return Ok(ActStep::Done(
-                    json!({"answer": "done", "op": "done", "rev": obs.rev}),
+                    json!({"done": {"op": "done", "id": "DONE"}, "rev": obs.rev}),
                 ));
             }
-            ActionKind::Blocked => {
-                return Ok(ActStep::Done(
-                    json!({"answer": "blocked", "op": "blocked", "rev": obs.rev}),
-                ));
-            }
-            ActionKind::Wait => {
-                return Ok(ActStep::Done(
-                    json!({"answer": "wait", "op": "wait", "rev": obs.rev}),
-                ));
+            ActionKind::Blocked | ActionKind::Wait => {
+                return Ok(ActStep::Done(json!({
+                    "abstain": {
+                        "reason": decision.kind.as_str().to_lowercase(),
+                        "candidates": [],
+                    },
+                    "rev": obs.rev,
+                })));
             }
             _ => {}
         }
@@ -885,9 +889,10 @@ mod instinct {
                 Err(err) => {
                     let (reason, ranked) = text_abstain(&err, &decision);
                     return Ok(ActStep::Done(json!({
-                        "answer": "abstain",
-                        "reason": reason,
-                        "candidates": candidates_json(&obs, &ranked, k),
+                        "abstain": {
+                            "reason": reason,
+                            "candidates": candidates_json(&obs, &ranked, k),
+                        },
                         "rev": obs.rev,
                     })));
                 }
@@ -976,15 +981,32 @@ mod instinct {
             }
             Err(err) => return Err(err),
         }
-        let mut out = json!({
-            "answer": "done",
+        // Re-observe against the decide-time rev so the reply carries
+        // the post-dispatch rev + diff (PRD M4.5). `result` is
+        // `{"diff":…}` / `{"unchanged":true}` / `{"full":true}`.
+        let mut done = json!({
             "op": decision.kind.as_str(),
             "id": decision.action_id.as_str(),
             "confidence": decision.confidence_millis,
-            "rev": obs.rev,
         });
         if let Some(text) = text_payload {
-            out["text"] = Value::String(text);
+            done["text"] = Value::String(text);
+        }
+        let mut out = json!({ "done": done });
+        match client.snapshot_with(obs.rev, None) {
+            Ok(post) => {
+                out["rev"] = json!(post.rev);
+                if let Some(Value::Object(effect)) = post.result {
+                    for (k, v) in effect {
+                        out[k] = v;
+                    }
+                }
+            }
+            Err(err) => {
+                out["rev"] = json!(obs.rev);
+                out["diff"] = Value::Null;
+                out["diff_error"] = json!(err);
+            }
         }
         Ok(ActStep::Done(out))
     }

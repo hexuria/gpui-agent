@@ -191,6 +191,25 @@ honesty plus a `max_height_px` cap (default/max 16384). The default GUI client d
 host the agent port. Do not put tokens or CI secrets on the painted
 window. See [RECORDING.md](RECORDING.md).
 
+### Escalation endpoints (`instinct`/`jev` features)
+
+`run --goal --escalate-cmd <program>` spawns the user-chosen program
+once per local abstain over a closed JSON stdin/stdout wire (64 KiB
+cap, 30 s default timeout). The child **inherits the full parent
+environment**, including `GPUI_AGENT_TOKEN` and `TYPESAFE_API_KEY` —
+the endpoint is the same trust class as a user-held token, identical to
+the recipe/M4 surface above. Never point `--escalate-cmd` at a program
+you would not hand those variables to.
+
+The wire carries goal text, offered action menu, and recent history —
+not secrets. Replies are closed-menu: off-menu id/op, extra fields,
+non-JSON, timeout, or over-cap output is a hard error and dispatches
+nothing (`Blocked`).
+
+`--escalate jev` calls the System One API over HTTPS with
+`TYPESAFE_API_KEY`; that key is read by the SDK client only and is
+never sent to the host or logged.
+
 ### Logging of secrets
 
 Startup logs print the bind address, not the token. Responses do not

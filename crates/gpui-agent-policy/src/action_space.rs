@@ -160,6 +160,42 @@ pub struct OfferedInvoke {
     pub dangerous: bool,
 }
 
+/// Observed control state of a node-bound action's target at build
+/// time — echoed into the `choose` escalation wire as `state` so the
+/// fallback sees the same evidence the local policy scored (PRD M7.2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeState {
+    pub value: Option<String>,
+    pub checked: Option<bool>,
+    pub states: Vec<String>,
+}
+
+impl NodeState {
+    fn of(node: &UiNode) -> Option<Self> {
+        let state = Self {
+            value: node.value.clone(),
+            checked: node.checked,
+            states: node.states.clone(),
+        };
+        (state != Self::default()).then_some(state)
+    }
+
+    /// `{"value":…,"checked":…,"states":[…]}` with absent fields omitted.
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        if let Some(value) = &self.value {
+            obj.insert("value".to_owned(), serde_json::json!(value));
+        }
+        if let Some(checked) = self.checked {
+            obj.insert("checked".to_owned(), serde_json::json!(checked));
+        }
+        if !self.states.is_empty() {
+            obj.insert("states".to_owned(), serde_json::json!(self.states));
+        }
+        serde_json::Value::Object(obj)
+    }
+}
+
 /// One offered action: a node target, a named entity (binding/schema),
 /// or a terminal control.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,6 +214,9 @@ pub struct OfferedAction {
     /// only for node-bound kinds; `act` sends it as
     /// `expect_fingerprint` on every mutating dispatch.
     fingerprint: Option<u64>,
+    /// Observed `value`/`checked`/`states` of the target (M7 wire).
+    /// `None` for entities, controls, and nodes with no state.
+    state: Option<NodeState>,
 }
 
 impl OfferedAction {
@@ -203,6 +242,10 @@ impl OfferedAction {
     /// Build-time `UiNode::fingerprint` for node-bound actions (M5).
     pub fn fingerprint(&self) -> Option<u64> {
         self.fingerprint
+    }
+    /// Observed control state of the target at build time.
+    pub fn state(&self) -> Option<&NodeState> {
+        self.state.as_ref()
     }
 }
 
@@ -273,6 +316,7 @@ impl ActionSpace {
                     role: Some("keybinding".to_owned()),
                     dangerous: binding_is_dangerous(kb),
                     fingerprint: None,
+                    state: None,
                 },
             );
         }
@@ -288,6 +332,7 @@ impl ActionSpace {
                     role: Some("invoke".to_owned()),
                     dangerous: invoke.dangerous,
                     fingerprint: None,
+                    state: None,
                 },
             );
         }
@@ -308,6 +353,7 @@ impl ActionSpace {
                     role: None,
                     dangerous: false,
                     fingerprint: None,
+                    state: None,
                 },
             );
         }
@@ -445,6 +491,7 @@ fn collect_node(
         let parent_role = parent.map(|p| p.role.as_str());
         let parent_id = parent.map(|p| p.id.as_str());
         let fingerprint = Some(node.fingerprint(parent_id));
+        let state = NodeState::of(node);
         let clickable = matches!(
             node.role.as_str(),
             "button" | "link" | "tab" | "checkbox" | "switch"
@@ -461,6 +508,7 @@ fn collect_node(
                     role: Some(node.role.clone()),
                     dangerous: false,
                     fingerprint,
+                    state: state.clone(),
                 },
             );
         }
@@ -476,6 +524,7 @@ fn collect_node(
                         role: Some(node.role.clone()),
                         dangerous: false,
                         fingerprint,
+                        state: state.clone(),
                     },
                 );
             }
@@ -492,6 +541,7 @@ fn collect_node(
                     role: Some(node.role.clone()),
                     dangerous: false,
                     fingerprint,
+                    state,
                 },
             );
         }

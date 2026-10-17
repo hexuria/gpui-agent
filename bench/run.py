@@ -126,8 +126,8 @@ def wire(addr: str, token: str, op: dict) -> dict:
         if first.get("op") == "challenge":
             nonce = bytes.fromhex(first["nonce"])
             req["auth"] = hmac.new(token.encode(), nonce, hashlib.sha256).hexdigest()
-        else:
-            req["token"] = token
+        # No challenge → v1 host: it cannot authenticate us anyway, and
+        # PROTOCOL.md forbids putting the raw token on the wire.
         f.write(json.dumps(req).encode() + b"\n")
         f.flush()
         return json.loads(f.readline())

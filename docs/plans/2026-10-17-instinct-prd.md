@@ -526,3 +526,34 @@ Everything else is in scope for the executor without asking.
 | Haiku performs differently with new tool descriptions | Both arms share the system prompt. Existing tool definitions stay byte-identical, and A1 only adds tools. |
 | Bench flakiness | Fresh daemon per attempt, harness-side caps, n=5 or n=20, and medians plus p90 instead of single runs. |
 | crates.io publish delayed | M1 and M3 proceed. M2 develops behind `[patch.crates-io]` but doesn't merge until published. |
+
+## 11. Deviations from this PRD (as implemented)
+
+Decisions that diverged from the text above, each deliberate and verified:
+
+- **Feature defaults stay opt-in.** §4's matrix (CLI `instinct` default-on,
+  recipe flipped on in M2.6) was superseded by the explicit backward-compat
+  requirement: existing users get zero behavior change unless they build with
+  `--features instinct`/`jev`. GATE-R passed; the flip was never applied.
+- **Ambiguity guard (M7+).** When two ranked contenders share the same
+  `(kind, label)` — e.g. two identical `Buy milk` rows — no fallback can
+  disambiguate them either, so `EscalatingPolicy` keeps the local abstain
+  and never calls the endpoint. Stricter than M7.1's "fallback runs on every
+  abstain"; proven necessary by the live A4 T08 bug (5/5 wrong picks).
+- **`snapshot` tool description/schema rewritten** — the `since`/`format`/
+  `fingerprints` params required a schema change anyway; the description
+  now teaches the cheap path (M4.5 guidance).
+- **Extended NL machinery beyond aui port parity:** pronoun substitution,
+  `wait for` clause splitting, `on_screen` matching, and unquoted
+  `type X into F` / `fill F with X` payload synthesis in the resolver.
+- **TextResolver is spec-strict, not aui-strict:** with multiple untyped
+  quoted literals and no label-adjacent disambiguation it returns
+  `Ambiguous` (this PRD's M4.3) instead of aui's `untyped[0]` fallback.
+- **`jev` uses `f64` to validate reply probability sums** — a carve-out
+  from I5's "no floats in the decision path": the f64 arithmetic is
+  post-decision reply validation only, never in local scoring.
+- **`act` keeps `k` as an abstain-candidates cap** (declared in the tool
+  schema) and adds `confidence` inside `done` — additive to M4.5's shape.
+- **Stale bound: `max_consecutive_stale = 2` bounds re-decides** on both
+  `act` and the runner (M5.3's "at most twice"), so each surface allows
+  two re-observe+re-decide rounds before abstaining.

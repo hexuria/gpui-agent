@@ -184,6 +184,9 @@ fn build_questions(
             if let Some(role) = a.role() {
                 action["role"] = json!(role);
             }
+            if let Some(state) = a.state() {
+                action["state"] = state.to_json();
+            }
             action
         })
         .collect();

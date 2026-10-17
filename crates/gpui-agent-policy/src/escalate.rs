@@ -11,7 +11,7 @@
 //! Request `choose`:
 //! `{"v":1,"kind":"choose","goal","clause","actions":[…],"history":[…],
 //!   "abstain":{"reason","ranked":[…]}}` — every action is `{id,op}` plus
-//! optional `role`/`name`.
+//! optional `role`/`name`/`state` (observed control state).
 //!
 //! Request `text` (field payload on deterministic [`TextError::Missing`]):
 //! `{"v":1,"kind":"text","goal","clause","field":{"id","name"}}`
@@ -274,6 +274,9 @@ impl CommandEscalation {
                     json!({"id": a.id().as_str(), "op": a.kind().as_str(), "name": a.label()});
                 if let Some(role) = a.role() {
                     action["role"] = json!(role);
+                }
+                if let Some(state) = a.state() {
+                    action["state"] = state.to_json();
                 }
                 action
             })
@@ -898,6 +901,50 @@ mod tests {
         assert!(!req["actions"].as_array().expect("actions").is_empty());
         assert_eq!(req["abstain"]["reason"], "margin");
         assert_eq!(req["abstain"]["ranked"][0]["id"], "CLICK:a");
+    }
+
+    /// PRD M7.2: `actions[]` carries observed control `state` so the
+    /// fallback scores the same evidence the local policy saw.
+    #[test]
+    fn choose_request_actions_carry_state() {
+        let mut field = UiNode::textbox("input", "Name");
+        field.value = Some("Ana".to_owned());
+        let mut toggle = UiNode::new("t1", "checkbox", "Done");
+        toggle.checked = Some(true);
+        toggle.states = vec!["expanded".to_owned()];
+        let tree = UiTree {
+            app: "todo".to_owned(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            rev: Some(1),
+            nodes: vec![
+                UiNode::window("w", "App").with_children(vec![boxed(field), boxed(toggle)]),
+            ],
+        };
+        let req = CommandEscalation::choose_request(
+            &ActionSpace::from_tree(&tree, &[], &[]),
+            &UiGoal::new("g"),
+            &[],
+            &AbstainReport::default(),
+        );
+        let actions = req["actions"].as_array().expect("actions");
+        let ty = actions
+            .iter()
+            .find(|a| a["id"] == json!("TYPE:input"))
+            .expect("TYPE:input offered");
+        assert_eq!(ty["state"]["value"], "Ana");
+        let click = actions
+            .iter()
+            .find(|a| a["id"] == json!("CLICK:t1"))
+            .expect("CLICK:t1 offered");
+        assert_eq!(click["state"]["checked"], true);
+        assert_eq!(click["state"]["states"][0], "expanded");
+        // Controls carry no state.
+        let done = actions
+            .iter()
+            .find(|a| a["id"] == json!("DONE"))
+            .expect("DONE offered");
+        assert!(done.get("state").is_none());
     }
 
     #[test]

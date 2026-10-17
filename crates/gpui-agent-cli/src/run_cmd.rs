@@ -13,7 +13,7 @@ use gpui_agent_policy::{
     Runner, UiPolicy,
 };
 use gpui_agent_recipe::{Effect, SchemaKind, invoke_args, registry_from_schema_paths};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 /// Options for `gpui-agent run` (M6 + M7/M8 escalation knobs).
 pub struct RunOpts<'a> {
@@ -162,6 +162,5 @@ fn print_receipt(receipt: &RunReceipt, json_out: bool) -> Result<()> {
         "engine: gpui-agent-policy {} / instinct {}",
         receipt.engine.policy, receipt.engine.instinct
     );
-    let _ = json!(receipt); // keep serde derive reachable pre-M7
     Ok(())
 }
