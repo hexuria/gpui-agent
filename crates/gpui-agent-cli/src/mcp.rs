@@ -621,14 +621,14 @@ fn parse_assert_spec(args: &Value) -> Result<AssertSpec, String> {
 #[cfg(feature = "instinct")]
 mod instinct {
     use super::*;
+    use gpui_agent::dispatch::is_stale_dispatch_error;
     use gpui_agent::keybinding::KeybindingInfo;
-    use gpui_agent::protocol::Response;
     use gpui_agent_policy::{
         ActionKind, ActionSpace, DeterministicTextResolver, InstinctPolicy, OfferedInvoke,
         PolicyOutcome, RankedAction, TextContext, TextError, TextResolver, UiGoal, UiPolicy,
-        split_sequential_clauses,
+        op_for_decision, split_sequential_clauses, top_candidates,
     };
-    use gpui_agent_recipe::{Effect, SchemaKind, invoke_args};
+    use gpui_agent_recipe::invoke_args;
 
     /// One observation + decision. Returned so `act` can revalidate and
     /// dispatch exactly once.
@@ -647,15 +647,7 @@ mod instinct {
             return Ok(Vec::new());
         }
         let registry = registry_from_schema_paths(&paths)?;
-        Ok(registry
-            .iter()
-            .filter(|s| s.kind == SchemaKind::Invoke)
-            .map(|s| OfferedInvoke {
-                name: s.name.clone(),
-                description: format!("{} {}", s.description, s.keywords.join(" ")),
-                dangerous: s.effects.contains(&Effect::Exit),
-            })
-            .collect())
+        Ok(crate::instinct_wiring::offered_invokes(&registry))
     }
 
     fn observe(
@@ -668,7 +660,7 @@ mod instinct {
             .tree
             .ok_or_else(|| "host returned no ui tree".to_string())?;
         let rev = snap.rev.or(tree.rev);
-        let keybindings = keybinding_catalog(client)?;
+        let keybindings = client.keybinding_catalog()?;
         let invokes = offered_invokes(args, schema_paths)?;
         let space = ActionSpace::from_tree(&tree, &keybindings, &invokes);
         Ok(Observed {
@@ -676,20 +668,6 @@ mod instinct {
             keybindings,
             space,
         })
-    }
-
-    fn keybinding_catalog(client: &mut AgentClient) -> Result<Vec<KeybindingInfo>, String> {
-        let resp = client.keybindings()?;
-        let rows = resp
-            .result
-            .as_ref()
-            .and_then(|r| r.get("keybindings"))
-            .cloned()
-            .unwrap_or(Value::Null);
-        if rows.is_null() {
-            return Ok(Vec::new());
-        }
-        serde_json::from_value(rows).map_err(|err| format!("keybinding catalog: {err}"))
     }
 
     fn decide(
@@ -703,23 +681,19 @@ mod instinct {
             .map_err(|err| err.to_string())
     }
 
+    /// Same rows as `top_candidates`, serialized under the MCP `act`
+    /// envelope's key names (`confidence`, role always present).
     fn candidates_json(obs: &Observed, ranked: &[RankedAction], k: usize) -> Value {
         Value::Array(
-            ranked
+            top_candidates(&obs.space, ranked, k)
                 .iter()
-                .take(k)
-                .map(|r| {
-                    let role = obs
-                        .space
-                        .get(&r.id)
-                        .and_then(|a| a.role())
-                        .unwrap_or_default();
+                .map(|c| {
                     json!({
-                        "id": r.id.as_str(),
-                        "op": r.kind.as_str(),
-                        "role": role,
-                        "name": r.label,
-                        "confidence": r.confidence_millis,
+                        "id": c.id,
+                        "op": c.op,
+                        "role": c.role,
+                        "name": c.name,
+                        "confidence": c.confidence_millis,
                     })
                 })
                 .collect(),
@@ -902,81 +876,20 @@ mod instinct {
         // M5: node-bound mutating ops carry the build-time fingerprint
         // as `expect_fingerprint`; the host recomputes it on the
         // dispatch path in the same call — that atomic check replaces
-        // M4.4's extra snapshot + role/name re-read.
-        let required_target = || {
-            action
-                .target()
-                .map(str::to_owned)
-                .ok_or_else(|| format!("{} has no dispatch target", decision.action_id))
-        };
-        let fingerprinted = |op: Op| -> Result<Op, String> {
-            let fp = action
-                .fingerprint()
-                .ok_or_else(|| format!("{} has no fingerprint", decision.action_id))?;
-            Ok(op.with_fingerprint(fp))
-        };
-        let resp: Result<Response, String> = match decision.kind {
-            ActionKind::Click => {
-                let op = fingerprinted(Op::Click {
-                    target: required_target()?,
-                    delivery,
-                    expect_fingerprint: None,
-                })?;
-                client.expect_ok(op)
-            }
-            ActionKind::Type => {
-                let op = fingerprinted(Op::Type {
-                    target: required_target()?,
-                    text: text_payload.clone().unwrap_or_default(),
-                    delivery,
-                    expect_fingerprint: None,
-                })?;
-                client.expect_ok(op)
-            }
-            ActionKind::SetValue => {
-                let op = fingerprinted(Op::SetValue {
-                    target: required_target()?,
-                    value: text_payload.clone().unwrap_or_default(),
-                    expect_fingerprint: None,
-                })?;
-                client.expect_ok(op)
-            }
-            ActionKind::Key => {
-                let op = fingerprinted(Op::Key {
-                    target: required_target()?,
-                    key: key_of(&action)?,
-                    delivery,
-                    expect_fingerprint: None,
-                })?;
-                client.expect_ok(op)
-            }
-            ActionKind::Keybinding => {
-                let id = required_target()?;
-                let kb = obs
-                    .keybindings
-                    .iter()
-                    .find(|kb| kb.id == id)
-                    .ok_or_else(|| format!("keybinding `{id}` not in catalog"))?;
-                client.keybinding(
-                    kb.id.clone(),
-                    kb.scope,
-                    Some(kb.chord.clone()),
-                    false,
-                    false,
-                )
-            }
-            ActionKind::Invoke => {
-                let name = required_target()?;
-                let invoke_args = invoke_args_for(&name, clause, args, schema_paths)?;
-                client.invoke(name, invoke_args)
-            }
-            ActionKind::Done | ActionKind::Blocked | ActionKind::Wait => unreachable!(),
-            // Fail closed on kinds added after this build.
-            _ => return Err(format!("cannot dispatch kind {}", decision.kind)),
-        };
-        match resp {
+        // M4.4's extra snapshot + role/name re-read. The op table is
+        // shared with `run --goal` via `op_for_decision`.
+        let op = op_for_decision(
+            &decision,
+            &action,
+            text_payload.as_deref(),
+            delivery,
+            clause,
+            &obs.keybindings,
+            |name, clause| invoke_args_for(name, clause, args, schema_paths),
+        )?;
+        match client.expect_ok(op) {
             Ok(_) => {}
-            Err(err) if err.starts_with("stale_target") || err.starts_with("target_gone") => {
+            Err(err) if is_stale_dispatch_error(&err) => {
                 return Ok(ActStep::Stale);
             }
             Err(err) => return Err(err),
@@ -1024,16 +937,6 @@ mod instinct {
             },
             decision.target_ranked.clone(),
         )
-    }
-
-    /// `KEY:<id>:<key>` → the key suffix (`<id>` may itself hold `:`,
-    /// so split from the right).
-    fn key_of(action: &gpui_agent_policy::OfferedAction) -> Result<String, String> {
-        let id = action.id().as_str();
-        id.strip_prefix("KEY:")
-            .and_then(|rest| rest.rsplit_once(':'))
-            .map(|(_, key)| key.to_owned())
-            .ok_or_else(|| format!("bad key action id {id}"))
     }
 
     fn invoke_args_for(

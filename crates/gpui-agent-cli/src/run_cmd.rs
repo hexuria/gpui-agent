@@ -12,7 +12,7 @@ use gpui_agent_policy::{
     CommandEscalation, EscalatingPolicy, InstinctPolicy, OfferedInvoke, Profile, RunReceipt,
     Runner, UiPolicy,
 };
-use gpui_agent_recipe::{Effect, SchemaKind, invoke_args, registry_from_schema_paths};
+use gpui_agent_recipe::{invoke_args, registry_from_schema_paths};
 use serde_json::Value;
 
 /// Options for `gpui-agent run` (M6 + M7/M8 escalation knobs).
@@ -49,16 +49,7 @@ pub fn run(mut client: AgentClient, opts: RunOpts<'_>) -> Result<()> {
     };
     let invokes: Vec<OfferedInvoke> = registry
         .as_ref()
-        .map(|r| {
-            r.iter()
-                .filter(|s| s.kind == SchemaKind::Invoke)
-                .map(|s| OfferedInvoke {
-                    name: s.name.clone(),
-                    description: format!("{} {}", s.description, s.keywords.join(" ")),
-                    dangerous: s.effects.contains(&Effect::Exit),
-                })
-                .collect()
-        })
+        .map(crate::instinct_wiring::offered_invokes)
         .unwrap_or_default();
     // Invoke args resolve against the same registry, from the clause text.
     let mut args_for = move |name: &str, clause: &str| -> Result<Value, String> {
@@ -102,9 +93,9 @@ pub fn run(mut client: AgentClient, opts: RunOpts<'_>) -> Result<()> {
     .with_text_escalation(escalation)
     .run(goal)
     .map_err(|e| anyhow!("{e}"))?;
-    let code = exit_code_of(&receipt);
+    let code = receipt.outcome_kind.exit_code();
     print_receipt(&receipt, json_out)?;
-    std::process::exit(code);
+    std::process::exit(code.into());
 }
 
 /// `--escalate <engine>` → the named fallback. `jev` needs feature
@@ -126,14 +117,6 @@ fn jev_policy(_profile: Profile, engine: &str) -> Result<Box<dyn UiPolicy>> {
     Err(anyhow!(
         "--escalate {engine} requires this binary to be built with feature `jev`"
     ))
-}
-
-fn exit_code_of(receipt: &RunReceipt) -> i32 {
-    match receipt.outcome.as_str() {
-        "done" => 0,
-        "blocked" | "abstained" | "cap_hit" => 2,
-        _ => 1,
-    }
 }
 
 fn print_receipt(receipt: &RunReceipt, json_out: bool) -> Result<()> {

@@ -69,8 +69,10 @@ impl ActionKind {
 
     /// Controls name the app state itself; every other kind binds an
     /// entity (node, binding, schema) picked by the target head.
+    /// Delegates to [`OperationKind::is_control`] so the two predicates
+    /// can't drift (no `ActionKind` maps to the scroll vocabulary).
     pub const fn is_control(self) -> bool {
-        matches!(self, Self::Done | Self::Blocked | Self::Wait)
+        self.operation_kind().is_control()
     }
 
     /// The evidence [`OperationKind`] this kind scores under.
@@ -246,6 +248,19 @@ impl OfferedAction {
     /// Observed control state of the target at build time.
     pub fn state(&self) -> Option<&NodeState> {
         self.state.as_ref()
+    }
+
+    /// The key name out of a `KEY:<node>:<key>` id triple. `rsplit`
+    /// keeps `:`-bearing node ids working. Errors for non-`KEY` ids
+    /// and `KEY:` ids missing the key segment.
+    pub fn key(&self) -> Result<&str, String> {
+        let id = self.id.as_str();
+        let rest = id
+            .strip_prefix("KEY:")
+            .ok_or_else(|| format!("not a key action id: `{id}`"))?;
+        rest.rsplit_once(':')
+            .map(|(_, key)| key)
+            .ok_or_else(|| format!("malformed key id: `{id}`"))
     }
 }
 

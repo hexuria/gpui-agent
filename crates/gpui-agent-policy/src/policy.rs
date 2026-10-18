@@ -102,6 +102,18 @@ pub struct HistoryEntry {
     pub verification: String,
 }
 
+impl HistoryEntry {
+    /// The `{op, id, effect}` escalation-wire row — shared by the
+    /// `choose` request and the jev `state.recent_actions` payload.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "op": self.kind.as_str(),
+            "id": self.action_id.as_str(),
+            "effect": self.verification,
+        })
+    }
+}
+
 /// Policy over a finite [`ActionSpace`].
 pub trait UiPolicy {
     fn decide(

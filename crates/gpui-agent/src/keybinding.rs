@@ -29,6 +29,19 @@ pub struct KeybindingInfo {
 }
 
 impl KeybindingInfo {
+    /// Parse the `keybindings` op's `result` payload into a catalog
+    /// (`null`/absent `keybindings` field → empty). Shared by
+    /// `AgentClient::keybinding_catalog` and the policy runner so the
+    /// envelope is parsed once.
+    pub fn catalog_from(result: Option<&serde_json::Value>) -> Result<Vec<Self>, String> {
+        match result.and_then(|r| r.get("keybindings")).cloned() {
+            None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+            Some(v) => {
+                serde_json::from_value(v).map_err(|err| format!("bad keybindings response: {err}"))
+            }
+        }
+    }
+
     pub fn new(
         id: impl Into<String>,
         chord: impl Into<String>,
