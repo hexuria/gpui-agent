@@ -281,12 +281,7 @@ impl CommandEscalation {
                 action
             })
             .collect();
-        let history: Vec<Value> = history
-            .iter()
-            .map(|h| {
-                json!({"op": h.kind.as_str(), "id": h.action_id.as_str(), "effect": h.verification})
-            })
-            .collect();
+        let history: Vec<Value> = history.iter().map(HistoryEntry::to_json).collect();
         let ranked: Vec<Value> = abstain
             .ranked
             .iter()

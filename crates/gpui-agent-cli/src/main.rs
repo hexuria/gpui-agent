@@ -1,3 +1,5 @@
+#[cfg(feature = "instinct")]
+mod instinct_wiring;
 mod mcp;
 mod recipe_cmd;
 #[cfg(feature = "instinct")]

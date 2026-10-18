@@ -3,14 +3,16 @@
 //! since+format over the real MCP stdio surface.
 #![cfg(feature = "instinct")]
 
+mod common;
+
+use common::Todo;
+
+const TOKEN: &str = "m4-token";
+
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Mutex};
 
-use gpui_agent::protocol::PlatformKind;
-use gpui_agent::server::spawn_host;
 use serde_json::{Value, json};
-use todo_core::TodoStore;
 
 fn cli_bin() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gpui-agent"));
@@ -93,25 +95,10 @@ impl Drop for Mcp {
     }
 }
 
-fn spawn_todo() -> (
-    String,
-    Arc<std::sync::atomic::AtomicBool>,
-    Arc<Mutex<TodoStore>>,
-) {
-    let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-    let (addr, shutdown) = spawn_host(
-        "127.0.0.1:0".parse().unwrap(),
-        Some("m4-token".into()),
-        store.clone(),
-    )
-    .expect("bind");
-    (addr.to_string(), shutdown, store)
-}
-
 #[test]
 fn tools_list_includes_locate_and_act() {
-    let (addr, shutdown, _store) = spawn_todo();
-    let mut mcp = Mcp::spawn(&addr, "m4-token");
+    let todo = Todo::spawn(TOKEN);
+    let mut mcp = Mcp::spawn(&todo.addr, TOKEN);
     let resp = mcp.rpc("tools/list", json!({}));
     let names: Vec<&str> = resp["result"]["tools"]
         .as_array()
@@ -122,13 +109,12 @@ fn tools_list_includes_locate_and_act() {
     for want in ["locate", "act", "snapshot", "click"] {
         assert!(names.contains(&want), "missing {want} in {names:?}");
     }
-    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[test]
 fn locate_and_act_drive_todo_flow() {
-    let (addr, shutdown, store) = spawn_todo();
-    let mut mcp = Mcp::spawn(&addr, "m4-token");
+    let todo = Todo::spawn(TOKEN);
+    let mut mcp = Mcp::spawn(&todo.addr, TOKEN);
 
     let located = mcp.call("locate", json!({ "query": "click Add" }));
     assert_eq!(located["answer"], "choice", "{located}");
@@ -152,21 +138,14 @@ fn locate_and_act_drive_todo_flow() {
     assert_eq!(clicked["done"]["op"], "CLICK", "{clicked}");
     assert_eq!(clicked["done"]["id"], "CLICK:todo-add", "{clicked}");
 
-    let items: Vec<String> = store
-        .lock()
-        .unwrap()
-        .items()
-        .iter()
-        .map(|t| t.title.clone())
-        .collect();
+    let items = todo.titles();
     assert_eq!(items, ["Buy milk"], "store must hold the new todo");
-    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[test]
 fn act_abstains_without_dispatch() {
-    let (addr, shutdown, store) = spawn_todo();
-    let mut mcp = Mcp::spawn(&addr, "m4-token");
+    let todo = Todo::spawn(TOKEN);
+    let mut mcp = Mcp::spawn(&todo.addr, TOKEN);
 
     // Nothing named "settings gear" → abstain, and no node is touched.
     let out = mcp.call(
@@ -177,7 +156,7 @@ fn act_abstains_without_dispatch() {
         !out["abstain"]["reason"].as_str().unwrap_or("").is_empty(),
         "{out}"
     );
-    assert!(store.lock().unwrap().items().is_empty());
+    assert!(todo.titles().is_empty());
 
     // Destructive keybinding is offered but never auto-chosen.
     let quit = mcp.call("act", json!({ "instruction": "app quit keybinding" }));
@@ -185,13 +164,12 @@ fn act_abstains_without_dispatch() {
     // The host is still alive — prove no dispatch happened.
     let hello = mcp.call("hello", json!({}));
     assert_eq!(hello["ok"], true, "{hello}");
-    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[test]
 fn snapshot_since_and_format_work() {
-    let (addr, shutdown, _store) = spawn_todo();
-    let mut mcp = Mcp::spawn(&addr, "m4-token");
+    let todo = Todo::spawn(TOKEN);
+    let mut mcp = Mcp::spawn(&todo.addr, TOKEN);
 
     let first = mcp.call("snapshot", json!({}));
     assert_eq!(first["ok"], true, "{first}");
@@ -207,5 +185,4 @@ fn snapshot_since_and_format_work() {
 
     let diff = mcp.call("snapshot", json!({ "since": rev }));
     assert_eq!(diff["ok"], true, "{diff}");
-    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }

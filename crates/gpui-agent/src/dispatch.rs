@@ -25,6 +25,18 @@ impl DispatchResult {
     }
 }
 
+/// Fingerprint-gate error prefixes (`<prefix>: <detail>`). Classify with
+/// [`is_stale_dispatch_error`] so callers match the token, not wording.
+pub const STALE_TARGET: &str = "stale_target";
+/// Fingerprint-gate prefix for targets gone from the tree entirely.
+pub const TARGET_GONE: &str = "target_gone";
+
+/// True for fingerprint-gate failures eligible for bounded re-decision.
+/// Anything else (auth, bad op, host errors) is terminal, not retried.
+pub fn is_stale_dispatch_error(err: &str) -> bool {
+    err.starts_with(STALE_TARGET) || err.starts_with(TARGET_GONE)
+}
+
 /// Version + optional HMAC gate. Call this before dispatching,
 /// including on the mailbox path where virtual ops skip [`handle_request`].
 pub fn authorize_request(
@@ -249,14 +261,14 @@ pub fn handle_request_cached(
                     None => {
                         return Response::err(
                             req.id,
-                            format!("target_gone: `{target}` is no longer in the tree"),
+                            format!("{TARGET_GONE}: `{target}` is no longer in the tree"),
                         );
                     }
                     Some(actual) if actual != expected => {
                         return Response::err(
                             req.id,
                             format!(
-                                "stale_target: `{target}` changed between snapshot and dispatch"
+                                "{STALE_TARGET}: `{target}` changed between snapshot and dispatch"
                             ),
                         );
                     }

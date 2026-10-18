@@ -10,7 +10,7 @@
 //! `target_gone` refusal re-observes and re-decides without consuming
 //! the id — up to `max_consecutive_stale` times.
 
-use crate::action_space::{ActionId, ActionKind, ActionSpace, OfferedInvoke};
+use crate::action_space::{ActionId, ActionKind, ActionSpace, OfferedAction, OfferedInvoke};
 use crate::escalate::{CommandEscalation, ESCALATION_PROTOCOL};
 use crate::goal::{UiGoal, split_sequential_clauses};
 use crate::policy::{HistoryEntry, PolicyDecision, PolicyOutcome, RankedAction, UiPolicy};
@@ -162,8 +162,35 @@ fn substitute_pronouns(clause: &str, typed: &[String]) -> String {
 pub struct Candidate {
     pub id: String,
     pub op: String,
+    /// Target role at offer time (`""` for entity-bound/controls).
+    pub role: String,
     pub name: String,
     pub confidence_millis: i16,
+}
+
+/// The best-`k` rows of `ranked` for abstain evidence — shared
+/// construction for `run --goal` receipts and MCP `act` replies, which
+/// serialize the same row under different key names.
+pub fn top_candidates(space: &ActionSpace, ranked: &[RankedAction], k: usize) -> Vec<Candidate> {
+    ranked
+        .iter()
+        .take(k)
+        .map(|r| {
+            let offered = space.get(&r.id);
+            Candidate {
+                id: r.id.as_str().to_owned(),
+                op: r.kind.as_str().to_owned(),
+                role: offered
+                    .and_then(|a| a.role())
+                    .unwrap_or_default()
+                    .to_owned(),
+                name: offered
+                    .map(|a| a.label().to_owned())
+                    .unwrap_or_else(|| r.label.clone()),
+                confidence_millis: r.confidence_millis,
+            }
+        })
+        .collect()
 }
 
 /// One executed (or refused) step — receipt rows are deterministic:
@@ -222,6 +249,11 @@ impl RunOutcome {
 pub struct RunReceipt {
     pub goal: String,
     pub clauses: Vec<String>,
+    /// The `outcome` label's enum — kept alongside the serialized
+    /// string so callers reuse `RunOutcome::exit_code` instead of
+    /// re-matching labels.
+    #[serde(skip_serializing)]
+    pub outcome_kind: RunOutcome,
     pub outcome: String,
     pub reason: Option<String>,
     pub candidates: Vec<Candidate>,
@@ -376,18 +408,10 @@ impl<'a> Runner<'a> {
         d.added.is_empty() && d.removed.is_empty() && d.changed.is_empty()
     }
 
+    /// Fetches via `self.rpc` so the op lands on the M6.4 call budget.
     fn keybinding_catalog(&mut self) -> Result<Vec<KeybindingInfo>, String> {
         let resp = self.rpc(Op::Keybindings)?;
-        let rows = resp
-            .result
-            .as_ref()
-            .and_then(|r| r.get("keybindings"))
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        if rows.is_null() {
-            return Ok(Vec::new());
-        }
-        serde_json::from_value(rows).map_err(|err| format!("keybinding catalog: {err}"))
+        KeybindingInfo::catalog_from(resp.result.as_ref())
     }
 
     /// A visible node whose name covers `target` (word-subset match,
@@ -406,22 +430,6 @@ impl<'a> Runner<'a> {
             }
         });
         found
-    }
-
-    fn candidates_of(space: &ActionSpace, ranked: &[RankedAction], k: usize) -> Vec<Candidate> {
-        ranked
-            .iter()
-            .take(k)
-            .map(|r| Candidate {
-                id: r.id.as_str().to_owned(),
-                op: r.kind.as_str().to_owned(),
-                name: space
-                    .get(&r.id)
-                    .map(|a| a.label().to_owned())
-                    .unwrap_or_else(|| r.label.clone()),
-                confidence_millis: r.confidence_millis,
-            })
-            .collect()
     }
 
     /// Run `goal` to a terminal outcome. Deterministic given the same
@@ -504,7 +512,7 @@ impl<'a> Runner<'a> {
                     } else {
                         RunOutcome::Abstained {
                             reason,
-                            candidates: Self::candidates_of(&space, ranked, 8),
+                            candidates: top_candidates(&space, ranked, 8),
                         }
                     };
                     return Ok(self.receipt(goal, clauses, outcome, steps, rev));
@@ -581,7 +589,7 @@ impl<'a> Runner<'a> {
                         } else {
                             RunOutcome::Abstained {
                                 reason,
-                                candidates: Self::candidates_of(&space, &decision.target_ranked, 8),
+                                candidates: top_candidates(&space, &decision.target_ranked, 8),
                             }
                         };
                         return Ok(self.receipt(goal, clauses, outcome, steps, rev));
@@ -589,17 +597,19 @@ impl<'a> Runner<'a> {
                 }
             }
 
-            let op = self.op_for(
+            let op = op_for_decision(
                 &decision,
                 &action,
                 payload.as_deref(),
+                self.delivery,
                 &clause,
                 &keybindings,
+                &mut *self.invoke_args,
             )?;
             let resp = self.rpc(op);
             let resp = match resp {
                 Ok(r) => r,
-                Err(err) if err.starts_with("stale_target") || err.starts_with("target_gone") => {
+                Err(err) if gpui_agent::dispatch::is_stale_dispatch_error(&err) => {
                     stale += 1;
                     // `max_consecutive_stale` bounds the *re-decides*
                     // (PRD M5.3 "at most twice"): abort on the stale
@@ -610,7 +620,7 @@ impl<'a> Runner<'a> {
                             clauses,
                             RunOutcome::Abstained {
                                 reason: format!("stale: {err}"),
-                                candidates: Self::candidates_of(&space, &decision.target_ranked, 8),
+                                candidates: top_candidates(&space, &decision.target_ranked, 8),
                             },
                             steps,
                             rev,
@@ -677,74 +687,6 @@ impl<'a> Runner<'a> {
         Ok(self.receipt(goal, clauses, RunOutcome::CapHit, steps, rev))
     }
 
-    /// Build the wire op for a decision — node-bound kinds carry the
-    /// build-time fingerprint as `expect_fingerprint` (M5).
-    fn op_for(
-        &mut self,
-        decision: &PolicyDecision,
-        action: &crate::action_space::OfferedAction,
-        payload: Option<&str>,
-        clause: &str,
-        keybindings: &[KeybindingInfo],
-    ) -> Result<Op, String> {
-        let target = || {
-            action
-                .target()
-                .map(str::to_owned)
-                .ok_or_else(|| format!("{} has no dispatch target", decision.action_id))
-        };
-        let gated = |op: Op| -> Result<Op, String> {
-            let fp = action
-                .fingerprint()
-                .ok_or_else(|| format!("{} has no fingerprint", decision.action_id))?;
-            Ok(op.with_fingerprint(fp))
-        };
-        match decision.kind {
-            ActionKind::Click => gated(Op::Click {
-                target: target()?,
-                delivery: self.delivery,
-                expect_fingerprint: None,
-            }),
-            ActionKind::Type => gated(Op::Type {
-                target: target()?,
-                text: payload.unwrap_or_default().to_owned(),
-                delivery: self.delivery,
-                expect_fingerprint: None,
-            }),
-            ActionKind::SetValue => gated(Op::SetValue {
-                target: target()?,
-                value: payload.unwrap_or_default().to_owned(),
-                expect_fingerprint: None,
-            }),
-            ActionKind::Key => gated(Op::Key {
-                target: target()?,
-                key: key_of(action)?,
-                delivery: self.delivery,
-                expect_fingerprint: None,
-            }),
-            ActionKind::Keybinding => {
-                let id = target()?;
-                let kb = keybindings
-                    .iter()
-                    .find(|kb| kb.id == id)
-                    .ok_or_else(|| format!("keybinding `{id}` not in catalog"))?;
-                Ok(Op::Keybinding {
-                    binding: kb.id.clone(),
-                    chord: Some(kb.chord.clone()),
-                    scope: kb.scope,
-                    confirm: false,
-                    activate: false,
-                })
-            }
-            ActionKind::Invoke => {
-                let name = target()?;
-                let args = (self.invoke_args)(&name, clause)?;
-                Ok(Op::Invoke { name, args })
-            }
-            other => Err(format!("cannot dispatch kind {}", other.as_str())),
-        }
-    }
-
     /// `TYPE`/`SET_VALUE` verify on the value read back; every other op
     /// verifies on a non-empty diff (PRD M6.2 "consistent with the op").
     fn verify(
@@ -792,6 +734,7 @@ impl<'a> Runner<'a> {
         RunReceipt {
             goal: goal.to_owned(),
             clauses,
+            outcome_kind: outcome.clone(),
             outcome: outcome.label().to_owned(),
             reason,
             candidates,
@@ -806,13 +749,74 @@ impl<'a> Runner<'a> {
     }
 }
 
-/// `KEY:<id>:<key>` → the key suffix (`<id>` may itself hold `:`).
-fn key_of(action: &crate::action_space::OfferedAction) -> Result<String, String> {
-    let id = action.id().as_str();
-    id.strip_prefix("KEY:")
-        .and_then(|rest| rest.rsplit_once(':'))
-        .map(|(_, key)| key.to_owned())
-        .ok_or_else(|| format!("bad key action id {id}"))
+/// Build the wire op for a decision — node-bound kinds carry the
+/// build-time fingerprint as `expect_fingerprint` (M5). Shared by
+/// `Runner` and MCP `act` so the dispatch table can't drift apart.
+pub fn op_for_decision(
+    decision: &PolicyDecision,
+    action: &OfferedAction,
+    payload: Option<&str>,
+    delivery: DeliveryMode,
+    clause: &str,
+    keybindings: &[KeybindingInfo],
+    mut invoke_args: impl FnMut(&str, &str) -> Result<serde_json::Value, String>,
+) -> Result<Op, String> {
+    let target = || {
+        action
+            .target()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{} has no dispatch target", decision.action_id))
+    };
+    let gated = |op: Op| -> Result<Op, String> {
+        let fp = action
+            .fingerprint()
+            .ok_or_else(|| format!("{} has no fingerprint", decision.action_id))?;
+        Ok(op.with_fingerprint(fp))
+    };
+    match decision.kind {
+        ActionKind::Click => gated(Op::Click {
+            target: target()?,
+            delivery,
+            expect_fingerprint: None,
+        }),
+        ActionKind::Type => gated(Op::Type {
+            target: target()?,
+            text: payload.unwrap_or_default().to_owned(),
+            delivery,
+            expect_fingerprint: None,
+        }),
+        ActionKind::SetValue => gated(Op::SetValue {
+            target: target()?,
+            value: payload.unwrap_or_default().to_owned(),
+            expect_fingerprint: None,
+        }),
+        ActionKind::Key => gated(Op::Key {
+            target: target()?,
+            key: action.key()?.to_owned(),
+            delivery,
+            expect_fingerprint: None,
+        }),
+        ActionKind::Keybinding => {
+            let id = target()?;
+            let kb = keybindings
+                .iter()
+                .find(|kb| kb.id == id)
+                .ok_or_else(|| format!("keybinding `{id}` not in catalog"))?;
+            Ok(Op::Keybinding {
+                binding: kb.id.clone(),
+                chord: Some(kb.chord.clone()),
+                scope: kb.scope,
+                confirm: false,
+                activate: false,
+            })
+        }
+        ActionKind::Invoke => {
+            let name = target()?;
+            let args = invoke_args(&name, clause)?;
+            Ok(Op::Invoke { name, args })
+        }
+        other => Err(format!("cannot dispatch kind {}", other.as_str())),
+    }
 }
 
 #[cfg(test)]

@@ -3,82 +3,20 @@
 //! call-budget tripwire.
 #![cfg(feature = "instinct")]
 
+mod common;
+
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, Mutex};
 
-use gpui_agent::AgentHost;
-use gpui_agent::protocol::PlatformKind;
-use gpui_agent::server::spawn_host;
-use serde_json::{Value, json};
-use todo_core::TodoStore;
+use serde_json::Value;
 
-struct Todo {
-    addr: String,
-    shutdown: Arc<std::sync::atomic::AtomicBool>,
-    store: Arc<Mutex<TodoStore>>,
-}
+use common::Todo;
 
-impl Todo {
-    fn spawn() -> Self {
-        let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-        let (addr, shutdown) = spawn_host(
-            "127.0.0.1:0".parse().unwrap(),
-            Some("m6-token".into()),
-            store.clone(),
-        )
-        .expect("bind");
-        Self {
-            addr: addr.to_string(),
-            shutdown,
-            store,
-        }
-    }
-
-    fn seed(&self, titles: &[&str]) {
-        let mut store = self.store.lock().unwrap();
-        for title in titles {
-            store
-                .dispatch(&gpui_agent::Op::Invoke {
-                    name: "todo.add".into(),
-                    args: json!({ "title": title }),
-                })
-                .expect("seed add");
-        }
-    }
-
-    fn titles(&self) -> Vec<String> {
-        self.store
-            .lock()
-            .unwrap()
-            .items()
-            .iter()
-            .map(|t| t.title.clone())
-            .collect()
-    }
-
-    fn done_titles(&self) -> Vec<String> {
-        self.store
-            .lock()
-            .unwrap()
-            .items()
-            .iter()
-            .filter(|t| t.done)
-            .map(|t| t.title.clone())
-            .collect()
-    }
-}
-
-impl Drop for Todo {
-    fn drop(&mut self) {
-        self.shutdown
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-}
+const TOKEN: &str = "m6-token";
 
 fn run_goal(todo: &Todo, goal: &str) -> (i32, Value) {
     let out: Output = Command::new(env!("CARGO_BIN_EXE_gpui-agent"))
         .args([
-            "--addr", &todo.addr, "--token", "m6-token", "run", "--goal", goal, "--json",
+            "--addr", &todo.addr, "--token", TOKEN, "run", "--goal", goal, "--json",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -96,7 +34,7 @@ fn run_goal(todo: &Todo, goal: &str) -> (i32, Value) {
 
 #[test]
 fn add_then_done_exits_zero_and_mutates_state() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     let (code, receipt) = run_goal(&todo, r#"Add a todo "Buy milk""#);
     assert_eq!(code, 0, "{receipt}");
     assert_eq!(receipt["outcome"], "done", "{receipt}");
@@ -111,7 +49,7 @@ fn add_then_done_exits_zero_and_mutates_state() {
 
 #[test]
 fn multi_clause_goal_advances_clauses() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     // 'Add "Groceries" then mark it done' — the second clause runs on
     // the post-add observation.
     let (code, receipt) = run_goal(&todo, r#"Add "Groceries" then mark it done"#);
@@ -137,7 +75,7 @@ fn multi_clause_goal_advances_clauses() {
 
 #[test]
 fn missing_target_abstains_exit_two_no_state_change() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let (code, receipt) = run_goal(&todo, r#"Delete "Walk dog""#);
     assert_eq!(code, 2, "{receipt}");
@@ -147,7 +85,7 @@ fn missing_target_abstains_exit_two_no_state_change() {
 
 #[test]
 fn dangerous_keybinding_never_dispatches() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     let (code, receipt) = run_goal(&todo, "app quit keybinding");
     assert_eq!(code, 2, "{receipt}");
     assert_eq!(receipt["outcome"], "abstained", "{receipt}");
@@ -166,8 +104,8 @@ fn dangerous_keybinding_never_dispatches() {
 
 #[test]
 fn receipts_are_byte_identical_across_runs() {
-    let todo_a = Todo::spawn();
-    let todo_b = Todo::spawn();
+    let todo_a = Todo::spawn(TOKEN);
+    let todo_b = Todo::spawn(TOKEN);
     let (_, a) = run_goal(&todo_a, r#"Add a todo "Buy milk""#);
     let (_, b) = run_goal(&todo_b, r#"Add a todo "Buy milk""#);
     assert_eq!(a, b, "same goal + same host behavior → same receipt");
@@ -177,7 +115,7 @@ fn receipts_are_byte_identical_across_runs() {
 fn call_budget_stays_flat() {
     // observe(1) + keybindings(1) + per step dispatch+since (2 each)
     // — the tripwire catches accidental re-snapshot loops.
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     let (_, receipt) = run_goal(&todo, r#"Add a todo "Buy milk""#);
     let calls = receipt["calls"].as_u64().expect("calls in receipt");
     let steps = receipt["steps"].as_array().unwrap().len() as u64;
@@ -189,7 +127,7 @@ fn call_budget_stays_flat() {
 
 #[test]
 fn mark_done_dispatches_the_right_toggle() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Write docs", "Ship it"]);
     let (code, receipt) = run_goal(&todo, r#"Mark "Write docs" as done"#);
     assert_eq!(code, 0, "{receipt}");

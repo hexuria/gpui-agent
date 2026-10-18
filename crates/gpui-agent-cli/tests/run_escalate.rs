@@ -5,73 +5,18 @@
 //! local policy chooses.
 #![cfg(feature = "instinct")]
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, Mutex};
 
-use gpui_agent::AgentHost;
-use gpui_agent::protocol::PlatformKind;
-use gpui_agent::server::spawn_host;
-use serde_json::{Value, json};
-use todo_core::TodoStore;
+use serde_json::Value;
+
+use common::Todo;
+
+const TOKEN: &str = "m7-token";
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/escalate_fixture.sh");
-
-struct Todo {
-    addr: String,
-    shutdown: Arc<std::sync::atomic::AtomicBool>,
-    store: Arc<Mutex<TodoStore>>,
-}
-
-impl Todo {
-    fn spawn() -> Self {
-        let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-        let (addr, shutdown) = spawn_host(
-            "127.0.0.1:0".parse().unwrap(),
-            Some("m7-token".into()),
-            store.clone(),
-        )
-        .expect("bind");
-        Self {
-            addr: addr.to_string(),
-            shutdown,
-            store,
-        }
-    }
-
-    fn seed(&self, titles: &[&str]) {
-        let mut store = self.store.lock().unwrap();
-        for title in titles {
-            store
-                .dispatch(&gpui_agent::Op::Invoke {
-                    name: "todo.add".into(),
-                    args: json!({ "title": title }),
-                })
-                .expect("seed add");
-        }
-    }
-
-    fn titles(&self) -> Vec<String> {
-        self.store
-            .lock()
-            .unwrap()
-            .items()
-            .iter()
-            .map(|t| t.title.clone())
-            .collect()
-    }
-
-    fn draft(&self) -> String {
-        self.store.lock().unwrap().draft().to_owned()
-    }
-}
-
-impl Drop for Todo {
-    fn drop(&mut self) {
-        self.shutdown
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-}
 
 /// Scratch dir per test for the endpoint log + reply files.
 struct Scratch(PathBuf);
@@ -113,7 +58,7 @@ fn run_goal(
 ) -> (i32, Value) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gpui-agent"));
     cmd.args([
-        "--addr", &todo.addr, "--token", "m7-token", "run", "--goal", goal, "--json",
+        "--addr", &todo.addr, "--token", TOKEN, "run", "--goal", goal, "--json",
     ]);
     let choose = choose
         .cloned()
@@ -153,7 +98,7 @@ const ABSTAIN_GOAL: &str = r#"Delete "Walk dog""#;
 
 #[test]
 fn escalated_choice_from_the_menu_dispatches() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let scratch = Scratch::new("choice");
     let reply = scratch.write("reply.json", r#"{"choice":{"id":"DONE","op":"DONE"}}"#);
@@ -175,7 +120,7 @@ fn escalated_choice_from_the_menu_dispatches() {
 
 #[test]
 fn escalated_menu_click_really_dispatches() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let scratch = Scratch::new("click");
     // The endpoint keeps answering CLICK:nav-settings — a real
@@ -213,7 +158,7 @@ fn escalated_menu_click_really_dispatches() {
 
 #[test]
 fn off_menu_choice_is_a_hard_error() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let scratch = Scratch::new("offmenu");
     let reply = scratch.write(
@@ -239,7 +184,7 @@ fn off_menu_choice_is_a_hard_error() {
 
 #[test]
 fn endpoint_timeout_blocks_the_run() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let scratch = Scratch::new("timeout");
     let reply = scratch.write("reply.json", r#"{"choice":{"id":"DONE","op":"DONE"}}"#);
@@ -262,7 +207,7 @@ fn endpoint_timeout_blocks_the_run() {
 
 #[test]
 fn endpoint_abstain_remains_an_abstain() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let scratch = Scratch::new("abstain");
     let reply = scratch.write("reply.json", r#"{"abstain":"no idea"}"#);
@@ -288,7 +233,7 @@ fn endpoint_abstain_remains_an_abstain() {
 
 #[test]
 fn endpoint_is_never_called_when_instinct_chooses() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     let scratch = Scratch::new("nocall");
     let reply = scratch.write("reply.json", r#"{"choice":{"id":"DONE","op":"DONE"}}"#);
     let (code, receipt) = run_goal(
@@ -311,7 +256,7 @@ fn endpoint_is_never_called_when_instinct_chooses() {
 
 #[test]
 fn text_escalation_fills_a_missing_payload() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     let scratch = Scratch::new("text");
     // `Type in the what needs doing box` names the textbox but has no
     // quoted literal → deterministic resolver answers Missing → the

@@ -23,15 +23,24 @@ pub const UNNAMED_OPERATION_CAP: i16 = 500;
 /// What a candidate can do — the offered operations of an action space.
 /// Target-bound kinds (`Click`/`TypeText`/`Select`) name a `UiNode`;
 /// control kinds name the page.
+///
+/// `Select`, `ScrollDown`, and `ScrollUp` are goal-side verb vocabulary
+/// only: they appear in the keyword tables (`control_keyword_hit`,
+/// `named_target_operations`) so "select …"/"scroll …" goals score and
+/// cap correctly, but no `ActionKind` maps to them, so they are never
+/// offerable or dispatchable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum OperationKind {
     Click,
     TypeText,
+    /// Goal-side only — see enum docs.
     Select,
     Done,
     Blocked,
     Wait,
+    /// Goal-side only — see enum docs.
     ScrollDown,
+    /// Goal-side only — see enum docs.
     ScrollUp,
     /// `set_value` — programmatic field set, distinct from typed input.
     SetValue,

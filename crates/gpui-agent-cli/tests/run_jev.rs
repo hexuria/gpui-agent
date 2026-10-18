@@ -5,68 +5,19 @@
 //! exactly the offered set, so validation runs the real path.
 #![cfg(feature = "jev")]
 
+mod common;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use gpui_agent::AgentHost;
-use gpui_agent::protocol::PlatformKind;
-use gpui_agent::server::spawn_host;
 use serde_json::{Value, json};
-use todo_core::TodoStore;
 
-struct Todo {
-    addr: String,
-    shutdown: Arc<AtomicBool>,
-    store: Arc<Mutex<TodoStore>>,
-}
+use common::Todo;
 
-impl Todo {
-    fn spawn() -> Self {
-        let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-        let (addr, shutdown) = spawn_host(
-            "127.0.0.1:0".parse().unwrap(),
-            Some("m8-token".into()),
-            store.clone(),
-        )
-        .expect("bind");
-        Self {
-            addr: addr.to_string(),
-            shutdown,
-            store,
-        }
-    }
-
-    fn seed(&self, titles: &[&str]) {
-        let mut store = self.store.lock().unwrap();
-        for title in titles {
-            store
-                .dispatch(&gpui_agent::Op::Invoke {
-                    name: "todo.add".into(),
-                    args: json!({ "title": title }),
-                })
-                .expect("seed add");
-        }
-    }
-
-    fn titles(&self) -> Vec<String> {
-        self.store
-            .lock()
-            .unwrap()
-            .items()
-            .iter()
-            .map(|t| t.title.clone())
-            .collect()
-    }
-}
-
-impl Drop for Todo {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-    }
-}
+const TOKEN: &str = "m8-token";
 
 /// A minimal System One server: reads each POST body, hands it to the
 /// responder, writes back its JSON. Records every request body.
@@ -351,7 +302,7 @@ const ABSTAIN_GOAL: &str = r#"Delete "Walk dog""#;
 
 #[test]
 fn jev_pick_from_the_menu_runs() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let mock = MockJev::serve(MockJev::answering(&[
         ("operation", "CLICK"),
@@ -395,7 +346,7 @@ fn jev_pick_from_the_menu_runs() {
 
 #[test]
 fn jev_off_menu_answer_blocks() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let mock = MockJev::serve(MockJev::answering(&[("operation", "GHOST")]));
     let (code, receipt, _) = run_goal_jev(&todo, ABSTAIN_GOAL, Some(&mock), true);
@@ -413,7 +364,7 @@ fn jev_off_menu_answer_blocks() {
 
 #[test]
 fn jev_uncovered_set_blocks() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let mock = MockJev::serve(MockJev::answering_uncovered());
     let (code, receipt, _) = run_goal_jev(&todo, ABSTAIN_GOAL, Some(&mock), true);
@@ -430,7 +381,7 @@ fn jev_uncovered_set_blocks() {
 
 #[test]
 fn jev_bad_probability_sum_blocks() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let mock = MockJev::serve(MockJev::answering_bad_sum());
     let (code, receipt, _) = run_goal_jev(&todo, ABSTAIN_GOAL, Some(&mock), true);
@@ -444,7 +395,7 @@ fn jev_bad_probability_sum_blocks() {
 
 #[test]
 fn jev_non_argmax_blocks() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     todo.seed(&["Buy milk"]);
     let mock = MockJev::serve(MockJev::answering_not_argmax());
     let (code, receipt, _) = run_goal_jev(&todo, ABSTAIN_GOAL, Some(&mock), true);
@@ -458,7 +409,7 @@ fn jev_non_argmax_blocks() {
 
 #[test]
 fn jev_never_called_when_instinct_chooses() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     let mock = MockJev::serve(MockJev::answering(&[("operation", "DONE")]));
     let (code, receipt, _) = run_goal_jev(&todo, r#"Add a todo "Buy milk""#, Some(&mock), true);
     assert_eq!(code, 0, "{receipt}");
@@ -471,7 +422,7 @@ fn jev_never_called_when_instinct_chooses() {
 
 #[test]
 fn missing_typesafe_key_is_a_clear_error() {
-    let todo = Todo::spawn();
+    let todo = Todo::spawn(TOKEN);
     let (code, receipt, stderr) = run_goal_jev(&todo, ABSTAIN_GOAL, None, false);
     assert_eq!(code, 1, "{receipt} {stderr}");
     assert!(

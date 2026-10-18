@@ -545,6 +545,14 @@ impl AgentClient {
         self.expect_ok(Op::Keybindings)
     }
 
+    /// `keybindings` result parsed to a catalog (`null`/absent → empty).
+    /// Shared by the policy runner and MCP `act` so neither re-parses
+    /// the `{"keybindings":[…]}` envelope itself.
+    pub fn keybinding_catalog(&mut self) -> Result<Vec<crate::keybinding::KeybindingInfo>, String> {
+        let resp = self.keybindings()?;
+        crate::keybinding::KeybindingInfo::catalog_from(resp.result.as_ref())
+    }
+
     pub fn keybinding(
         &mut self,
         binding: impl Into<String>,

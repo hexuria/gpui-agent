@@ -63,6 +63,6 @@ pub use policy::{
 };
 pub use runner::{
     Candidate, EngineInfo, InvokeArgs, RunOutcome, RunReceipt, Runner, RunnerCaps, StepRecord,
-    WAIT_POLL_MS,
+    WAIT_POLL_MS, op_for_decision, top_candidates,
 };
 pub use text::{DeterministicTextResolver, TextContext, TextError, TextResolution, TextResolver};

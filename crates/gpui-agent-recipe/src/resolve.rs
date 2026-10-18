@@ -33,20 +33,15 @@ pub struct ResolveResult {
 /// With the opt-in `instinct` feature the scoring path is
 /// `gpui_agent_policy`'s evidence + Instinct arbitration; without it the
 /// original keyword scorer runs unchanged.
-#[cfg(feature = "instinct")]
 pub fn resolve_intent(intent: &str, registry: &Registry) -> Result<ResolveResult, String> {
-    instinct_resolve::resolve(intent, registry)
-}
-
-/// Deterministic, fail-closed intent → schema-backed op.
-///
-/// No model, no shell. Unknown or ambiguous intents return `Err`.
-/// With the opt-in `instinct` feature the scoring path is
-/// `gpui_agent_policy`'s evidence + Instinct arbitration; without it the
-/// original keyword scorer runs unchanged.
-#[cfg(not(feature = "instinct"))]
-pub fn resolve_intent(intent: &str, registry: &Registry) -> Result<ResolveResult, String> {
-    resolve_intent_keywords(intent, registry)
+    #[cfg(feature = "instinct")]
+    {
+        instinct_resolve::resolve(intent, registry)
+    }
+    #[cfg(not(feature = "instinct"))]
+    {
+        resolve_intent_keywords(intent, registry)
+    }
 }
 
 #[cfg(not(feature = "instinct"))]
