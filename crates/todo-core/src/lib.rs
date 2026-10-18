@@ -144,6 +144,9 @@ pub struct TodoStore {
     /// Snapshot revision (M3): bumped by every mutator that can change
     /// the tree — items, draft, page, sidebar, settings, shutdown.
     rev: u64,
+    /// Bounded event stream (M9): one `info` record per `todo.*`
+    /// invoke — the bridge fixture proving the `event_ring` recipe.
+    events: std::sync::Arc<gpui_agent::event::EventRing>,
 }
 
 impl Default for TodoStore {
@@ -165,6 +168,7 @@ impl TodoStore {
             shutdown: false,
             app_focused: false,
             rev: 0,
+            events: std::sync::Arc::new(gpui_agent::event::EventRing::default()),
         }
     }
 
@@ -595,6 +599,10 @@ impl AgentHost for TodoStore {
         Some(self.rev)
     }
 
+    fn event_ring(&self) -> Option<&gpui_agent::event::EventRing> {
+        Some(&self.events)
+    }
+
     fn keybindings(&self) -> Vec<KeybindingInfo> {
         Self::keybinding_catalog()
     }
@@ -635,7 +643,17 @@ impl AgentHost for TodoStore {
             Op::Keybindings => Ok(DispatchResult::json(gpui_agent::keybinding_list_json(
                 &Self::keybinding_catalog(),
             ))),
-            Op::Invoke { name, args } => self.invoke(name, args),
+            Op::Invoke { name, args } => {
+                let result = self.invoke(name, args);
+                if result.is_ok() {
+                    self.events.push(
+                        gpui_agent::event::EventLevel::Info,
+                        "todo",
+                        format!("invoke {name}"),
+                    );
+                }
+                result
+            }
             Op::Screenshot {
                 path,
                 mode,
@@ -652,6 +670,7 @@ impl AgentHost for TodoStore {
             Op::Hello
             | Op::Snapshot { .. }
             | Op::Revision
+            | Op::Events { .. }
             | Op::Assert { .. }
             | Op::Wait { .. }
             | Op::WaitUntil { .. } => Ok(DispatchResult::empty()),

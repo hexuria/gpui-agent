@@ -448,10 +448,75 @@ with the patch.
   record it. Otherwise record "not run: no key". **Don't** block on this.
 
 ### M9 (optional) — Event ring for context
-- `AgentHost::events_since(seq)`, a bounded ring (1024), `{"op":"events","since":N}`
-  poll op, and later `subscribe` push lines. Apps bridge `log` / `tracing`. Only
-  start after M7 and only if every gate passed. Specify it in a follow-up PRD
-  section before building.
+
+Bounded, host-owned event stream so agents can see *what the app said happened*
+(log lines, lifecycle notices) without scraping stderr. Poll-only; no push
+subscription in this milestone.
+
+**Semantics.** `EventRing` (in `gpui-agent`, no new deps — I3): a
+`Mutex<VecDeque<AgentEvent>>` with capacity `EVENT_RING_CAPACITY = 1024`.
+`AgentEvent { seq, level, target, message }` — `seq` is a `u64` allocated
+monotonically from 1 at `push`; **there is no clock field** (I5: same app
+behavior yields the same stream). `level` is `trace|debug|info|warn|error`;
+`target` is the emitting component (module path / subsystem name); `message` is
+the pre-rendered line. `push` past capacity evicts the **oldest** event.
+
+**Ownership.** The host owns the ring. `AgentHost` gains one defaulted method:
+
+```rust
+fn event_ring(&self) -> Option<&EventRing> { None }
+```
+
+A host that emits events holds an `EventRing` and returns `Some(&ring)`; every
+existing impl compiles unchanged (I2). Bridging `log`/`tracing` is the app's
+job — `ring.push(level, target, message)` directly, or a thin `Layer` in the
+app's own crate. `gpui-agent` never depends on tracing/log.
+
+**Wire (additive, `PROTOCOL_VERSION` stays 2).**
+
+```json
+{"op":"events","since":12,"limit":100}
+→ {"ok":true,"result":{"events":[{seq,level,target,message}…],
+   "latest":13,"lagged":false}}
+```
+
+- `since` omitted → all retained events; `since:N` → events with `seq > N`.
+- `limit` defaults to 256, hard-capped at 1024.
+- `lagged: true` when `since + 1` is below the ring's base seq — the caller
+  *knows* it dropped events rather than silently seeing a gap.
+- `latest` is the highest allocated seq (0 when empty), so a poller can advance
+  its cursor without re-receiving.
+- On a host with no ring: `{"ok":false,"error":"events unsupported on this
+  host"}` — fail-closed and explicit, like `screenshot_unavailable`.
+- `hello.features` gains `"events"` iff `event_ring()` returns `Some` — clients
+  detect support without a probe error.
+
+**Consumers.**
+- `AgentClient::events(since, limit)` → typed `EventPoll`.
+- CLI `gpui-agent events [--since N] [--limit N]` prints the poll as JSON.
+- MCP tool `events {since?, limit?}` → `{events, latest, lagged}` — **ungated**:
+  it is a protocol op like `snapshot`, not a policy feature.
+- `dispatch` handles `Op::Events` before host mutation ops; it never touches the
+  decision path, the fingerprint gate, or `execute_ticketed`.
+
+**Non-goals (explicit).** No `subscribe`/push lines (follow-up). No runner or
+receipt coupling (follow-up). No persistence across restarts. No cross-process
+fan-out. Apps that emit nothing return `Some(ring)` with an empty stream —
+that is valid, and `"events"` is still advertised.
+
+**M9 tasks**
+- **M9.1** `event.rs`: `AgentEvent`, `EventLevel`, `EventPoll`, `EventRing`
+  (`push`/`since`/`latest`/`is_empty`/`capacity` bounded), `EVENT_RING_CAPACITY`.
+- **M9.2** `host.rs` + `dispatch.rs` + `protocol.rs`: `event_ring()` default,
+  `Op::Events`, `hello.features` advertising, unsupported-host error.
+- **M9.3** `AgentClient::events` + CLI `events` subcommand + MCP `events` tool.
+- **M9.4** `todo-headless` (test app) pushes one `info` event per
+  `todo.*` invoke — the e2e fixture proving the bridge recipe.
+- **M9.5** Tests: ring order/eviction/`lagged`/seq monotonicity; protocol
+  round-trip; unsupported host error; features advertisement; CLI + MCP
+  integration; `hello`/non-event ops byte-identical.
+- **Done when:** all tests pass, no decision-path code touches `EventRing`,
+  and the events op is inert for hosts without a ring.
 
 ## 7. Engineering workflow (every task)
 

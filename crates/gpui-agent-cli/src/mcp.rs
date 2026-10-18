@@ -182,6 +182,17 @@ pub(crate) fn tools() -> Vec<Value> {
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
+            "events",
+            "Poll the host's bounded event stream: {events:[{seq,level,target,message}], latest, lagged}. `latest` is the cursor for the next `since`; `lagged` means events were dropped to capacity. Hosts without an event ring answer an error.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "since": { "type": "integer", "description": "Only events with seq > this (default: all retained)." },
+                    "limit": { "type": "integer", "description": "Max events (default 256, cap 1024)." }
+                }
+            }),
+        ),
+        tool(
             "assert",
             "Assert name/value/role/checked/exists/visible/in_viewport on a node from the current snapshot. visible is host-declared; in_viewport is geometry and fails closed when bounds are dishonest.",
             json!({
@@ -447,6 +458,16 @@ fn call_tool(
             client.keybinding(binding, scope, chord, confirm, activate)?
         }
         "keybindings" | "keybinding.list" => client.keybindings()?,
+        "events" => {
+            let since = args.get("since").and_then(Value::as_u64);
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|v| v.min(u32::MAX as u64) as u32);
+            return client
+                .events(since, limit)
+                .and_then(|poll| serde_json::to_value(poll).map_err(|e| e.to_string()));
+        }
         "assert" => {
             let spec = parse_assert_spec(&args)?;
             client.assert(spec)?
@@ -996,6 +1017,7 @@ mod tests {
             "key",
             "keybinding",
             "keybindings",
+            "events",
             "assert",
             "invoke",
             "shutdown",

@@ -59,4 +59,15 @@ pub trait AgentHost: Send {
     fn revision(&self) -> Option<u64> {
         None
     }
+
+    /// The host's bounded event stream (M9), if it emits one.
+    ///
+    /// Hosts that bridge `log`/`tracing` or push lifecycle notices hold
+    /// an [`crate::event::EventRing`] and return `Some(&ring)`. `hello`
+    /// advertises `"events"` and the `events` op answers only when this
+    /// is `Some`; the default `None` makes the op fail closed with
+    /// "events unsupported on this host".
+    fn event_ring(&self) -> Option<&crate::event::EventRing> {
+        None
+    }
 }

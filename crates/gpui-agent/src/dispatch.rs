@@ -230,6 +230,20 @@ pub fn handle_request_cached(
             resp.result = Some(crate::keybinding_list_json(&host.keybindings()));
             resp
         }
+        Op::Events { since, limit } => match host.event_ring() {
+            None => Response::err(req.id, "events unsupported on this host"),
+            Some(ring) => {
+                let poll = ring.since(
+                    since,
+                    limit
+                        .map(|l| l as usize)
+                        .unwrap_or(crate::event::EVENTS_DEFAULT_LIMIT),
+                );
+                let mut resp = Response::ok(req.id);
+                resp.result = serde_json::to_value(poll).ok();
+                resp
+            }
+        },
         kb @ Op::Keybinding { .. } => {
             match crate::authorize_keybinding_op(&kb, &host.keybindings(), host.is_app_focused()) {
                 Err(error) => Response::err(req.id, error),
@@ -345,6 +359,9 @@ fn hello_response(host: &dyn AgentHost, id: &str, expected_token: Option<&str>) 
     }
     if host.revision().is_some() && !hello.features.iter().any(|f| f == "rev") {
         hello.features.push("rev".into());
+    }
+    if host.event_ring().is_some() && !hello.features.iter().any(|f| f == "events") {
+        hello.features.push("events".into());
     }
     resp.hello = Some(hello);
     resp
@@ -602,6 +619,118 @@ mod tests {
         let resp = handle_request(&mut host, req, Some("secret"), Some(&nonce));
         assert!(resp.ok);
         assert!(resp.hello.is_some());
+    }
+
+    /// A host that owns an [`crate::event::EventRing`] (M9 fixture).
+    struct RingHost {
+        ring: crate::event::EventRing,
+    }
+
+    impl AgentHost for RingHost {
+        fn hello(&self) -> HelloInfo {
+            EmptyHost.hello()
+        }
+        fn snapshot(&self) -> UiTree {
+            EmptyHost.snapshot()
+        }
+        fn dispatch(&mut self, _op: &Op) -> Result<DispatchResult, String> {
+            Err("unsupported".into())
+        }
+        fn event_ring(&self) -> Option<&crate::event::EventRing> {
+            Some(&self.ring)
+        }
+    }
+
+    #[test]
+    fn events_op_answers_the_ring() {
+        let mut host = RingHost {
+            ring: crate::event::EventRing::default(),
+        };
+        host.ring
+            .push(crate::event::EventLevel::Info, "todo", "invoke todo.add");
+        host.ring
+            .push(crate::event::EventLevel::Warn, "todo", "slow op");
+
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::Events {
+                    since: None,
+                    limit: None,
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(resp.ok);
+        let result = resp.result.expect("events result");
+        assert_eq!(result["latest"], 2);
+        assert_eq!(result["lagged"], false);
+        let events = result["events"].as_array().expect("events array");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["seq"], 1);
+        assert_eq!(events[0]["level"], "info");
+        assert_eq!(events[0]["target"], "todo");
+        assert_eq!(events[0]["message"], "invoke todo.add");
+        assert_eq!(events[1]["level"], "warn");
+
+        // since=1 → only seq 2.
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "2",
+                Op::Events {
+                    since: Some(1),
+                    limit: None,
+                },
+            ),
+            None,
+            None,
+        );
+        let events = resp.result.expect("result")["events"]
+            .as_array()
+            .expect("array")
+            .clone();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["seq"], 2);
+    }
+
+    #[test]
+    fn events_op_fails_closed_without_a_ring() {
+        let mut host = EmptyHost;
+        let resp = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::Events {
+                    since: None,
+                    limit: None,
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok);
+        assert_eq!(
+            resp.error.as_deref(),
+            Some("events unsupported on this host")
+        );
+    }
+
+    #[test]
+    fn hello_advertises_events_only_with_a_ring() {
+        let mut bare = EmptyHost;
+        let resp = handle_request(&mut bare, Request::new("1", Op::Hello), None, None);
+        let features = resp.hello.unwrap().features;
+        assert!(!features.iter().any(|f| f == "events"));
+
+        let mut host = RingHost {
+            ring: crate::event::EventRing::default(),
+        };
+        let resp = handle_request(&mut host, Request::new("1", Op::Hello), None, None);
+        let features = resp.hello.unwrap().features;
+        assert!(features.iter().any(|f| f == "events"));
     }
 
     #[test]

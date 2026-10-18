@@ -4,7 +4,7 @@ An experimental control plane for GPUI Kit apps that **embed** an `AgentHost`, p
 
 GPUI Kit apps are native GPU surfaces (not Electron, not a DOM). Playwright and CDP have nothing to attach to. This repo is a smaller, in-process alternative: the app publishes a **semantic UI tree** and accepts **scripted actions** over localhost JSON — the same idea as [Vercel Native SDK automation](https://native-sdk.dev/automation), purpose-built for GPUI Kit.
 
-The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `wait-until`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set-value`, `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
+The CLI and MCP tools are **framework-agnostic**. They speak only the protocol ops (`wait`, `wait-until`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set-value`, `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `events`, `shutdown`). App-specific verbs belong in the **app** (stable ids + `invoke` names) or in **agent prompts**, not in `gpui-agent`.
 
 **Session reuse.** `AgentClient` keeps one TCP connection across `rpc` calls (the MCP stdio shim already holds one client for the process). `rpc_once` is the old per-op reconnect path, kept for benches. On 32 hellos this is on the order of **600×** vs reconnect; see [docs/PERF.md](docs/PERF.md).
 
@@ -44,6 +44,7 @@ gpui-agent keybindings
 gpui-agent keybinding --id todo.go_settings --scope global
 gpui-agent keybinding --id app.quit --scope global --confirm
 gpui-agent invoke prefs.set --arg theme=dark
+gpui-agent events --since 0
 gpui-agent shutdown
 ```
 
@@ -238,7 +239,7 @@ To change screens: click a nav control, then assert the destination root id is p
 
 The CLI includes a tiny MCP stdio server with the **same generic tools** (no app-specific `todo_*` tools):
 
-`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`, `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`
+`wait`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`, `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `events`, `shutdown`
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; see [docs/RECIPES.md](docs/RECIPES.md)),
