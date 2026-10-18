@@ -553,6 +553,20 @@ impl AgentClient {
         crate::keybinding::KeybindingInfo::catalog_from(resp.result.as_ref())
     }
 
+    /// `events` — poll the host's bounded event stream (M9).
+    /// `since` returns events with `seq > N` (`None` → all retained);
+    /// the reply's `latest` is the cursor for the next poll. Fails on
+    /// hosts without a ring ("events unsupported on this host").
+    pub fn events(
+        &mut self,
+        since: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<crate::event::EventPoll, String> {
+        let resp = self.expect_ok(Op::Events { since, limit })?;
+        serde_json::from_value(resp.result.unwrap_or_default())
+            .map_err(|err| format!("bad events response: {err}"))
+    }
+
     pub fn keybinding(
         &mut self,
         binding: impl Into<String>,

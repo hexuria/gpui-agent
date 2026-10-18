@@ -234,6 +234,7 @@ fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
         | Op::Shutdown
         | Op::Wait { .. }
         | Op::Keybindings
+        | Op::Events { .. }
         | Op::Revision => {}
         Op::WaitUntil { spec, .. } | Op::Assert { spec } => {
             collect_placeholders(&spec.target, out);
@@ -366,6 +367,7 @@ fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result
         | Op::Shutdown
         | Op::Wait { .. }
         | Op::Keybindings
+        | Op::Events { .. }
         | Op::Revision => Ok(()),
         Op::WaitUntil { spec, .. } | Op::Assert { spec } => {
             substitute_string_in_place(&mut spec.target, set)?;

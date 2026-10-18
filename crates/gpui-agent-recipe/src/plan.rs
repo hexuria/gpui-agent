@@ -155,6 +155,7 @@ fn annotate(op: &Op, registry: &Registry) -> (Option<String>, Vec<Effect>, bool)
             }
         }
         Op::Keybindings => lookup("keybindings", registry),
+        Op::Events { .. } => lookup("events", registry),
         Op::Assert { .. } => lookup("assert", registry),
         Op::Screenshot { .. } => lookup("screenshot", registry),
         Op::Shutdown => lookup("shutdown", registry),

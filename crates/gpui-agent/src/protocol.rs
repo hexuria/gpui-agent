@@ -227,6 +227,17 @@ pub enum Op {
     /// Cheap probe for `AgentHost::revision` — used by mailbox `wait_until`
     /// so an unchanged tree costs no rebuild. Additive v2 op.
     Revision,
+    /// Poll the host's bounded event stream (M9). `since` returns events
+    /// with `seq > N` (`null`/omitted → all retained); `limit` defaults
+    /// to 256 and is capped at the ring's 1024 capacity. Result:
+    /// `{"events":[{seq,level,target,message}…],"latest":N,"lagged":bool}`.
+    /// Hosts without a ring fail closed with "events unsupported".
+    Events {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
     Click {
         target: String,
         /// Omitted / `semantic` is v1. `virtual` is the in-window event path.

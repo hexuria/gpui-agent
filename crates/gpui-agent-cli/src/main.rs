@@ -166,6 +166,17 @@ enum Command {
     },
     /// List registered Action-id keybindings (`{id, chord, scope, dangerous}`).
     Keybindings,
+    /// Poll the host's bounded event stream (M9). Prints
+    /// `{events:[{seq,level,target,message}…], latest, lagged}`;
+    /// `latest` is the cursor for the next `--since`.
+    Events {
+        /// Only events with seq greater than this (default: all retained).
+        #[arg(long)]
+        since: Option<u64>,
+        /// Max events returned (default 256, capped at 1024).
+        #[arg(long)]
+        limit: Option<u32>,
+    },
     /// Assert fields on a node from the current snapshot.
     Assert {
         /// Stable id of the node (protocol field: `target`).
@@ -394,6 +405,10 @@ fn run() -> Result<()> {
                 max_height_px,
             ))?)
         }
+        Command::Events { since, limit } => {
+            let poll = client.events(since, limit).map_err(anyhow::Error::msg)?;
+            println!("{}", serde_json::to_string_pretty(&poll)?);
+        }
         Command::Click { target, delivery } => {
             print_resp(rpc(client.click_with_delivery(target, delivery))?)
         }
@@ -494,6 +509,7 @@ mod tests {
             "key",
             "keybinding",
             "keybindings",
+            "events",
             "assert",
             "invoke",
             "shutdown",

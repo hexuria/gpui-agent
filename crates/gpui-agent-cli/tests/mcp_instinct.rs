@@ -186,3 +186,28 @@ fn snapshot_since_and_format_work() {
     let diff = mcp.call("snapshot", json!({ "since": rev }));
     assert_eq!(diff["ok"], true, "{diff}");
 }
+
+#[test]
+fn events_tool_polls_the_ring() {
+    let todo = Todo::spawn("m4-token");
+    let mut mcp = Mcp::spawn(&todo.addr, "m4-token");
+
+    // The app bridges one `info` event per successful `todo.*` invoke.
+    mcp.call(
+        "invoke",
+        json!({ "name": "todo.add", "args": { "title": "Buy milk" } }),
+    );
+    let poll = mcp.call("events", json!({}));
+    let events = poll["events"].as_array().expect("events array");
+    assert_eq!(events.len(), 1, "{poll}");
+    assert_eq!(events[0]["message"], "invoke todo.add");
+    assert_eq!(poll["latest"], 1, "{poll}");
+    assert_eq!(poll["lagged"], false, "{poll}");
+
+    // Cursor advance: nothing new after latest.
+    let next = mcp.call(
+        "events",
+        json!({ "since": poll["latest"].as_u64().unwrap() }),
+    );
+    assert_eq!(next["events"].as_array().expect("events").len(), 0);
+}

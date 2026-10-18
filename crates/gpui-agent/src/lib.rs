@@ -18,6 +18,7 @@ pub mod client;
 pub mod diff;
 pub mod discovery;
 pub mod dispatch;
+pub mod event;
 pub mod hmac_auth;
 pub mod host;
 pub mod keybinding;
