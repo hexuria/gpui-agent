@@ -2,7 +2,7 @@
 
 Coding stays on the cloud agent. Local is **pull + run only**.
 
-Typical checkout: `/Volumes/goldcoders/OSS/gpui-agent`.
+Typical checkout: `/Volumes/goldcoders/hexuria/gpui-agent`.
 
 This verifies recipes on current `main` (P0–P5, including **P3** Mac
 window PNG via [#20](https://github.com/hexuria/gpui-agent/pull/20)).
@@ -18,7 +18,7 @@ Format, threat model, and `--yes` / session-reuse notes:
 ## 1. Fetch current `main`
 
 ```bash
-cd /Volumes/goldcoders/OSS/gpui-agent
+cd /Volumes/goldcoders/hexuria/gpui-agent
 git fetch origin
 git checkout main
 git pull origin main
@@ -32,7 +32,7 @@ macOS for **headless** (no window).
 ## 2. Build once
 
 ```bash
-cd /Volumes/goldcoders/OSS/gpui-agent
+cd /Volumes/goldcoders/hexuria/gpui-agent
 cargo build -p gpui-agent-cli -p todo-headless
 # optional: default GUI client (needs a display + a running daemon)
 cargo build -p todo
@@ -66,7 +66,7 @@ the host has none. This laptop path uses a token because you are about
 to `recipe run`.
 
 ```bash
-cd /Volumes/goldcoders/OSS/gpui-agent
+cd /Volumes/goldcoders/hexuria/gpui-agent
 export GPUI_AGENT=1
 export GPUI_AGENT_ADDR=127.0.0.1:17421
 export GPUI_AGENT_TOKEN=dev-secret
@@ -109,7 +109,7 @@ lsof -iTCP:17421 -sTCP:LISTEN
 ## 4. Terminal 2 — recipes (same repo, same addr, same token)
 
 ```bash
-cd /Volumes/goldcoders/OSS/gpui-agent
+cd /Volumes/goldcoders/hexuria/gpui-agent
 export GPUI_AGENT_ADDR=127.0.0.1:17421
 export GPUI_AGENT_TOKEN=dev-secret
 CLI=./target/debug/gpui-agent
