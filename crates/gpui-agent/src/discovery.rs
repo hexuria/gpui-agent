@@ -379,6 +379,13 @@ fn load_live(root: &Path) -> Vec<(PathBuf, HostRecord)> {
     out
 }
 
+/// Every host that published itself under `root` and is still running.
+pub fn live_hosts(root: &Path) -> Vec<HostRecord> {
+    let mut hosts: Vec<_> = load_live(root).into_iter().map(|(_, rec)| rec).collect();
+    hosts.sort_by(|a, b| a.addr.cmp(&b.addr));
+    hosts
+}
+
 pub fn save_session(root: &Path, addr: &str, id: &str) -> io::Result<()> {
     fs::create_dir_all(root)?;
     let rec = SessionRecord {

@@ -38,7 +38,8 @@ pub mod virtual_input;
 pub use client::AgentClient;
 pub use diff::{AddedNode, ChangedNode, TreeDiff, apply_diff, compact_lines, diff_trees};
 pub use discovery::{
-    ClientTarget, ResolveError, resolve_client_addr, resolve_client_target, runtime_root,
+    ClientTarget, HostRecord, ResolveError, live_hosts, resolve_client_addr, resolve_client_target,
+    runtime_root,
 };
 pub use dispatch::{
     DispatchResult, TreeCache, assert_tree, authorize_request, handle_request,

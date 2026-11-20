@@ -46,10 +46,10 @@ impl LiveSession {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let connect_timeout = remaining.min(Duration::from_millis(400));
         if connect_timeout.is_zero() {
-            return Err("connection deadline elapsed".into());
+            return Err(format!("{TCP_CONNECT}connection deadline elapsed"));
         }
-        let stream =
-            TcpStream::connect_timeout(&addr, connect_timeout).map_err(|err| err.to_string())?;
+        let stream = TcpStream::connect_timeout(&addr, connect_timeout)
+            .map_err(|err| format!("{TCP_CONNECT}{err}"))?;
         let _ = stream.set_nodelay(true);
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -246,13 +246,6 @@ fn pipeline_eof(partial: &[Response]) -> WireError {
     }
 }
 
-fn no_reply_error(addr: SocketAddr, timeout: Duration, err: &str) -> String {
-    format!(
-        "no reply from {addr} within {} ms: {err}",
-        timeout.as_millis()
-    )
-}
-
 fn sleep_before_retry(deadline: std::time::Instant) {
     std::thread::sleep(
         deadline
@@ -287,6 +280,45 @@ fn fmt_u64(n: u64, buf: &mut [u8; 20]) -> &str {
     std::str::from_utf8(&buf[i..]).unwrap()
 }
 
+/// Error prefix when the host took the request and sent no reply in time.
+pub const NO_REPLY: &str = "no reply";
+
+/// The message for an exchange that never produced a response.
+///
+/// A read that ran out of time (the OS spells it differently on each
+/// platform) means the host is there and busy, which calls for a longer
+/// timeout, not for checking the address.
+fn no_answer(addr: SocketAddr, timeout: Duration, last_err: &str) -> String {
+    if read_timed_out(last_err) {
+        format!(
+            "{NO_REPLY} from {addr} within {ms} ms: the host is up but did not answer \
+             (busy or animating); raise the timeout",
+            ms = timeout.as_millis()
+        )
+    } else {
+        let cause = last_err.strip_prefix(TCP_CONNECT).unwrap_or(last_err);
+        format!("connect {addr} failed: {cause}")
+    }
+}
+
+/// Marks an error from opening the TCP connection, where running out of
+/// time means the host was never reached.
+const TCP_CONNECT: &str = "tcp connect: ";
+
+/// `true` for an error of reading or writing on an open connection that ran
+/// out of time.
+fn read_timed_out(err: &str) -> bool {
+    !err.starts_with(TCP_CONNECT)
+        && [
+            "timed out",
+            "os error 11)",
+            "os error 35)",
+            "os error 10060)",
+        ]
+        .iter()
+        .any(|mark| err.contains(mark))
+}
+
 impl AgentClient {
     pub fn connect(addr: SocketAddr) -> Self {
         Self {
@@ -311,6 +343,10 @@ impl AgentClient {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     pub fn set_timeout(&mut self, timeout: Duration) {
@@ -453,18 +489,16 @@ impl AgentClient {
                 }
                 Err(WireError::Fatal(err)) => return Err(err),
                 Err(WireError::NoReply(err)) => {
-                    return Err(no_reply_error(self.addr, timeout, &err));
+                    return Err(no_answer(self.addr, timeout, &err));
                 }
             }
         }
-        if shared_deadline.is_some() {
-            Err(format!(
-                "connect {addr} failed: {last_err}",
-                addr = self.addr
-            ))
+        let retry_timeout = if shared_deadline.is_some() {
+            timeout
         } else {
-            Err(no_reply_error(self.addr, self.timeout, &last_err))
-        }
+            self.timeout
+        };
+        Err(no_answer(self.addr, retry_timeout, &last_err))
     }
 
     fn roundtrip_gated_retry(&mut self, op: &Op) -> Result<Response, String> {
@@ -486,11 +520,7 @@ impl AgentClient {
             let request = self.negotiated(op, deadline)?.unwrap_or_else(|| op.clone());
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                return Err(no_reply_error(
-                    self.addr,
-                    timeout,
-                    "operation deadline elapsed",
-                ));
+                return Err(no_answer(self.addr, timeout, "operation timed out"));
             }
             let id_num = self.next_id;
             self.next_id += 1;
@@ -505,14 +535,11 @@ impl AgentClient {
                 }
                 Err(WireError::Fatal(err)) => return Err(err),
                 Err(WireError::NoReply(err)) => {
-                    return Err(no_reply_error(self.addr, remaining, &err));
+                    return Err(no_answer(self.addr, remaining, &err));
                 }
             }
         }
-        Err(format!(
-            "connect {addr} failed: {last_err}",
-            addr = self.addr
-        ))
+        Err(no_answer(self.addr, timeout, &last_err))
     }
 
     fn roundtrip_wire(
@@ -640,18 +667,19 @@ impl AgentClient {
                 }
                 Err(WireError::Fatal(err)) => {
                     self.drop_session();
-                    return Err(err);
+                    return Err(if read_timed_out(&err) {
+                        no_answer(self.addr, reply_timeout, &err)
+                    } else {
+                        err
+                    });
                 }
                 Err(WireError::NoReply(err)) => {
                     self.drop_session();
-                    return Err(no_reply_error(self.addr, reply_timeout, &err));
+                    return Err(no_answer(self.addr, reply_timeout, &err));
                 }
             }
         }
-        Err(format!(
-            "connect {addr} failed: {last_err}",
-            addr = self.addr
-        ))
+        Err(no_answer(self.addr, self.timeout, &last_err))
     }
 
     fn pipeline_once_until(
@@ -870,11 +898,7 @@ impl AgentClient {
             let hello_started = std::time::Instant::now();
             let hello_budget = hello_timeout.min(deadline.saturating_duration_since(hello_started));
             if hello_budget.is_zero() {
-                return Err(no_reply_error(
-                    self.addr,
-                    hello_timeout,
-                    "operation deadline elapsed",
-                ));
+                return Err(no_answer(self.addr, hello_timeout, "operation timed out"));
             }
             let hello_deadline = hello_started + hello_budget;
             let hello = self.roundtrip_retry_until(
@@ -1052,6 +1076,9 @@ fn parse_response_line(line: &[u8]) -> Result<Response, String> {
 mod tests {
     use super::*;
     use crate::protocol::Request;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn wire_request_matches_owned_request_json() {
@@ -1083,6 +1110,70 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_reapplies_the_current_socket_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            serde_json::to_writer(
+                &mut stream,
+                &serde_json::json!({
+                    "v": PROTOCOL_VERSION,
+                    "id": request["id"],
+                    "ok": true,
+                    "hello": {
+                        "protocol": PROTOCOL_VERSION,
+                        "app": "fake",
+                        "platform": "headless",
+                        "ready": true
+                    }
+                }),
+            )
+            .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            thread::sleep(Duration::from_millis(500));
+            let _ = serde_json::to_writer(
+                &mut stream,
+                &serde_json::json!({
+                    "v": PROTOCOL_VERSION,
+                    "id": request["id"],
+                    "ok": true
+                }),
+            );
+            let _ = stream.write_all(b"\n");
+        });
+
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(5));
+        client.expect_ok(Op::Hello).unwrap();
+        client.set_timeout(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        let timeout = client.timeout;
+        let response =
+            client.pipeline_once_until(2, &[&Op::Hello], Instant::now() + timeout, timeout);
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+
+        assert!(response.is_err(), "the changed timeout must bound the read");
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "pipeline took {elapsed:?} with a 100 ms timeout"
+        );
+    }
+
+    #[test]
     fn fmt_u64_matches_display() {
         let mut buf = [0u8; 20];
         assert_eq!(fmt_u64(0, &mut buf), "0");
@@ -1095,5 +1186,30 @@ mod tests {
     fn rpc_pipeline_empty_is_ok() {
         let mut client = AgentClient::default_bind();
         assert!(client.rpc_pipeline(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_read_that_ran_out_of_time_is_not_reported_as_a_failed_connect() {
+        let addr: SocketAddr = "127.0.0.1:17421".parse().unwrap();
+        let timeout = Duration::from_millis(1500);
+        for err in [
+            "Resource temporarily unavailable (os error 11)",
+            "Resource temporarily unavailable (os error 35)",
+            "operation timed out",
+        ] {
+            let message = no_answer(addr, timeout, err);
+            assert!(message.starts_with(NO_REPLY), "{message}");
+            assert!(message.contains("1500 ms"), "{message}");
+        }
+        let unreachable = no_answer(addr, timeout, "tcp connect: connection timed out");
+        assert_eq!(
+            unreachable,
+            "connect 127.0.0.1:17421 failed: connection timed out"
+        );
+        let refused = no_answer(addr, timeout, "Connection refused (os error 111)");
+        assert!(
+            refused.starts_with("connect 127.0.0.1:17421 failed"),
+            "{refused}"
+        );
     }
 }

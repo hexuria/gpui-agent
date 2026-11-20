@@ -1,7 +1,9 @@
+mod doctor;
 #[cfg(feature = "instinct")]
 mod instinct_wiring;
 mod mcp;
 mod recipe_cmd;
+mod refs;
 #[cfg(feature = "instinct")]
 mod run_cmd;
 
@@ -46,6 +48,15 @@ struct Cli {
     /// TCP — lab / trusted network only. Prefer SSH or Tailscale until TLS.
     #[arg(long, env = "GPUI_AGENT_ALLOW_REMOTE")]
     allow_remote: bool,
+    /// How long to wait for the host's reply to one request, in
+    /// milliseconds (default 8000). Raise it for a slow device or emulator.
+    #[arg(
+        long = "reply-timeout-ms",
+        env = "GPUI_AGENT_REPLY_TIMEOUT_MS",
+        global = true,
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    request_timeout_ms: Option<u64>,
     #[command(subcommand)]
     command: Command,
 }
@@ -98,12 +109,28 @@ enum Command {
         #[arg(long = "in-viewport", num_args = 0..=1, default_missing_value = "true")]
         in_viewport: Option<bool>,
     },
+    /// List the hosts published on this machine and the devices `adb`
+    /// sees, with the local addresses forwarded to them.
+    Targets,
+    /// Print the skill that teaches a coding agent to use this CLI, for the
+    /// version of the CLI that prints it. Save it where your agent reads
+    /// skills (for example `.agents/skills/gpui-agent/SKILL.md`).
+    Skill,
+    /// Check the address, the token, the host's capabilities and how fast
+    /// it answers; says what to fix when a step fails.
+    Doctor,
     /// Handshake: protocol version, app name, platform, ready.
     Hello,
     /// Print the semantic UI tree as JSON.
     Snapshot {
         #[arg(long)]
         pretty: bool,
+        /// Print an outline instead of JSON: one line per visible node that
+        /// says something or can be acted on, each with a short ref
+        /// (`@e1`, `@e2`, …). Any later command takes a ref where it takes a
+        /// node id, until the next `snapshot --refs` renumbers them.
+        #[arg(long, conflicts_with = "pretty")]
+        refs: bool,
     },
     /// Observe-only PNG of the **app surface**. Host writes `--out`.
     /// Headless / Linux / Windows: `screenshot_unavailable` (no fake file).
@@ -348,6 +375,30 @@ enum Command {
     },
 }
 
+/// The skill text, stamped with this build's version.
+fn skill() -> String {
+    include_str!("../skill/SKILL.md").replacen(
+        "\n---\n",
+        concat!("\nversion: ", env!("CARGO_PKG_VERSION"), "\n---\n"),
+        1,
+    )
+}
+
+fn connect(addr: SocketAddr, timeout: Option<Duration>) -> AgentClient {
+    let client = AgentClient::connect(addr);
+    match timeout {
+        Some(timeout) => client.with_timeout(timeout),
+        None => client,
+    }
+}
+
+fn wait_reply_timeout(reply_timeout: Duration, bound_ms: Option<u64>) -> Duration {
+    let bound = bound_ms
+        .map(|ms| Duration::from_millis(ms.saturating_add(2_000)))
+        .unwrap_or_default();
+    reply_timeout.max(bound)
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -373,7 +424,15 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if matches!(cli.command, Command::Skill) {
+        print!("{}", skill());
+        return Ok(());
+    }
+    if matches!(cli.command, Command::Targets) {
+        println!("{}", serde_json::to_string_pretty(&doctor::targets())?);
+        return Ok(());
+    }
     let target = gpui_agent::resolve_client_target(
         &gpui_agent::runtime_root(),
         cli.addr,
@@ -385,18 +444,39 @@ fn run() -> Result<()> {
         eprintln!("gpui-agent: {}", target.describe());
     }
     let addr = target.addr;
+    // `@e3` stands for a node of the last `snapshot --refs` of this host.
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args
+        .iter()
+        .skip(1)
+        .any(|arg| arg.to_str().is_some_and(refs::is_ref))
+    {
+        refs::resolve(&gpui_agent::runtime_root(), addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
+        cli = Cli::parse_from(args);
+    }
     let token = take_non_empty_token(cli.token);
+    let request_timeout = cli.request_timeout_ms.map(Duration::from_millis);
     gpui_agent::authorize_client(addr, token.as_deref(), cli.allow_remote)
         .with_context(|| format!("refusing agent address {addr}"))?;
 
+    if matches!(cli.command, Command::Doctor) {
+        let mut client = connect(addr, request_timeout);
+        if let Some(token) = token.clone() {
+            client = client.with_token(token);
+        }
+        if doctor::doctor(addr, client, token.is_some()) {
+            return Ok(());
+        }
+        return Err(anyhow!("the host cannot be driven as it stands"));
+    }
     if let Command::Mcp { schema } = cli.command {
         let token = require_recipe_mcp_token(token.as_deref())?;
-        return mcp::run(addr, token.to_string(), schema);
+        return mcp::run(addr, token.to_string(), request_timeout, schema);
     }
     if let Command::Recipe { schema, action } = cli.command {
         let client = if matches!(action, RecipeCommand::Run { .. }) {
             let token = require_recipe_mcp_token(token.as_deref())?;
-            Some(AgentClient::connect(addr).with_token(token))
+            Some(connect(addr, request_timeout).with_token(token))
         } else {
             None
         };
@@ -415,7 +495,7 @@ fn run() -> Result<()> {
     } = cli.command
     {
         let token = require_recipe_mcp_token(token.as_deref())?;
-        let client = AgentClient::connect(addr).with_token(token);
+        let client = connect(addr, request_timeout).with_token(token);
         return run_cmd::run(
             client,
             run_cmd::RunOpts {
@@ -430,16 +510,15 @@ fn run() -> Result<()> {
         );
     }
 
-    let mut client = AgentClient::connect(addr);
+    let mut client = connect(addr, request_timeout);
     if let Some(token) = token {
         client = client.with_token(token);
     }
 
     match cli.command {
         Command::Wait { timeout_ms } => {
-            if let Some(ms) = timeout_ms {
-                client = client.with_timeout(Duration::from_millis(ms));
-            }
+            let reply_timeout = request_timeout.unwrap_or_else(|| client.timeout());
+            client.set_timeout(wait_reply_timeout(reply_timeout, timeout_ms));
             print_resp(rpc(client.expect_ok(Op::Wait { timeout_ms }))?)
         }
         Command::WaitUntil {
@@ -454,7 +533,8 @@ fn run() -> Result<()> {
             visible,
             in_viewport,
         } => {
-            client = client.with_timeout(Duration::from_millis(timeout_ms.saturating_add(2_000)));
+            let reply_timeout = request_timeout.unwrap_or_else(|| client.timeout());
+            client.set_timeout(wait_reply_timeout(reply_timeout, Some(timeout_ms)));
             let spec = AssertSpec {
                 target: id,
                 name,
@@ -468,9 +548,17 @@ fn run() -> Result<()> {
             print_resp(rpc(client.wait_until(spec, timeout_ms))?)
         }
         Command::Hello => print_resp(rpc(client.expect_ok(Op::Hello))?),
-        Command::Snapshot { pretty } => {
+        Command::Snapshot { pretty, refs } => {
             let resp = rpc(client.snapshot())?;
-            if pretty {
+            if refs {
+                let tree = resp
+                    .tree
+                    .ok_or_else(|| anyhow!("the reply carried no tree"))?;
+                let (outline, table) = refs::render(&tree);
+                refs::save(&gpui_agent::runtime_root(), addr, &table)
+                    .context("saving the ref table")?;
+                print!("{outline}");
+            } else if pretty {
                 println!("{}", serde_json::to_string_pretty(&resp.tree)?);
             } else {
                 print_resp(resp);
@@ -633,7 +721,13 @@ fn run() -> Result<()> {
         }
         Command::Invoke { name, args } => print_resp(rpc(client.invoke(name, parse_args(&args)?))?),
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
-        Command::Mcp { .. } | Command::Recipe { .. } => unreachable!(),
+        Command::Targets
+        | Command::Skill
+        | Command::Doctor
+        | Command::Mcp { .. }
+        | Command::Recipe { .. } => {
+            unreachable!()
+        }
         #[cfg(feature = "instinct")]
         Command::Run { .. } => unreachable!(),
     }
@@ -668,6 +762,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wait_reply_timeout_covers_the_bound_and_preserves_longer_explicit_values() {
+        assert_eq!(
+            wait_reply_timeout(Duration::from_secs(8), Some(20_000)),
+            Duration::from_secs(22)
+        );
+        assert_eq!(
+            wait_reply_timeout(Duration::from_secs(30), Some(20_000)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            wait_reply_timeout(Duration::from_secs(8), None),
+            Duration::from_secs(8)
+        );
+    }
+
+    #[test]
+    fn reply_timeout_rejects_zero_during_parsing() {
+        assert!(Cli::try_parse_from(["gpui-agent", "--reply-timeout-ms", "0", "hello"]).is_err());
+    }
+
+    #[test]
+    fn the_skill_names_only_commands_this_cli_has() {
+        let text = skill();
+        assert!(text.contains(concat!("\nversion: ", env!("CARGO_PKG_VERSION"), "\n")));
+        let cmd = Cli::command();
+        let known: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+        // The first word of each command cell in the actions table.
+        let named = text
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .flat_map(|line| line.split('|').nth(1).unwrap_or("").split(", "))
+            .filter_map(|cell| cell.trim().strip_prefix('`'))
+            .filter_map(|cell| cell.split([' ', '`']).next());
+        let mut seen = 0;
+        for name in named {
+            assert!(known.contains(&name), "the skill names `{name}`");
+            seen += 1;
+        }
+        assert!(seen >= 12, "{seen} commands found in the skill's table");
+    }
+
+    #[test]
     fn first_class_commands_are_generic_ops() {
         let cmd = Cli::command();
         let names: Vec<String> = cmd
@@ -677,6 +813,9 @@ mod tests {
         let mut expected = vec![
             "wait",
             "wait-until",
+            "targets",
+            "skill",
+            "doctor",
             "hello",
             "snapshot",
             "screenshot",
