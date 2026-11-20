@@ -26,6 +26,7 @@ pub struct AgentClient {
     next_id: u64,
     session: Option<LiveSession>,
     features: Option<Vec<String>>,
+    as_written: bool,
 }
 
 struct LiveSession {
@@ -328,6 +329,7 @@ impl AgentClient {
             next_id: 1,
             session: None,
             features: None,
+            as_written: false,
         }
     }
 
@@ -337,6 +339,15 @@ impl AgentClient {
 
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
+        self
+    }
+
+    /// Send capability-gated ops as written, without reading
+    /// `hello.features` first: no local refusal and no `invoke` spelling.
+    /// What comes back is the host's own answer, which is what a
+    /// conformance test of the host needs to see.
+    pub fn as_written(mut self) -> Self {
+        self.as_written = true;
         self
     }
 
@@ -892,6 +903,9 @@ impl AgentClient {
         let Some(feature) = op.feature() else {
             return Ok(None);
         };
+        if self.as_written {
+            return Ok(None);
+        }
         if self.features.is_none() {
             let hello_op = Op::Hello;
             let hello_timeout = self.timeout_for(&hello_op);

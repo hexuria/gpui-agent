@@ -184,5 +184,13 @@ mod tests {
             let err = client.gated(op).unwrap_err();
             assert!(crate::is_unsupported_op(&err), "{err}");
         }
+
+        // Sent as written, the op reaches the host, and the refusal is the
+        // host's own: a response off the wire, not a local error.
+        let mut blunt = host.client().as_written();
+        let resp = blunt.rpc_gated(&scroll).expect("the host answers");
+        assert!(!resp.ok);
+        let error = resp.error.expect("an error");
+        assert!(crate::is_unsupported_op(&error), "{error}");
     }
 }

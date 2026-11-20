@@ -100,6 +100,12 @@ gpui-agent press @e1
 
 An argument spelled exactly like a ref (`@e1`) is always read as one, text to type included.
 
+`scripts/conformance.py` runs the required protocol and host checks against the host at
+`--addr`: `python3 scripts/conformance.py --addr 127.0.0.1:17421`. Protocol versions
+other than 2 fail. A host that does not advertise `screenshot_inline` warns and skips
+screenshot checks; `--require-screenshot` makes that a failure. CI runs it against
+`todo-headless` without requiring a screenshot.
+
 When a host does not answer, two commands say why:
 
 ```bash

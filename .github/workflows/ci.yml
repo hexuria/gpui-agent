@@ -51,6 +51,62 @@ jobs:
           GPUI_AGENT_TOKEN: "ci-p4-token"
         run: ./scripts/ci-recipe.sh
 
+  conformance:
+    name: conformance (todo-headless)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GPUI_AGENT_ADDR: "127.0.0.1:17422"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI + todo-headless
+        run: cargo build -p gpui-agent-cli -p todo-headless
+      - name: Start todo-headless
+        env:
+          GPUI_AGENT: "1"
+        run: |
+          token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          echo "::add-mask::$token"
+          echo "GPUI_AGENT_TOKEN=$token" >> "$GITHUB_ENV"
+          export GPUI_AGENT_TOKEN="$token"
+          target/debug/todo-headless > "$RUNNER_TEMP/todo-headless.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/todo-headless.pid"
+      - name: Wait for gpui-agent hello
+        run: |
+          pid="$(cat "$RUNNER_TEMP/todo-headless.pid")"
+          attempts=30
+          reply_timeout_ms=1000
+          per_attempt_seconds=$(((reply_timeout_ms + 999) / 1000 + 1))
+          wait_bound_seconds=$((attempts * per_attempt_seconds))
+          for ((attempt = 1; attempt <= attempts; attempt++)); do
+            if target/debug/gpui-agent --addr "$GPUI_AGENT_ADDR" --reply-timeout-ms "$reply_timeout_ms" hello >/dev/null 2>&1; then
+              echo "gpui-agent hello answered"
+              exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/todo-headless.log" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "todo-headless did not answer hello within ${wait_bound_seconds} seconds" >&2
+          cat "$RUNNER_TEMP/todo-headless.log" >&2
+          exit 1
+      - name: Run conformance
+        run: python3 scripts/conformance.py --cli target/debug/gpui-agent --addr 127.0.0.1:17422
+      - name: Stop todo-headless
+        if: always()
+        run: |
+          pid_file="$RUNNER_TEMP/todo-headless.pid"
+          if [[ -r "$pid_file" ]]; then
+            pid="$(cat "$pid_file")"
+            kill "$pid" 2>/dev/null || true
+          fi
+
   packages:
     name: cli + daemon artifacts
     runs-on: ubuntu-latest
