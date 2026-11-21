@@ -548,10 +548,10 @@ pub fn resolve_id(root: &Path, id: &str) -> Result<HostRecord, ResolveError> {
             let _ = fs::remove_file(path);
         }
     }
-    match open.len() {
-        0 => Err(ResolveError::Missing { id: id.to_string() }),
-        1 => Ok(open.pop().unwrap()),
-        _ => Err(ResolveError::Ambiguous {
+    match <[_; 1]>::try_from(open) {
+        Ok([one]) => Ok(one),
+        Err(open) if open.is_empty() => Err(ResolveError::Missing { id: id.to_string() }),
+        Err(open) => Err(ResolveError::Ambiguous {
             id: id.to_string(),
             detail: open
                 .iter()

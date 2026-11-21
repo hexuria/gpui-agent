@@ -63,7 +63,7 @@ pub const ALL: &[&str] = &[
 /// host that predates `error_code` classifies the same way.
 pub fn error_code_of(error: &str) -> &'static str {
     let error = error.trim();
-    let head = error.split(':').next().unwrap_or("").trim();
+    let head = error.split_once(':').map_or(error, |(head, _)| head).trim();
     if let Some(code) = ALL.iter().find(|code| **code == head) {
         return code;
     }

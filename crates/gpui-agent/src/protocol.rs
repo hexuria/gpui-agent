@@ -701,6 +701,11 @@ mod points {
 mod integers {
     use serde::{Deserialize, Deserializer, de::Error};
 
+    // serde_json 1.x with `arbitrary_precision` (which any crate in the
+    // build can switch on) hands a number buffered by the internally tagged
+    // `Op` to a field as a one-entry map under this key, holding the digits.
+    // The key is serde_json's own, not public API; a protocol test feeds
+    // this shape for every integer field so a change to it fails there.
     const PRIVATE_NUMBER: &str = "$serde_json::private::Number";
 
     fn unsigned<E: Error>(value: serde_json::Value) -> Result<u64, E> {
@@ -1371,19 +1376,9 @@ impl Response {
 
     pub fn err(id: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
-            v: PROTOCOL_VERSION,
-            id: id.into(),
             ok: false,
             error: Some(error.into()),
-            hello: None,
-            tree: None,
-            result: None,
-            fingerprints: None,
-            rev: None,
-            error_code: None,
-            hint: None,
-            delivery_status: None,
-            after: None,
+            ..Self::ok(id)
         }
     }
 
