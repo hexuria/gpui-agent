@@ -1530,11 +1530,11 @@ mod tests {
         let script = include_str!("../../../scripts/smoke-desktop.sh");
         assert!(
             script.contains("todo-headless"),
-            "desktop smoke must start the daemon SoT (ADR-001), not only the GUI:\n{script}"
+            "desktop smoke must start the daemon SoT, not only the GUI:\n{script}"
         );
         assert!(
-            script.contains("ADR-001"),
-            "script header must cite ADR-001:\n{script}"
+            script.contains("source of truth"),
+            "script header must name todo-headless as the source of truth:\n{script}"
         );
         assert!(
             !script.lines().any(|line| {

@@ -1275,7 +1275,7 @@ impl Render for TodoApp {
                         if cfg!(feature = "embedded-host") {
                             "In-process AgentHost (widget E2E). Product SoT is the daemon."
                         } else {
-                            "GUI client of todo-headless (ADR-001). Start the daemon to mutate."
+                            "GUI client of todo-headless. Start the daemon to mutate."
                         },
                     )),
             )

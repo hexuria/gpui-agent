@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Desktop smoke per ADR-001: todo-headless is the source of truth (SoT).
+# Desktop smoke: todo-headless is the source of truth (SoT).
 # Default `todo` is a GPUI daemon *client* and does not listen. CLI CRUD
 # talks to the headless daemon, not to a GUI port. The window is optional
 # (needs a display / Vulkan ICD). Headless CRUD still passes if the
@@ -8,7 +8,7 @@
 #
 # Host bind is default-deny: set GPUI_AGENT_TOKEN (same value on CLI).
 # Recipe / MCP workflows already required that token; see scripts/smoke.sh
-# and docs/TRY_ON_MAC.md.
+# and docs/RECIPES.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,7 +40,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> starting todo-headless on $ADDR (ADR-001 daemon SoT; token required)"
+echo "==> starting todo-headless on $ADDR (daemon SoT; token required)"
 "$HOST" &
 HOST_PID=$!
 
@@ -60,7 +60,7 @@ echo "==> CLI CRUD against todo-headless (not the GUI)"
 echo "==> building todo GUI client (default features, not embedded-host)"
 if cargo build -p todo; then
   if [[ "$(uname -s)" == "Darwin" ]] || [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
-    echo "==> starting todo GUI as daemon client (does not listen; ADR-001)"
+    echo "==> starting todo GUI as daemon client (does not listen)"
     "$APP" &
     APP_PID=$!
     sleep 1
@@ -81,4 +81,4 @@ wait "$HOST_PID" 2>/dev/null || true
 HOST_PID=""
 
 echo
-echo "desktop smoke ok: ADR-001 daemon SoT driven without CDP"
+echo "desktop smoke ok: daemon SoT driven without CDP"

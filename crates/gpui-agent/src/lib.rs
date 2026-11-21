@@ -1,18 +1,19 @@
-//! GPUI Agent — embeddable SDK + protocol for controllable GPUI Kit apps.
+//! gpui-agent: embeddable SDK and protocol for apps an agent can drive
+//! (GPUI apps, and Native Shell apps through its `nsh-gpui-agent` adapter).
 //!
-//! This is **not** Chrome DevTools Protocol. GPUI Kit apps are GPU-rendered
-//! native surfaces with no DOM, so Playwright/CDP cannot attach. Agents talk
+//! This is **not** Chrome DevTools Protocol. These apps are native surfaces
+//! with no DOM, so Playwright/CDP cannot attach. Agents talk
 //! to an opt-in NDJSON server that publishes a semantic UI tree
 //! (stable ids, roles, names, state) and dispatches actions into the same
 //! handlers the widgets use.
 //!
 //! **SDK entry:** [`prelude`], [`testing::TestHost`], [`UiNode`] constructors
-//! in [`tree::role`]. Cookbook: `docs/SDK.md`. Product agent-machine
-//! mutations go through a **daemon** (`docs/ADR-001-daemon-sot.md` in the
-//! repo); in-process [`AgentHost`] is for widget E2E and embedders.
+//! in [`tree::role`]. Guide: `docs/INTEGRATING.md` in the repo. Keep one
+//! store per product: a GUI that is a client of a headless host does not
+//! run its own; in-process [`AgentHost`] is for widget E2E and embedders.
 //!
 //! Platform seams (`PlatformKind`) keep the protocol stable across desktop,
-//! a headless test host, and later web (GPUI WASM) or mobile hosts.
+//! headless, web and mobile hosts.
 
 pub mod blob;
 pub mod client;
