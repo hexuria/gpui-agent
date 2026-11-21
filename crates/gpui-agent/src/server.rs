@@ -1,7 +1,7 @@
 use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -113,10 +113,7 @@ impl AgentServer {
     pub fn serve_host<H: AgentHost + 'static>(self, host: Arc<Mutex<H>>) {
         let _published = match self.local_addr() {
             Ok(addr) => {
-                let app = host
-                    .lock()
-                    .map(|guard| guard.hello().app)
-                    .unwrap_or_default();
+                let app = lock_host(&host).hello().app;
                 publish_discovery_record(addr, &app)
             }
             Err(_) => None,
@@ -223,6 +220,14 @@ fn prepare_stream(stream: &TcpStream, idle: Duration) -> bool {
     stream.set_read_timeout(Some(idle)).is_ok() && stream.set_write_timeout(Some(idle)).is_ok()
 }
 
+/// Lock the shared host, past a panic in an earlier request. That panic
+/// already ended its own connection; the host belongs to the app, which
+/// keeps running, so later requests are still served instead of every
+/// connection thread panicking on the poisoned lock.
+fn lock_host<H>(host: &Mutex<H>) -> MutexGuard<'_, H> {
+    host.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Every reply leaves through here, so every failure the server sends
 /// carries its stable `error_code` and `hint`.
 fn write_resp(writer: &mut TcpStream, encode_buf: &mut Vec<u8>, resp: &Response) {
@@ -321,7 +326,7 @@ fn handle_stream_host<H: AgentHost>(
             let deadline = crate::dispatch::deadline_after(Duration::from_millis(timeout_ms));
             loop {
                 let response = {
-                    let host = host.lock().expect("host");
+                    let host = lock_host(&host);
                     crate::dispatch::wait_step(&*host, &mut cache, &req, token, deadline)
                 };
                 if let Some(response) = response {
@@ -331,7 +336,7 @@ fn handle_stream_host<H: AgentHost>(
                 thread::sleep(remaining.min(Duration::from_millis(10)));
             }
         } else {
-            let mut host = host.lock().expect("host");
+            let mut host = lock_host(&host);
             handle_request_cached(
                 &mut *host,
                 &mut cache,
@@ -673,6 +678,36 @@ mod tests {
         let flag = server.shutdown_handle();
         thread::spawn(move || server.serve_host(host));
         (bound, flag)
+    }
+
+    #[test]
+    fn a_host_poisoned_by_a_panic_is_still_served() {
+        let host = Arc::new(Mutex::new(EmptyHost));
+        let poisoner = Arc::clone(&host);
+        let panicked = thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("host panicked mid-request");
+        })
+        .join();
+        assert!(panicked.is_err() && host.is_poisoned());
+        let server = AgentServer::bind_with_limits(
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+            ServerLimits::default(),
+        )
+        .unwrap();
+        let addr = server.local_addr().unwrap();
+        let shutdown = server.shutdown_handle();
+        thread::spawn(move || server.serve_host(host));
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        assert!(client.expect_ok(Op::Hello).is_ok());
+        let wait = client
+            .rpc(Op::Wait {
+                timeout_ms: Some(1_000),
+            })
+            .expect("wait reply");
+        assert!(wait.ok, "{wait:?}");
+        shutdown.store(true, Ordering::SeqCst);
     }
 
     #[test]

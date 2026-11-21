@@ -1,5 +1,5 @@
 use std::mem;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
 use crate::protocol::{Request, Response};
@@ -41,11 +41,18 @@ impl AgentMailbox {
         Self::default()
     }
 
+    /// The queue, past a panic on another thread that held it. Each use
+    /// is a single push, take or length read, so a panic cannot leave the
+    /// queue half updated.
+    fn queue(&self) -> MutexGuard<'_, Vec<MailboxRequest>> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Queue `request` for the UI thread; its reply arrives on the
     /// returned receiver. A full mailbox replies `mailbox full` at once.
     pub fn push(&self, request: Request) -> mpsc::Receiver<Response> {
         let (tx, rx) = mpsc::channel();
-        let mut inner = self.inner.lock().expect("mailbox");
+        let mut inner = self.queue();
         if inner.len() >= MAX_MAILBOX_DEPTH {
             let _ = tx.send(Response::err(
                 request.id,
@@ -62,7 +69,7 @@ impl AgentMailbox {
 
     /// Every queued request, oldest first, for the UI thread to answer.
     pub fn take(&self) -> Vec<MailboxRequest> {
-        mem::take(&mut *self.inner.lock().expect("mailbox"))
+        mem::take(&mut *self.queue())
     }
 
     /// [`push`](Self::push) `request` and wait up to `timeout` for its
@@ -79,11 +86,11 @@ impl AgentMailbox {
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().expect("mailbox").len()
+        self.queue().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().expect("mailbox").is_empty()
+        self.queue().is_empty()
     }
 }
 
@@ -111,6 +118,22 @@ mod tests {
             "expected mailbox full error"
         );
         assert_eq!(mailbox.len(), MAX_MAILBOX_DEPTH);
+    }
+
+    #[test]
+    fn a_poisoned_mailbox_still_queues() {
+        let mailbox = AgentMailbox::new();
+        let inner = Arc::clone(&mailbox.inner);
+        let panicked = std::thread::spawn(move || {
+            let _guard = inner.lock().unwrap();
+            panic!("panicked while holding the mailbox");
+        })
+        .join();
+        assert!(panicked.is_err() && mailbox.inner.is_poisoned());
+        let _rx = mailbox.push(Request::new("1", Op::Hello));
+        assert_eq!(mailbox.len(), 1);
+        assert_eq!(mailbox.take().len(), 1);
+        assert!(mailbox.is_empty());
     }
 
     #[test]
