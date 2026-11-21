@@ -77,6 +77,9 @@ pub fn random_nonce() -> Result<[u8; NONCE_LEN], String> {
             ) -> i32;
         }
         const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+        // SAFETY: `buf` is a live, writable NONCE_LEN-byte buffer, the
+        // length passed matches it, and a null algorithm handle is what
+        // BCRYPT_USE_SYSTEM_PREFERRED_RNG requires.
         let status = unsafe {
             BCryptGenRandom(
                 core::ptr::null_mut(),

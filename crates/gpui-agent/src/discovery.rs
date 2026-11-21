@@ -135,6 +135,8 @@ pub fn runtime_root() -> PathBuf {
 fn current_uid() -> u32 {
     #[cfg(unix)]
     {
+        // SAFETY: getuid takes no arguments, cannot fail and touches no
+        // memory of ours.
         unsafe { getuid() }
     }
     #[cfg(not(unix))]
@@ -145,6 +147,8 @@ fn current_uid() -> u32 {
 
 #[cfg(unix)]
 fn effective_uid() -> u32 {
+    // SAFETY: geteuid takes no arguments, cannot fail and touches no
+    // memory of ours.
     unsafe { geteuid() }
 }
 
@@ -821,10 +825,14 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(unix)]
     {
-        if pid > i32::MAX as u32 {
+        // A pid past i32 would wrap to a negative pid, which signals a
+        // whole process group.
+        let Ok(pid) = i32::try_from(pid) else {
             return false;
-        }
-        let rc = unsafe { kill(pid as i32, 0) };
+        };
+        // SAFETY: signal 0 only checks that `pid` exists and may be
+        // signalled; nothing is delivered and no memory is shared.
+        let rc = unsafe { kill(pid, 0) };
         if rc == 0 {
             return true;
         }
