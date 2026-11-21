@@ -81,13 +81,19 @@ To embed `AgentHost` in your own app: [docs/INTEGRATING.md](docs/INTEGRATING.md)
 gpui-agent snapshot --refs --depth 2           # outline; every command takes @eN or an id
 gpui-agent click todo-add --wait-for todo-item-1
 gpui-agent type --stdin password-input < secret.txt
-gpui-agent scroll todo-list-scroll --dy 300    # also swipe, long-press, pinch, hover, drag
+gpui-agent scroll list --dy 300                # also swipe, long-press, pinch, hover, drag
 gpui-agent invoke todo.list                    # named command the app registered
 gpui-agent --session app attach 127.0.0.1:17421   # save address and token
 gpui-agent recipe run examples/recipes/todo-crud.json \
   --schema examples/schemas/todo.json --set title="Buy milk"   # many ops, one connection
 gpui-agent skill                               # usage notes for a coding agent
 ```
+
+Gesture commands (`scroll`, `swipe`, `long-press`, `pinch`, `hover`, `drag`)
+work only on hosts that list the op in `hello.features` (`gpui-agent hello`
+shows them). The CLI refuses the rest with `unsupported_op` before it sends
+anything. nsh's shared agent host lists `scroll` and `drag`; the todo demo
+lists none of them.
 
 Ops and replies: [docs/PROTOCOL.md](docs/PROTOCOL.md). Recipes:
 [docs/RECIPES.md](docs/RECIPES.md).
