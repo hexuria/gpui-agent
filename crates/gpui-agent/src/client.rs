@@ -2122,6 +2122,17 @@ mod tests {
     }
 
     #[test]
+    fn the_largest_client_timeout_still_calls() {
+        let (addr, server) = fake_host(vec![Some(serde_json::json!({ "ok": true }))]);
+        let resp = AgentClient::connect(addr)
+            .with_timeout(Duration::MAX)
+            .call(&Op::click("a"))
+            .unwrap();
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(server.join().unwrap(), ["click"]);
+    }
+
+    #[test]
     fn a_host_that_drops_after_the_write_is_delivery_uncertain() {
         let (addr, server) = fake_host(vec![None]);
         let failure = client_for(addr).call(&Op::click("a")).unwrap_err();

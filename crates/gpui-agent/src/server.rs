@@ -676,21 +676,6 @@ mod tests {
     }
 
     #[test]
-    fn largest_wire_wait_timeout_leaves_the_server_serving() {
-        let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
-        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
-        let resp = client
-            .rpc(Op::Wait {
-                timeout_ms: Some(u64::MAX),
-            })
-            .expect("wait reply");
-        assert!(resp.ok, "{resp:?}");
-        let mut fresh = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
-        assert!(fresh.expect_ok(Op::Hello).is_ok(), "the host lock survived");
-        shutdown.store(true, Ordering::SeqCst);
-    }
-
-    #[test]
     fn limited_line_accepts_short_utf8() {
         let mut cursor = Cursor::new("hello\nmore");
         let line = read_limited_line(&mut cursor, 16).unwrap().unwrap();

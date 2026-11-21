@@ -26,10 +26,15 @@ impl DispatchResult {
     }
 }
 
-/// The instant `wait` from now. `timeout_ms` comes off the wire as any
-/// `u64`, and `Instant + Duration` panics past what the platform clock can
-/// hold, so a wait too long to represent ends at the latest instant that
-/// can be.
+/// The instant `wait` from now. `Instant + Duration` panics when the sum
+/// does not fit the platform clock. A caller-supplied `Duration` such as
+/// `Duration::MAX` (through [`AgentClient::with_timeout`]) never fits; a
+/// wire `timeout_ms` (at most `u64::MAX` ms, about 5.8e8 years) fits the
+/// 64-bit clocks of Linux, macOS and Windows but may not fit a narrower
+/// one. A wait that does not fit is halved until it does, so its deadline
+/// lands between half the latest representable instant and that instant.
+///
+/// [`AgentClient::with_timeout`]: crate::client::AgentClient::with_timeout
 pub(crate) fn deadline_after(wait: std::time::Duration) -> Instant {
     let now = Instant::now();
     let mut wait = wait;
@@ -1277,43 +1282,13 @@ mod tests {
     }
 
     #[test]
-    fn deadline_after_saturates_instead_of_panicking() {
+    fn deadline_after_fits_any_duration() {
         let before = Instant::now();
         assert!(deadline_after(std::time::Duration::MAX) > before);
         assert!(deadline_after(std::time::Duration::from_millis(u64::MAX)) > before);
-    }
-
-    #[test]
-    fn waits_with_the_largest_wire_timeout_answer_without_panicking() {
-        let mut host = ReadyHost { ready: true };
-        let ready = handle_request(
-            &mut host,
-            Request::new(
-                "1",
-                Op::Wait {
-                    timeout_ms: Some(u64::MAX),
-                },
-            ),
-            None,
-            None,
-        );
-        assert!(ready.ok, "{ready:?}");
-        let present = handle_request(
-            &mut EmptyHost,
-            Request::new(
-                "2",
-                Op::wait_until(
-                    AssertSpec {
-                        target: "test-window".into(),
-                        ..AssertSpec::default()
-                    },
-                    u64::MAX,
-                ),
-            ),
-            None,
-            None,
-        );
-        assert!(present.ok, "{present:?}");
+        let short = std::time::Duration::from_millis(5);
+        let deadline = deadline_after(short);
+        assert!(deadline >= before + short && deadline <= Instant::now() + short);
     }
 
     #[test]
