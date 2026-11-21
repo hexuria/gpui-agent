@@ -24,8 +24,11 @@ impl<H: AgentHost + 'static> TestHost<H> {
     /// Bind `127.0.0.1:0` and serve `host` on a background thread.
     pub fn spawn(host: H, token: Option<String>) -> std::io::Result<Self> {
         let host = Arc::new(Mutex::new(host));
-        let (addr, shutdown) =
-            spawn_host(SocketAddr::from(([127, 0, 0, 1], 0)), token, host.clone())?;
+        let (addr, shutdown) = spawn_host(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            token,
+            Arc::clone(&host),
+        )?;
         Ok(Self {
             addr,
             shutdown,
@@ -44,7 +47,7 @@ impl<H: AgentHost + 'static> TestHost<H> {
 
     /// Shared host lock for assertions that peek at domain state.
     pub fn host(&self) -> Arc<Mutex<H>> {
-        self.host.clone()
+        Arc::clone(&self.host)
     }
 
     pub fn shutdown(&self) {

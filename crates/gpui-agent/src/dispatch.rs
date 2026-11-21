@@ -149,7 +149,7 @@ impl TreeCache {
         if let Some(rev) = host.revision() {
             if let Some((cached_rev, tree)) = self.ring.back() {
                 if *cached_rev == rev {
-                    return tree.clone();
+                    return Arc::clone(tree);
                 }
             }
         }
@@ -162,7 +162,7 @@ impl TreeCache {
             while self.ring.len() > REV_RING_DEPTH {
                 self.ring.pop_front();
             }
-            self.ring.back().expect("just pushed").1.clone()
+            Arc::clone(&self.ring.back().expect("just pushed").1)
         } else {
             Arc::new(tree)
         }
@@ -173,7 +173,7 @@ impl TreeCache {
         self.ring
             .iter()
             .find(|(r, _)| *r == rev)
-            .map(|(_, t)| t.clone())
+            .map(|(_, t)| Arc::clone(t))
     }
 
     /// Number of real `host.snapshot()` calls this cache made.

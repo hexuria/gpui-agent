@@ -105,7 +105,7 @@ impl AgentServer {
     }
 
     pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
-        self.shutdown.clone()
+        Arc::clone(&self.shutdown)
     }
 
     /// Serve a mutex-protected host on this thread (plus one thread per
@@ -122,33 +122,17 @@ impl AgentServer {
             Err(_) => None,
         };
         let token = self.token.clone();
-        let shutdown = self.shutdown.clone();
+        let shutdown = Arc::clone(&self.shutdown);
         let limits = self.limits.clone();
-        let inflight = Arc::new(AtomicUsize::new(0));
-
-        while !shutdown.load(Ordering::SeqCst) {
-            match self.listener.accept() {
-                Ok((stream, _)) => {
-                    if !claim_connection(&inflight, limits.max_connections) {
-                        drop(stream);
-                        continue;
-                    }
-                    let host = host.clone();
-                    let token = token.clone();
-                    let shutdown = shutdown.clone();
-                    let inflight = inflight.clone();
-                    let limits = limits.clone();
-                    thread::spawn(move || {
-                        let _guard = InflightGuard(inflight);
-                        handle_stream_host(stream, host, token.as_deref(), &shutdown, &limits);
-                    });
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(_) => break,
-            }
-        }
+        self.accept_loop(move |stream| {
+            handle_stream_host(
+                stream,
+                Arc::clone(&host),
+                token.as_deref(),
+                &shutdown,
+                &limits,
+            );
+        });
     }
 
     /// Serve by posting each request onto a mailbox the UI thread drains.
@@ -167,32 +151,38 @@ impl AgentServer {
             Err(_) => None,
         };
         let token = self.token.clone();
-        let shutdown = self.shutdown.clone();
+        let shutdown = Arc::clone(&self.shutdown);
         let limits = self.limits.clone();
-        let inflight = Arc::new(AtomicUsize::new(0));
+        self.accept_loop(move |stream| {
+            handle_stream_mailbox(
+                stream,
+                mailbox.clone(),
+                token.as_deref(),
+                timeout,
+                &shutdown,
+                &limits,
+            );
+        });
+    }
 
-        while !shutdown.load(Ordering::SeqCst) {
+    /// Accept until shutdown, serving each connection within
+    /// `max_connections` on its own thread; past the cap a connection is
+    /// closed unanswered.
+    fn accept_loop(&self, handle: impl Fn(TcpStream) + Send + Sync + 'static) {
+        let handle = Arc::new(handle);
+        let inflight = Arc::new(AtomicUsize::new(0));
+        while !self.shutdown.load(Ordering::SeqCst) {
             match self.listener.accept() {
                 Ok((stream, _)) => {
-                    if !claim_connection(&inflight, limits.max_connections) {
+                    if !claim_connection(&inflight, self.limits.max_connections) {
                         drop(stream);
                         continue;
                     }
-                    let mailbox = mailbox.clone();
-                    let token = token.clone();
-                    let shutdown = shutdown.clone();
-                    let inflight = inflight.clone();
-                    let limits = limits.clone();
+                    let guard = InflightGuard(Arc::clone(&inflight));
+                    let handle = Arc::clone(&handle);
                     thread::spawn(move || {
-                        let _guard = InflightGuard(inflight);
-                        handle_stream_mailbox(
-                            stream,
-                            mailbox,
-                            token.as_deref(),
-                            timeout,
-                            &shutdown,
-                            &limits,
-                        );
+                        let _guard = guard;
+                        handle(stream);
                     });
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
