@@ -704,8 +704,10 @@ mod integers {
     // serde_json 1.x with `arbitrary_precision` (which any crate in the
     // build can switch on) hands a number buffered by the internally tagged
     // `Op` to a field as a one-entry map under this key, holding the digits.
-    // The key is serde_json's own, not public API; a protocol test feeds
-    // this shape for every integer field so a change to it fails there.
+    // The key is serde_json's own, not public API. The protocol test feeds
+    // this literal shape to every integer field, but no test build enables
+    // `arbitrary_precision`, so nothing here notices if serde_json renames
+    // the key.
     const PRIVATE_NUMBER: &str = "$serde_json::private::Number";
 
     fn unsigned<E: Error>(value: serde_json::Value) -> Result<u64, E> {
