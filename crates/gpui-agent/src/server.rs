@@ -434,6 +434,11 @@ fn handle_stream_mailbox(
             }
         } else if matches!(req.op, Op::WaitUntil { .. }) {
             wait_until_via_mailbox(&mailbox, &req, timeout)
+        } else if let Op::Wait {
+            timeout_ms: Some(timeout_ms),
+        } = req.op
+        {
+            wait_ready_via_mailbox(&mailbox, &req, timeout_ms, timeout)
         } else {
             mailbox
                 .wait(req, timeout)
@@ -457,6 +462,39 @@ fn handle_stream_mailbox(
             shutdown.store(true, Ordering::SeqCst);
             break;
         }
+    }
+}
+
+/// Poll readiness from the TCP thread so a timed `wait` never parks the UI
+/// thread: each poll posts an immediate `wait` (a hello) and the loop
+/// sleeps here, between drains.
+fn wait_ready_via_mailbox(
+    mailbox: &AgentMailbox,
+    req: &Request,
+    timeout_ms: u64,
+    drain_timeout: Duration,
+) -> Response {
+    let deadline = crate::dispatch::deadline_after(Duration::from_millis(timeout_ms));
+    loop {
+        let poll = Request {
+            v: req.v,
+            id: req.id.clone(),
+            token: req.token.clone(),
+            auth: req.auth.clone(),
+            op: Op::Wait { timeout_ms: None },
+        };
+        let resp = match mailbox.wait(poll, drain_timeout) {
+            Ok(resp) => resp,
+            Err(err) => return Response::err(req.id.clone(), err),
+        };
+        if !resp.ok || resp.hello.as_ref().is_some_and(|hello| hello.ready) {
+            return resp;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Response::err(req.id.clone(), "wait timed out");
+        }
+        thread::sleep(remaining.min(Duration::from_millis(10)));
     }
 }
 
@@ -972,6 +1010,97 @@ mod tests {
             resp.hello.expect("hello payload").auth,
             crate::protocol::HelloAuth::Required
         );
+        shutdown.store(true, Ordering::SeqCst);
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    /// Drain `mailbox` like a UI thread whose app turns ready at the
+    /// `ready_after`-th poll; returns the stop flag and whether any posted
+    /// request would have parked the UI thread in a timed wait.
+    fn drain_readiness_polls(
+        mailbox: &AgentMailbox,
+        ready_after: Option<usize>,
+    ) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
+        let drain = mailbox.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let parked = Arc::new(AtomicBool::new(false));
+        let (stop_t, parked_t) = (Arc::clone(&stop), Arc::clone(&parked));
+        thread::spawn(move || {
+            let mut polls = 0;
+            while !stop_t.load(Ordering::SeqCst) {
+                for posted in drain.take() {
+                    if matches!(
+                        posted.request.op,
+                        Op::Wait {
+                            timeout_ms: Some(_)
+                        }
+                    ) {
+                        parked_t.store(true, Ordering::SeqCst);
+                    }
+                    polls += 1;
+                    let mut hello = EmptyHost.hello();
+                    hello.ready = ready_after.is_some_and(|after| polls >= after);
+                    let mut response = Response::ok(posted.request.id.clone());
+                    response.hello = Some(hello);
+                    posted.reply(response);
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+        (stop, parked)
+    }
+
+    #[test]
+    fn mailbox_timed_wait_polls_without_parking_the_ui_thread() {
+        let mailbox = AgentMailbox::new();
+        let (stop, parked) = drain_readiness_polls(&mailbox, Some(3));
+        let (addr, shutdown) = spawn_mailbox(
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+            mailbox,
+            Duration::from_secs(2),
+        )
+        .expect("bind mailbox");
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        let resp = client
+            .rpc(Op::Wait {
+                timeout_ms: Some(u64::MAX),
+            })
+            .expect("wait reply");
+        assert!(resp.ok, "{resp:?}");
+        assert!(resp.hello.as_ref().is_some_and(|hello| hello.ready));
+        assert!(!parked.load(Ordering::SeqCst), "UI thread got a timed wait");
+        shutdown.store(true, Ordering::SeqCst);
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn mailbox_timed_wait_times_out_with_the_request_id() {
+        let mailbox = AgentMailbox::new();
+        let (stop, parked) = drain_readiness_polls(&mailbox, None);
+        let (addr, shutdown) = spawn_mailbox(
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+            mailbox,
+            Duration::from_secs(2),
+        )
+        .expect("bind mailbox");
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        let mut wait = serde_json::to_vec(&Request::new(
+            "w-1",
+            Op::Wait {
+                timeout_ms: Some(30),
+            },
+        ))
+        .expect("encode wait");
+        wait.push(b'\n');
+        stream.write_all(&wait).expect("send wait");
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).expect("reply");
+        let resp: Response = serde_json::from_str(&line).expect("response json");
+        assert_eq!(resp.id, "w-1");
+        assert_eq!(resp.error.as_deref(), Some("wait timed out"));
+        assert!(!parked.load(Ordering::SeqCst), "UI thread got a timed wait");
         shutdown.store(true, Ordering::SeqCst);
         stop.store(true, Ordering::SeqCst);
     }
