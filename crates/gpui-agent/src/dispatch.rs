@@ -222,10 +222,15 @@ pub fn handle_request_cached(
         Op::Wait { timeout_ms: None } => hello_response(host, &req.id, expected_token),
         Op::Wait {
             timeout_ms: Some(ms),
-        } => wait_until_ready(host, &req.id, expected_token, ms),
-        Op::WaitUntil { timeout_ms, spec } => {
-            wait_until_assert(host, &req.id, spec, timeout_ms, cache)
-        }
+        } => wait_for(host, cache, &req.id, TimedWait::Ready, expected_token, ms),
+        Op::WaitUntil { timeout_ms, spec } => wait_for(
+            host,
+            cache,
+            &req.id,
+            TimedWait::Until(&spec),
+            expected_token,
+            timeout_ms,
+        ),
         Op::Revision => {
             let mut resp = Response::ok(&req.id);
             resp.rev = host.revision();
@@ -537,48 +542,40 @@ fn negotiated_hello(
     resp
 }
 
-fn wait_until_ready(
-    host: &dyn AgentHost,
-    id: &str,
-    expected_token: Option<&str>,
-    timeout_ms: u64,
-) -> Response {
-    let req = Request::new(
-        id,
-        Op::Wait {
-            timeout_ms: Some(timeout_ms),
-        },
-    );
-    wait_for(
-        host,
-        &mut TreeCache::new(),
-        &req,
-        expected_token,
-        timeout_ms,
-    )
+/// A wait the host is polled for until it holds or its deadline passes.
+#[derive(Clone, Copy)]
+pub(crate) enum TimedWait<'a> {
+    /// `wait` with a timeout: the host reports ready.
+    Ready,
+    /// `wait_until`: the assertion holds.
+    Until(&'a AssertSpec),
 }
 
-fn wait_until_assert(
-    host: &dyn AgentHost,
-    id: &str,
-    spec: AssertSpec,
-    timeout_ms: u64,
-    cache: &mut TreeCache,
-) -> Response {
-    let req = Request::new(id, Op::WaitUntil { timeout_ms, spec });
-    wait_for(host, cache, &req, None, timeout_ms)
+impl<'a> TimedWait<'a> {
+    /// The timed wait `op` asks for and its `timeout_ms`; `None` for any
+    /// other op, an untimed `wait` included.
+    pub(crate) fn of(op: &'a Op) -> Option<(Self, u64)> {
+        match op {
+            Op::Wait {
+                timeout_ms: Some(ms),
+            } => Some((Self::Ready, *ms)),
+            Op::WaitUntil { timeout_ms, spec } => Some((Self::Until(spec), *timeout_ms)),
+            _ => None,
+        }
+    }
 }
 
 fn wait_for(
     host: &dyn AgentHost,
     cache: &mut TreeCache,
-    req: &Request,
+    id: &str,
+    wait: TimedWait<'_>,
     expected_token: Option<&str>,
     timeout_ms: u64,
 ) -> Response {
     let deadline = deadline_after(std::time::Duration::from_millis(timeout_ms));
     loop {
-        if let Some(response) = wait_step(host, cache, req, expected_token, deadline) {
+        if let Some(response) = wait_step(host, cache, id, wait, expected_token, deadline) {
             return response;
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -586,46 +583,43 @@ fn wait_for(
     }
 }
 
+/// One poll of `wait`: its reply once it holds or `deadline` has passed,
+/// `None` to poll again.
 pub(crate) fn wait_step(
     host: &dyn AgentHost,
     cache: &mut TreeCache,
-    req: &Request,
+    id: &str,
+    wait: TimedWait<'_>,
     expected_token: Option<&str>,
     deadline: Instant,
 ) -> Option<Response> {
-    match &req.op {
-        Op::Wait {
-            timeout_ms: Some(_),
-        } => {
+    match wait {
+        TimedWait::Ready => {
             let hello = host.hello();
             if hello.ready {
-                Some(negotiated_hello(host, &req.id, hello, expected_token))
+                Some(negotiated_hello(host, id, hello, expected_token))
             } else if Instant::now() >= deadline {
-                Some(Response::err(&req.id, "wait timed out"))
+                Some(Response::err(id, "wait timed out"))
             } else {
                 None
             }
         }
-        Op::WaitUntil { spec, .. } => {
+        TimedWait::Until(spec) => {
             let tree = cache.snapshot(host);
             match assert_tree(&tree, spec) {
-                Ok(()) => Some(Response::ok(&req.id)),
+                Ok(()) => Some(Response::ok(id)),
                 Err(error) => {
                     if is_in_viewport_unavailable(&error) && tree.platform == PlatformKind::Headless
                     {
-                        return Some(Response::err(&req.id, error));
+                        return Some(Response::err(id, error));
                     }
                     if Instant::now() >= deadline {
-                        return Some(Response::err(
-                            &req.id,
-                            format!("wait_until timed out: {error}"),
-                        ));
+                        return Some(Response::err(id, format!("wait_until timed out: {error}")));
                     }
                     None
                 }
             }
         }
-        _ => unreachable!("wait_step requires a timed wait op"),
     }
 }
 

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use crate::dispatch::{TreeCache, authorize_request, handle_request_cached};
+use crate::dispatch::{TimedWait, TreeCache, authorize_request, handle_request_cached};
 use crate::hmac_auth::{challenge_for_nonce, random_nonce};
 use crate::host::AgentHost;
 use crate::mailbox::AgentMailbox;
@@ -315,19 +315,12 @@ fn handle_stream_host<H: AgentHost>(
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
         let confirmed_quit = crate::op_is_confirmed_quit(&req.op);
-        let timeout_ms = match &req.op {
-            Op::Wait {
-                timeout_ms: Some(timeout_ms),
-            } => Some(*timeout_ms),
-            Op::WaitUntil { timeout_ms, .. } => Some(*timeout_ms),
-            _ => None,
-        };
-        let resp = if let Some(timeout_ms) = timeout_ms {
+        let resp = if let Some((wait, timeout_ms)) = TimedWait::of(&req.op) {
             let deadline = crate::dispatch::deadline_after(Duration::from_millis(timeout_ms));
             loop {
                 let response = {
                     let host = lock_host(&host);
-                    crate::dispatch::wait_step(&*host, &mut cache, &req, token, deadline)
+                    crate::dispatch::wait_step(&*host, &mut cache, &req.id, wait, token, deadline)
                 };
                 if let Some(response) = response {
                     break response;
