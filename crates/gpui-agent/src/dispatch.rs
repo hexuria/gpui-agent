@@ -5,7 +5,7 @@ use std::time::Instant;
 use crate::hmac_auth::{NONCE_LEN, hmac_verify};
 use crate::host::AgentHost;
 use crate::protocol::{
-    AssertSpec, Op, PROTOCOL_VERSION, PlatformKind, Request, Response, SnapshotFormat,
+    AssertSpec, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response, SnapshotFormat,
 };
 use crate::scroll_capture::ScreenshotSpec;
 use crate::tree::{UiNode, UiTree, in_viewport_unavailable, is_in_viewport_unavailable, role};
@@ -492,8 +492,18 @@ fn attach_screenshot_blob(resp: &mut Response, scratch: bool) -> Result<(), Stri
 }
 
 fn hello_response(host: &dyn AgentHost, id: &str, expected_token: Option<&str>) -> Response {
+    negotiated_hello(host, id, host.hello(), expected_token)
+}
+
+/// Answer `id` with `hello` plus the auth mode, identity and the features
+/// this dispatcher adds, so every op that returns a hello agrees on them.
+fn negotiated_hello(
+    host: &dyn AgentHost,
+    id: &str,
+    mut hello: HelloInfo,
+    expected_token: Option<&str>,
+) -> Response {
     let mut resp = Response::ok(id);
-    let mut hello = host.hello();
     hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
     crate::discovery::fill_hello_identity(&mut hello);
     for feature in [
@@ -577,13 +587,9 @@ pub(crate) fn wait_step(
         Op::Wait {
             timeout_ms: Some(_),
         } => {
-            let mut hello = host.hello();
+            let hello = host.hello();
             if hello.ready {
-                hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
-                crate::discovery::fill_hello_identity(&mut hello);
-                let mut response = Response::ok(&req.id);
-                response.hello = Some(hello);
-                Some(response)
+                Some(negotiated_hello(host, &req.id, hello, expected_token))
             } else if Instant::now() >= deadline {
                 Some(Response::err(&req.id, "wait timed out"))
             } else {
@@ -1232,6 +1238,36 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_millis(40),
             "Wait None must not poll: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn ready_timed_wait_answers_the_same_hello_as_hello() {
+        let mut host = ReadyHost { ready: true };
+        let nonce = [0x11u8; 32];
+        let auth = crate::hmac_auth::hmac_hex("t", &nonce).unwrap();
+        let wait = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::Wait {
+                    timeout_ms: Some(50),
+                },
+            )
+            .with_auth(auth.clone()),
+            Some("t"),
+            Some(&nonce),
+        );
+        let hello_ok = handle_request(
+            &mut host,
+            Request::new("1", Op::Hello).with_auth(auth),
+            Some("t"),
+            Some(&nonce),
+        );
+        assert!(wait.ok, "{wait:?}");
+        assert_eq!(
+            serde_json::to_value(&wait.hello).unwrap(),
+            serde_json::to_value(&hello_ok.hello).unwrap()
         );
     }
 
