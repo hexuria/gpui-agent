@@ -294,9 +294,14 @@ pub fn handle_request_cached(
                         .map(|l| l as usize)
                         .unwrap_or(crate::event::EVENTS_DEFAULT_LIMIT),
                 );
-                let mut resp = Response::ok(req.id);
-                resp.result = serde_json::to_value(poll).ok();
-                resp
+                match serde_json::to_value(poll) {
+                    Ok(result) => {
+                        let mut resp = Response::ok(req.id);
+                        resp.result = Some(result);
+                        resp
+                    }
+                    Err(err) => Response::err(req.id, format!("events encode failed: {err}")),
+                }
             }
         },
         kb @ Op::Keybinding { .. } => {

@@ -83,7 +83,8 @@ impl AgentServer {
         limits: ServerLimits,
     ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
-        listener.set_nonblocking(false)?;
+        // The serve loops poll `accept` so they notice a shutdown request.
+        listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
             token,
@@ -123,7 +124,6 @@ impl AgentServer {
         let token = self.token.clone();
         let shutdown = self.shutdown.clone();
         let limits = self.limits.clone();
-        self.listener.set_nonblocking(true).ok();
         let inflight = Arc::new(AtomicUsize::new(0));
 
         while !shutdown.load(Ordering::SeqCst) {
@@ -169,7 +169,6 @@ impl AgentServer {
         let token = self.token.clone();
         let shutdown = self.shutdown.clone();
         let limits = self.limits.clone();
-        self.listener.set_nonblocking(true).ok();
         let inflight = Arc::new(AtomicUsize::new(0));
 
         while !shutdown.load(Ordering::SeqCst) {
@@ -440,9 +439,10 @@ fn handle_stream_mailbox(
         {
             wait_ready_via_mailbox(&mailbox, &req, timeout_ms, timeout)
         } else {
+            let id = req.id.clone();
             mailbox
                 .wait(req, timeout)
-                .unwrap_or_else(|err| Response::err("?", err))
+                .unwrap_or_else(|err| Response::err(id, err))
         };
         if let Some(scratch) = inline_scratch {
             crate::dispatch::finish_inline_screenshot(&mut resp, scratch);
@@ -1103,6 +1103,29 @@ mod tests {
         assert!(!parked.load(Ordering::SeqCst), "UI thread got a timed wait");
         shutdown.store(true, Ordering::SeqCst);
         stop.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn undrained_mailbox_times_out_with_the_request_id() {
+        let mailbox = AgentMailbox::new();
+        let (addr, shutdown) = spawn_mailbox(
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+            mailbox,
+            Duration::from_millis(30),
+        )
+        .expect("bind mailbox");
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        let mut revision =
+            serde_json::to_vec(&Request::new("r-7", Op::Revision)).expect("encode revision");
+        revision.push(b'\n');
+        stream.write_all(&revision).expect("send revision");
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).expect("reply");
+        let resp: Response = serde_json::from_str(&line).expect("response json");
+        assert_eq!(resp.id, "r-7");
+        assert_eq!(resp.error_code.as_deref(), Some(crate::error_code::TIMEOUT));
+        shutdown.store(true, Ordering::SeqCst);
     }
 
     #[test]
