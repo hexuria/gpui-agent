@@ -1072,11 +1072,11 @@ impl AgentClient {
         let acts = op.acts();
         match sent {
             Ok(mut resp) => {
-                resp.fill_error_code();
+                resp.fill_host_reply_code();
                 if acts && resp.delivery_status.is_none() {
                     resp.delivery_status = Some(match resp.code() {
                         None => DeliveryStatus::DeliveredUnverified,
-                        Some(code) => DeliveryStatus::of_failure(code),
+                        Some(code) => DeliveryStatus::of_failure(error_code::host_reply_code(code)),
                     });
                 }
                 Ok(resp)
@@ -1469,7 +1469,7 @@ fn parse_response_line(line: &[u8], legacy_secret_redaction: bool) -> Result<Res
         serde_json::from_slice(line).map_err(|err| format!("bad response: {err}"))?;
     // Hosts that predate `error_code` send only the prefixed text; classify
     // it with the same table the server uses.
-    resp.fill_error_code();
+    resp.fill_host_reply_code();
     // Hosts that predate redaction send secret values in full: mask them on
     // arrival, so no output built from this tree can show one.
     if let Some(tree) = resp.tree.as_mut() {
@@ -2191,6 +2191,33 @@ mod tests {
             failure.delivery_status,
             Some(DeliveryStatus::DeliveryUncertain)
         );
+    }
+
+    #[test]
+    fn a_host_error_worded_like_a_transport_failure_was_delivered() {
+        let (addr, server) = fake_host(vec![
+            // A host that predates `error_code`: only the text.
+            Some(serde_json::json!({ "ok": false, "error": "connect to backend failed" })),
+            // A host that classified its own text with the general table.
+            Some(serde_json::json!({
+                "ok": false,
+                "error": "no reply from the payment service",
+                "error_code": error_code::NO_REPLY,
+            })),
+        ]);
+        let mut client = client_for(addr);
+        let worded = client.call(&Op::click("a")).unwrap_err();
+        assert_eq!(worded.error_code, error_code::HOST_ERROR);
+        assert_eq!(
+            worded.delivery_status,
+            Some(DeliveryStatus::DeliveryUncertain)
+        );
+        let coded = client.call(&Op::click("a")).unwrap_err();
+        assert_eq!(
+            coded.delivery_status,
+            Some(DeliveryStatus::DeliveryUncertain)
+        );
+        server.join().unwrap();
     }
 
     #[test]

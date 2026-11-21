@@ -117,6 +117,23 @@ pub fn error_code_of(error: &str) -> &'static str {
     HOST_ERROR
 }
 
+/// [`error_code_of`] for an error a host replied with. A reply proves the
+/// request reached the host, so the client's own transport codes cannot
+/// describe it, however the host worded its error.
+pub(crate) fn host_reply_code_of(error: &str) -> &'static str {
+    host_reply_code(error_code_of(error))
+}
+
+/// `code` as the code of a host reply: the transport-only codes
+/// ([`CONNECT_FAILED`], [`NO_REPLY`]) become [`HOST_ERROR`], since a host
+/// that answered was reached.
+pub(crate) fn host_reply_code(code: &str) -> &str {
+    match code {
+        CONNECT_FAILED | NO_REPLY => HOST_ERROR,
+        code => code,
+    }
+}
+
 /// Fixed recovery hint for a code, `None` when there is nothing better to
 /// do than read the error.
 pub fn hint_for(code: &str) -> Option<&'static str> {
@@ -376,6 +393,31 @@ mod tests {
             Some("take a new snapshot and retry")
         );
         assert_eq!(hint_for(HOST_ERROR), None);
+    }
+
+    #[test]
+    fn a_host_reply_is_never_a_transport_failure() {
+        for (error, general, from_host) in [
+            ("connect to backend failed", CONNECT_FAILED, HOST_ERROR),
+            (
+                "connect 10.0.0.2:5432 failed: refused",
+                CONNECT_FAILED,
+                HOST_ERROR,
+            ),
+            ("no reply from the payment service", NO_REPLY, HOST_ERROR),
+            ("connection closed by the database", NO_REPLY, HOST_ERROR),
+            ("bad response from upstream", NO_REPLY, HOST_ERROR),
+            ("connect_failed: proxied", CONNECT_FAILED, HOST_ERROR),
+            ("no_reply", NO_REPLY, HOST_ERROR),
+            ("wait timed out", TIMEOUT, TIMEOUT),
+            ("stale_target: `a` changed", STALE_TARGET, STALE_TARGET),
+            ("node `a` not found", NOT_FOUND, NOT_FOUND),
+            ("cannot click `a`", HOST_ERROR, HOST_ERROR),
+        ] {
+            assert_eq!(error_code_of(error), general, "{error}");
+            assert_eq!(host_reply_code_of(error), from_host, "{error}");
+            assert_eq!(host_reply_code(general), from_host, "{error}");
+        }
     }
 
     #[test]

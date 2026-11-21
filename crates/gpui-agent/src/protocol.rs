@@ -1398,10 +1398,20 @@ impl Response {
     /// has none. Used by the server before writing and by the client on
     /// replies from hosts that predate the field.
     pub fn fill_error_code(&mut self) {
+        self.fill_error_code_with(crate::error_code::error_code_of);
+    }
+
+    /// [`fill_error_code`](Self::fill_error_code) for a reply a host sent,
+    /// which no transport-only code can describe.
+    pub(crate) fn fill_host_reply_code(&mut self) {
+        self.fill_error_code_with(crate::error_code::host_reply_code_of);
+    }
+
+    fn fill_error_code_with(&mut self, classify: fn(&str) -> &'static str) {
         if self.ok || self.error_code.is_some() {
             return;
         }
-        let code = crate::error_code::error_code_of(self.error.as_deref().unwrap_or(""));
+        let code = classify(self.error.as_deref().unwrap_or(""));
         self.error_code = Some(code.to_string());
         if self.hint.is_none() {
             self.hint = crate::error_code::hint_for(code).map(str::to_string);

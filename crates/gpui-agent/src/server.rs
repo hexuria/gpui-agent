@@ -239,7 +239,7 @@ fn prepare_stream(stream: &TcpStream, idle: Duration) -> bool {
 fn write_resp(writer: &mut TcpStream, encode_buf: &mut Vec<u8>, resp: &Response) {
     if !resp.ok && resp.error_code.is_none() {
         let mut coded = resp.clone();
-        coded.fill_error_code();
+        coded.fill_host_reply_code();
         let _ = write_json_line(writer, encode_buf, &coded);
         return;
     }
