@@ -22,12 +22,15 @@ impl Default for AgentMailbox {
     }
 }
 
+/// One queued request; answer it with [`reply`](Self::reply).
 pub struct MailboxRequest {
     pub request: Request,
     sender: mpsc::Sender<Response>,
 }
 
 impl MailboxRequest {
+    /// Send `response` to the waiting caller. A caller that has already
+    /// timed out is gone, and the reply is dropped.
     pub fn reply(self, response: Response) {
         let _ = self.sender.send(response);
     }
@@ -38,6 +41,8 @@ impl AgentMailbox {
         Self::default()
     }
 
+    /// Queue `request` for the UI thread; its reply arrives on the
+    /// returned receiver. A full mailbox replies `mailbox full` at once.
     pub fn push(&self, request: Request) -> mpsc::Receiver<Response> {
         let (tx, rx) = mpsc::channel();
         let mut inner = self.inner.lock().expect("mailbox");
@@ -55,10 +60,18 @@ impl AgentMailbox {
         rx
     }
 
+    /// Every queued request, oldest first, for the UI thread to answer.
     pub fn take(&self) -> Vec<MailboxRequest> {
         mem::take(&mut *self.inner.lock().expect("mailbox"))
     }
 
+    /// [`push`](Self::push) `request` and wait up to `timeout` for its
+    /// reply.
+    ///
+    /// A timeout does not withdraw the request: there is no cancellation,
+    /// so the UI thread can still drain and run it later, after the caller
+    /// has reported the timeout. Callers must not treat a timed-out action
+    /// as not run.
     pub fn wait(&self, request: Request, timeout: Duration) -> Result<Response, String> {
         let rx = self.push(request);
         rx.recv_timeout(timeout)

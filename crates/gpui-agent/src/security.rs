@@ -59,6 +59,12 @@ impl fmt::Debug for AgentConfig {
     }
 }
 
+/// The agent configuration the `GPUI_AGENT*` environment asks for, `None`
+/// when `GPUI_AGENT` is unset, or the bind policy's refusal.
+///
+/// With `GPUI_AGENT_INSECURE_NO_TOKEN=1` and no token it prints
+/// [`INSECURE_NO_TOKEN_BANNER`] to stderr. It prints rather than logs so
+/// the warning reaches the operator of a host that installed no logger.
 pub fn from_env() -> Result<Option<AgentConfig>, SecurityError> {
     if !truthy_env("GPUI_AGENT") {
         return Ok(None);
