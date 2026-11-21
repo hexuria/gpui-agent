@@ -2,6 +2,7 @@ use std::io::{BufReader, ErrorKind, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
+use crate::dispatch::deadline_after;
 use crate::error_code::{self, CallFailure, DeliveryStatus, error_code_of};
 use crate::hmac_auth::{hmac_hex, parse_challenge_line};
 use crate::mailbox::MAX_MAILBOX_DEPTH;
@@ -510,7 +511,7 @@ impl AgentClient {
         self.drop_idle_session();
         let (op, force_full) = self.prepare_snapshot_op(op).map_err(SendError::unsent)?;
         let timeout = self.timeout_for(&op);
-        let connect_deadline = Instant::now() + self.timeout;
+        let connect_deadline = deadline_after(self.timeout);
         let mut response = self.roundtrip_retry_until(&op, connect_deadline, timeout, None)?;
         if force_full && response.ok {
             response.result = Some(serde_json::json!({ "full": true }));
@@ -628,7 +629,7 @@ impl AgentClient {
 
     fn roundtrip_gated_retry(&mut self, op: &Op) -> Result<Response, SendError> {
         let timeout = self.timeout_for(op);
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = deadline_after(timeout);
         let mut last_err = String::new();
         while std::time::Instant::now() < deadline {
             self.drop_idle_session();
@@ -800,7 +801,7 @@ impl AgentClient {
         let start_id = self.next_id;
         self.next_id += ops.len() as u64;
         let mut last_err = String::new();
-        let connect_deadline = Instant::now() + self.timeout;
+        let connect_deadline = deadline_after(self.timeout);
         while Instant::now() < connect_deadline {
             match self.pipeline_once_until(start_id, ops, connect_deadline, reply_timeout) {
                 Ok(resps) => return Ok(resps),

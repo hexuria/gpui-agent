@@ -26,6 +26,21 @@ impl DispatchResult {
     }
 }
 
+/// The instant `wait` from now. `timeout_ms` comes off the wire as any
+/// `u64`, and `Instant + Duration` panics past what the platform clock can
+/// hold, so a wait too long to represent ends at the latest instant that
+/// can be.
+pub(crate) fn deadline_after(wait: std::time::Duration) -> Instant {
+    let now = Instant::now();
+    let mut wait = wait;
+    loop {
+        if let Some(deadline) = now.checked_add(wait) {
+            return deadline;
+        }
+        wait /= 2;
+    }
+}
+
 /// Fingerprint-gate error prefixes (`<prefix>: <detail>`). Classify with
 /// [`is_stale_dispatch_error`] so callers match the token, not wording.
 pub const STALE_TARGET: &str = "stale_target";
@@ -541,7 +556,7 @@ fn wait_for(
     expected_token: Option<&str>,
     timeout_ms: u64,
 ) -> Response {
-    let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let deadline = deadline_after(std::time::Duration::from_millis(timeout_ms));
     loop {
         if let Some(response) = wait_step(host, cache, req, expected_token, deadline) {
             return response;
@@ -1218,6 +1233,46 @@ mod tests {
             elapsed < std::time::Duration::from_millis(40),
             "Wait None must not poll: {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn deadline_after_saturates_instead_of_panicking() {
+        let before = Instant::now();
+        assert!(deadline_after(std::time::Duration::MAX) > before);
+        assert!(deadline_after(std::time::Duration::from_millis(u64::MAX)) > before);
+    }
+
+    #[test]
+    fn waits_with_the_largest_wire_timeout_answer_without_panicking() {
+        let mut host = ReadyHost { ready: true };
+        let ready = handle_request(
+            &mut host,
+            Request::new(
+                "1",
+                Op::Wait {
+                    timeout_ms: Some(u64::MAX),
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(ready.ok, "{ready:?}");
+        let present = handle_request(
+            &mut EmptyHost,
+            Request::new(
+                "2",
+                Op::wait_until(
+                    AssertSpec {
+                        target: "test-window".into(),
+                        ..AssertSpec::default()
+                    },
+                    u64::MAX,
+                ),
+            ),
+            None,
+            None,
+        );
+        assert!(present.ok, "{present:?}");
     }
 
     #[test]

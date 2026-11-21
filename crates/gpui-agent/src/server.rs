@@ -329,7 +329,7 @@ fn handle_stream_host<H: AgentHost>(
             _ => None,
         };
         let resp = if let Some(timeout_ms) = timeout_ms {
-            let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+            let deadline = crate::dispatch::deadline_after(Duration::from_millis(timeout_ms));
             loop {
                 let response = {
                     let host = host.lock().expect("host");
@@ -482,7 +482,7 @@ fn wait_until_via_mailbox(
             );
         }
     };
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let deadline = crate::dispatch::deadline_after(Duration::from_millis(timeout_ms));
     // Revision the last Assert covered. `None` = "never checked".
     let mut checked_rev: Option<Option<u64>> = None;
     loop {
@@ -645,6 +645,21 @@ mod tests {
         let flag = server.shutdown_handle();
         thread::spawn(move || server.serve_host(host));
         (bound, flag)
+    }
+
+    #[test]
+    fn largest_wire_wait_timeout_leaves_the_server_serving() {
+        let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        let resp = client
+            .rpc(Op::Wait {
+                timeout_ms: Some(u64::MAX),
+            })
+            .expect("wait reply");
+        assert!(resp.ok, "{resp:?}");
+        let mut fresh = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        assert!(fresh.expect_ok(Op::Hello).is_ok(), "the host lock survived");
+        shutdown.store(true, Ordering::SeqCst);
     }
 
     #[test]
