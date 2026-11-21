@@ -13,6 +13,12 @@
 //!
 //! Platform seams (`PlatformKind`) keep the protocol stable across desktop,
 //! a headless test host, and later web (GPUI WASM) or mobile hosts.
+//!
+//! **Paths:** most items are reachable both at the crate root
+//! (`gpui_agent::AgentClient`) and through their module
+//! (`gpui_agent::client::AgentClient`). The root re-exports and [`prelude`]
+//! are the canonical paths; use a module path only for an item the root
+//! does not re-export. The module paths stay public for compatibility.
 
 pub mod blob;
 pub mod client;
