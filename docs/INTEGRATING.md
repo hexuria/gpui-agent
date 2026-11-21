@@ -1,11 +1,17 @@
-# Integrating gpui-agent into another GPUI Kit app
+# Integrating gpui-agent into an app
 
-The CLI does **not** attach to an arbitrary GPUI Kit process. You embed
-`AgentHost`, assign stable ids, and start the server under `GPUI_AGENT=1`.
+An app is driven only if it embeds `AgentHost`, assigns stable ids and starts
+the server under `GPUI_AGENT=1`. The CLI and MCP server never learn your
+domain: your app supplies the semantic tree and the action handlers.
 
-`gpui-agent` is a **generic** control plane. Your app supplies the
-semantic tree and action handlers; the CLI/MCP never learn your domain.
-Cookbook and `TestHost`: [SDK.md](SDK.md). Sync model: [ADR-001](ADR-001-daemon-sot.md).
+nsh apps already have a host: the `nsh-gpui-agent` adapter in
+[hexuria/nsh](https://github.com/hexuria/nsh) (branch `buwiz`). This page is
+for a GPUI app, or any Rust app that wants to write its own host.
+
+```rust
+use gpui_agent::prelude::*;
+use gpui_agent::testing::TestHost;
+```
 
 ## 1. Opt in
 
@@ -114,6 +120,55 @@ helper the sample stores use). It replaces "assert then click" races:
 the client proves it is acting on the exact node it last observed.
 Hosts that support it list `expect_fingerprint` in `hello.features`.
 
+### Tree builders
+
+Prefer typed constructors over `UiNode::new`:
+
+```rust
+UiNode::window("app-window", "Mail")
+    .with_child(UiNode::navigation("nav", "Nav")
+        .with_child(UiNode::button("nav-inbox", "Inbox"))
+        .with_child(UiNode::button("nav-settings", "Settings")))
+    .with_child(UiNode::page("page-inbox", "Inbox")
+        .with_child(UiNode::textbox("search-input", "Search").with_value(q)));
+```
+
+Roles live in `gpui_agent::role`. The wire format is a string, so an app can
+add its own roles. Node state: `with_focused`, `with_value`, `with_enabled`,
+`with_bounds`, `with_visible` / `with_visible_deep`. Keep closed overlays in
+the tree (`UiNode::dialog("auth-modal", "Sign in").with_visible(false)`); for a
+collapsed sidebar use `nav.with_visible_deep(false)` so its descendants are not
+still visible.
+
+### Test a host with `TestHost`
+
+```rust
+#[test]
+fn settings_page_opens() {
+    let host = TestHost::spawn(MyStore::default(), Some("ci".into())).unwrap();
+    let mut client = host.client().with_token("ci");
+    client.wait_ready().unwrap();
+    client.click("nav-settings").unwrap();
+    let tree = client.snapshot().unwrap().tree.unwrap();
+    assert!(tree.find("page-settings").is_some());
+}
+```
+
+`TestHost` binds `127.0.0.1:0`. A host without a surface returns
+`screenshot_unavailable` instead of an image, for `mode=scrolled` too.
+
+### Where state lives
+
+| Path | When | Who owns state |
+| --- | --- | --- |
+| `spawn_host` | Headless host, CI, `TestHost` | The `AgentHost` you pass in |
+| `spawn_mailbox` | A painted GPUI window | The UI-thread store; the TCP thread must not touch GPUI |
+| GUI as `AgentClient` | `apps/todo` without `embedded-host` | The headless host (`todo-headless`); the GUI polls `snapshot` |
+
+Keep one store per product: a GUI that is a client of a headless host must
+not run a second store of its own. `apps/todo --features embedded-host` is the
+in-process exception, for driving painted widgets.
+
 ## 3. Assign stable ids
 
 Ids are **your** contract with agents. Prefer names that survive layout
@@ -206,16 +261,11 @@ reuses a single TCP session across `tools/call`.
 - [ ] Overlays/sidebar/modals: stable id + `visible` (keep the node when closed if agents must assert “known but hidden”)
 - [ ] Honest bounds for `in_viewport`; headless stays `in_viewport_unavailable`
 - [ ] Optional `invoke` map documented for agents
-- [ ] Optional: check in a JSON `recipe` of those ops so agents run one
+- [ ] Optional: check in a JSON recipe of those ops so agents run one
       CLI invocation instead of one process per click
-      ([RECIPES.md](RECIPES.md); laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md)).
-      `invoke` names in the recipe must match the host allow-list;
-      shutdown recipes need `--yes`. Optional `--screenshot-dir` is
-      observe-only; headless / Linux / Windows stay
-      `screenshot_unavailable`. macOS **embedded-host** writes this
-      window (`screencapture -l`). Recipes still cannot bypass
-      [SECURITY.md](SECURITY.md#recipes-experimental). Visual note:
-      [RECORDING.md](RECORDING.md).
+      ([RECIPES.md](RECIPES.md)). `invoke` names in the recipe must match
+      the schema allow-list; shutdown recipes need `--yes`. Recipes cannot
+      bypass [SECURITY.md](SECURITY.md#recipes-experimental).
 - [ ] Product builds leave the feature off
 - [ ] `revision()` bumps on every snapshot-affecting mutation — or returns `None` (never a stale `rev`)
 - [ ] `expect_fingerprint` checked on the dispatch thread before mutating (`stale_target` / `target_gone`, nothing dispatched)

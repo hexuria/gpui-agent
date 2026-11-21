@@ -1,4 +1,4 @@
-# GPUI Agent Protocol v2
+# gpui-agent protocol (v2)
 
 Newline-delimited JSON on a loopback TCP socket. One request object, one
 response object **per line**. The client (`AgentClient`) keeps the TCP
@@ -67,7 +67,7 @@ servers close on bad JSON the same way.
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
 | `wait` | optional `timeout_ms` | `None`: immediate hello (even if `ready: false`). `Some(ms)`: poll `hello.ready` until true or `wait timed out` (sleep ≤ 10 ms between polls) |
 | `wait_until` | `timeout_ms`, same fields as `assert` | Poll `assert` until ok or `wait_until timed out: …`. **Not** a `wait` extension — `wait` stays ready/paint only. |
-| `screenshot` | optional `path`, optional `mode` (`viewport` \| `scrolled`, default **viewport**), optional `target`, optional `max_height_px` | Observe-only PNG of the **app surface**. Host writes `path` locally (not on the NDJSON line). Default `mode=viewport` is unchanged: the painted window. `mode=scrolled` requires `target` (stable scroll-view id): the host sets scroll offset, waits for paint, captures tiles, stitches, and restores the original offset (semantic scroll API — **not** OS HID / virtual wheel). Headless / daemon / default GUI client / Linux / Windows return `screenshot_unavailable` instead of a fake image (including scrolled). macOS `todo --features embedded-host` writes **this window** via `screencapture -l` (Screen Recording); scrolled stitches those tiles. Never the full desktop. Offscreen `render_to_image` is out of MVP. |
+| `screenshot` | optional `path`, optional `mode` (`viewport` \| `scrolled`, default **viewport**), optional `target`, optional `max_height_px` | Observe-only PNG of the app surface, written by the host to `path` (not sent on the line unless `inline`). See [Screenshots](#screenshots). |
 | `shutdown` | | Ask the host to exit |
 
 These are also the **only** first-class `gpui-agent` CLI commands (plus
@@ -76,9 +76,7 @@ or click targets — not new subcommands. `recipe` is a **client-side**
 batch of the ops above (`AgentClient` reuses one TCP session; `rpc_once`
 is the old reconnect path for benches). It is not a new wire `op`.
 `recipe run --screenshot-dir` issues extra `screenshot` ops after steps
-so an agent can visually check UI state mid-run. Headless stays honest.
-macOS **embedded-host** writes the app window. Details:
-[RECORDING.md](RECORDING.md) and [TRY_ON_MAC.md](TRY_ON_MAC.md).
+so an agent can check the UI mid-run.
 
 ## Response
 
@@ -309,8 +307,7 @@ history, pipe it: `gpui-agent type --stdin <id> < secret.txt` (also
 
 ## Delivery modes (`click` / `type` / `key`)
 
-`delivery` is optional and defaults to **`semantic`**. Omitted on the wire
-so v1 clients stay valid.
+`delivery` is optional and defaults to **`semantic`**.
 
 | Mode | When to use | What happens |
 | --- | --- | --- |
@@ -333,7 +330,7 @@ gpui-agent screenshot --out tall.png --mode scrolled --target todo-list-scroll
 ```
 
 ```json
-{"v":1,"id":"1","op":"click","target":"todo-add","delivery":"virtual"}
+{"v":2,"id":"1","op":"click","target":"todo-add","delivery":"virtual"}
 ```
 
 Hosts that cannot run the GPUI event pipeline (headless, or desktop before
@@ -525,17 +522,63 @@ gpui-agent invoke prefs.set --arg theme=dark
 
 ## Platforms
 
-`platform` is `desktop` | `headless` | `web` | `mobile`. Only the first two
-are implemented. New hosts implement `AgentHost` and keep this document.
+`platform` is `desktop` | `headless` | `web` | `mobile`. GPUI hosts report
+`desktop` or `headless`; nsh hosts also report `web` and `mobile`. New hosts
+implement `AgentHost` and keep this document. Where each host runs and how
+the CLI reaches it: [README](../README.md#platforms).
 
-`screenshot` backends:
+## Screenshots
 
-| Host | Result |
+`screenshot` is a PNG of the app surface. It is not video and not a
+desktop grab. A host that cannot capture returns `screenshot_unavailable`
+and writes no file; it never returns a placeholder image.
+
+| Host | `screenshot` |
 | --- | --- |
-| Headless | `screenshot_unavailable`, no file |
-| Desktop Linux / Windows | Same (no production GPUI framebuffer export on this pin) |
-| Desktop macOS (embedded-host) | PNG of **this window** (`screencapture -l`); `mode=scrolled` stitches tiles of a named scroller then restores offset. Permission failure is unavailable, not a fake PNG |
-| Desktop macOS (default GUI client) | `screenshot_unavailable` — GUI does not host the agent port |
+| `todo-headless`, `TestHost`, any host without a surface | `screenshot_unavailable`, no file |
+| `apps/todo` without `embedded-host` (a client of `todo-headless`) | `screenshot_unavailable`: the GUI does not host the agent port |
+| `apps/todo --features embedded-host` on Linux / Windows | `screenshot_unavailable`: GPUI `render_to_image` exists only under `test-support` on this gpui-kit pin |
+| `apps/todo --features embedded-host` on macOS | This window via `screencapture -l <CGWindowID> -o -x <path>`; needs Screen Recording for the terminal or binary. A refusal is `screenshot_unavailable` |
+| nsh hosts | Depends on the platform adapter. On a device or in a browser use `inline: true` |
+
+On macOS, capture does not move the cursor (`-C` is not passed), is not
+interactive (`-i` / `-w`) and is limited to this window (`-l`).
+`TEST_PNG` is a 1×1 fixture for tests and mock hosts only.
+
+A PNG is the same class of local observation as `snapshot` values: keep
+tokens and passwords out of the painted window ([SECURITY.md](SECURITY.md)).
+
+### Scrolled screenshots
+
+The default `mode` is `viewport`. `mode=scrolled` captures a tall image of
+one scroll container:
+
+```text
+screenshot
+  path?: relative.png
+  mode?: "viewport" | "scrolled"   # default viewport
+  target?: scroll-view id          # required when mode=scrolled
+  max_height_px?: number           # default and max 16384
+```
+
+The host resolves `target`, reads viewport and content size, then for each
+tile sets the offset, waits for paint, captures and crops to the scroller.
+It stitches the tiles and restores the original offset, also on error. This
+uses the app's scroll API, not OS input. The result may include `tiles`,
+`target`, `content_height` and `viewport_height`. A virtualized list
+includes only the loaded range.
+
+Content taller than `max_height_px`, more than 32 tiles or a too large PNG
+is an error, not a truncated image.
+
+| Host | `mode=scrolled` |
+| --- | --- |
+| Hosts without a capture backend | `screenshot_unavailable`, no file |
+| macOS embedded-host | Stitched PNG of `target` (todo demo: `todo-list-scroll`) |
+| Unknown or unscrollable `target` | `scroll_unavailable` |
+
+For print or multi-page documents prefer an app exporter (PDF, HTML); a
+scrolled PNG shows chrome and layout.
 
 ## Discovery
 
@@ -550,7 +593,6 @@ The host picks its own listen port. On bind it writes a JSON record (address, pi
 - Changing the meaning of an existing field or removing one is a major bump (`v: 2`).
 - Do **not** extend the CLI with app-specific subcommands. New product
   verbs go on the host (`invoke`) or in agent prompts.
-- Experimental recipes ([RECIPES.md](RECIPES.md)) batch existing ops on
-  the client. Additive only; servers that never heard of recipes still
-  speak v1 NDJSON one request at a time. Caps and fail-closed invoke:
+- Recipes ([RECIPES.md](RECIPES.md)) batch existing ops on the client.
+  Hosts need no change: they still get one request per line. Caps and fail-closed invoke:
   [SECURITY.md](SECURITY.md#recipes-experimental).

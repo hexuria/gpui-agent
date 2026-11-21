@@ -1,6 +1,6 @@
 # Performance notes
 
-P0 of the [no-brainer plan](NO_BRAINER_PLAN.md): session reuse, NDJSON
+Session reuse, NDJSON
 buffer reuse, tree flatten, mailbox `take`. Recipes reuse that session;
 all-Read DAG waves may `rpc_pipeline` (write N lines, then read). Write /
 Exit / mixed waves stay sequential.
@@ -102,7 +102,7 @@ GATE-P verdicts:
 `gpui-agent-policy` is the local decision engine (`instinct` feature,
 on in the CLI's default build; opt-in `jev` adds the System One
 fallback). Everything below
-is in [docs/bench/RESULTS.md](bench/RESULTS.md).
+came from `docs/bench/RESULTS.md`, now removed (it is in git history).
 
 | Number | Value |
 | --- | --- |

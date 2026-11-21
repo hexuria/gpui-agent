@@ -1,20 +1,13 @@
-# Experimental recipes + TMP-inspired mapping
+# Recipes
 
-This is an **experimental** P1 slice. It does not replace semantic RPC,
-does not steal the OS pointer, and does not change protocol v2.
+A recipe is a JSON list of gpui-agent ops (`click`, `set-value`, `assert`,
+`invoke`, …) that compiles to a plan and runs in one CLI or MCP call: one
+process, one TCP session, many ops. Recipes run on the client; the wire
+protocol does not change ([PROTOCOL.md](PROTOCOL.md)). The CLI labels them
+experimental.
 
-The goal: let an agent **author or reuse a recipe** of gpui-agent ops
-(`click` / `set-value` / `assert` / `invoke` / …) that compiles to a
-plan and runs with **one CLI (or MCP) invocation** — one process, one
-TCP session, many ops — instead of a tool round-trip per action.
-
-**Canonical format: JSON.** Line-based `.wants` is still accepted as a
-thin alias. Laptop (pull + run only): [TRY_ON_MAC.md](TRY_ON_MAC.md).
-Threat model vs PR #3 caps: [SECURITY.md](SECURITY.md#recipes-experimental).
-Wire ops stay one NDJSON request each: [PROTOCOL.md](PROTOCOL.md).
-Roadmap: [NO_BRAINER_PLAN.md](NO_BRAINER_PLAN.md) (P0–P5 are on `main`,
-including **P3** Mac window PNG [#20](https://github.com/hexuria/gpui-agent/pull/20)
-and **P4** CI recipe receipt [#21](https://github.com/hexuria/gpui-agent/pull/21)).
+JSON is the canonical format; line-based `.wants` files are an alias. Caps
+that recipes cannot bypass: [SECURITY.md](SECURITY.md#recipes-experimental).
 
 ## What was borrowed
 
@@ -30,7 +23,7 @@ Kept the *shape*, not the world-model compiler:
 | Order-check (compile listed vs reversed) | `recipe plan --order-check` |
 | Exit-effect gate (`--yes`) | Recipes that include `shutdown` refuse until `--yes` |
 | Falsifiable receipt (what ran, ok/err, timing) | `Receipt` JSON, optional `--receipt-out` |
-| One command instead of a session | Connection reuse in `AgentClient` (P0) |
+| One command instead of a session | Connection reuse in `AgentClient` |
 
 Left out on purpose (non-goals):
 
@@ -172,13 +165,55 @@ gpui-agent screenshot --out artifacts/steps/mid.png
 JSON steps may set `"screenshot": true`; wants lines may take
 `--screenshot`. With `--screenshot-flagged`, only those steps are
 captured. Names are `001-wait.png`, `002-add.png`, … and appear on the
-receipt. Headless, the daemon, the default GUI-as-daemon-client, and
-Linux/Windows desktop GPUI return `screenshot_unavailable` and **do not
-invent a file**. macOS `todo --features embedded-host` writes **this
-window** via `screencapture -l`. See [RECORDING.md](RECORDING.md).
+receipt. A host that cannot capture returns `screenshot_unavailable` for
+that step and writes no file; which hosts can capture:
+[PROTOCOL.md](PROTOCOL.md#screenshots).
 
 Do **not** spawn `gpui-agent` once per op (the old `scripts/smoke.sh`
 pattern). That pays process + TCP handshake every time.
+
+## Try it on `todo-headless`
+
+No display is needed. Both sample recipes assume an empty todo list (they
+use `todo-item-1` / `id=1`), so start a fresh host for each run.
+
+```bash
+cargo build -p gpui-agent-cli -p todo-headless
+
+# terminal 1
+export GPUI_AGENT=1 GPUI_AGENT_ADDR=127.0.0.1:17421 GPUI_AGENT_TOKEN=dev-secret
+./target/debug/todo-headless serve
+
+# terminal 2
+export GPUI_AGENT_ADDR=127.0.0.1:17421 GPUI_AGENT_TOKEN=dev-secret
+./target/debug/gpui-agent recipe run examples/recipes/todo-crud.json \
+  --schema examples/schemas/todo.json --set title="Buy milk"
+```
+
+The receipt has `"ok": true` and `"session_reused": true`. `fingerprint` is
+a process-local hash and differs between machines.
+
+These must fail (nonzero exit); none of them reaches a shell:
+
+```bash
+CLI=./target/debug/gpui-agent
+printf '%s\n' '{"name":"bad","steps":[{"id":"x","op":"invoke","name":"shell.run","args":{}}]}' \
+  | $CLI recipe validate -                       # unknown invoke
+$CLI recipe resolve 'rm -rf /'                   # unknown intent
+printf '%s\n' $'hello\nshutdown' | $CLI recipe run -   # needs --yes
+env -u GPUI_AGENT_TOKEN $CLI recipe run examples/recipes/todo-crud.json   # needs a token
+$CLI --addr 8.8.8.8:17421 hello                  # non-loopback refused
+```
+
+| Symptom | Fix |
+| --- | --- |
+| `automation is disabled` | Start the host with `GPUI_AGENT=1` |
+| `connect … failed` | Host not up, or `GPUI_AGENT_ADDR` differs between terminals |
+| `recipe run and mcp require a non-empty GPUI_AGENT_TOKEN` | Export `GPUI_AGENT_TOKEN` or pass `--token` in the client terminal |
+| `automation token required` / `invalid automation token` | Use the same `GPUI_AGENT_TOKEN` in both terminals |
+| `node \`todo-item-1\` exists` / name mismatch | The host has todos from an earlier run: `shutdown` and start a fresh one |
+| `unknown invoke` | The recipe names an `invoke` the schema does not list, or `--schema` is missing |
+| `Address already in use` | Another host holds the port (`lsof -iTCP:17421 -sTCP:LISTEN`), or pick another port in both terminals |
 
 ## `$params`
 
@@ -265,7 +300,7 @@ ops. The allow-list is for `invoke` and for prose → schema mapping.
 
 ## Session reuse
 
-`AgentClient::rpc` opens one TCP session and keeps it (P0). A recipe
+`AgentClient::rpc` opens one TCP session and keeps it. A recipe
 (and a second recipe on the **same** client) reuses that socket. Each
 step is still a normal `Request` (token, version, caps).
 
@@ -273,7 +308,7 @@ step is still a normal `Request` (token, version, caps).
 comparison tests. It drops the session after one exchange.
 
 This is **not** a new wire `op`. The server still sees one NDJSON
-request per step. The experiment batches on the **client**.
+request per step. Batching happens on the client.
 
 ## `--yes` for shutdown
 
@@ -292,7 +327,7 @@ do the same things the CLI already can. They do not add privilege.
 | --- | --- |
 | Opt-in | Host still needs `GPUI_AGENT=1` (release: `GPUI_AGENT_ALLOW_RELEASE=1`) |
 | Bind | CLI still `ensure_loopback` before connect |
-| Token | CLI `recipe run` and `mcp` **refuse to start** without a non-empty `GPUI_AGENT_TOKEN` or `--token` (P2). Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Host bind is default-deny; `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback. **Set the same token on host and client**. `hello.auth` is `"required"` \| `"none"`. |
+| Token | CLI `recipe run` and `mcp` **refuse to start** without a non-empty `GPUI_AGENT_TOKEN` or `--token`. Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Host bind is default-deny; `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback. **Set the same token on host and client**. `hello.auth` is `"required"` \| `"none"`. |
 | Line / conn / idle / mailbox | Unchanged. Recipe cap 256 is extra, not a replacement. |
 | No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--screenshot-dir` is observe-only (macOS **embedded-host**: this window; never the desktop). |
 | No shell | Resolve/plan/run never call `Command`. `invoke` is still an in-process host callback. Unknown invoke names are rejected. |
@@ -338,7 +373,7 @@ least:
 cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
 ```
 
-## CI (P4)
+## CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on `ubuntu-latest` runs
 those tests, then `scripts/ci-recipe.sh`: `todo-headless` +
@@ -355,8 +390,7 @@ GPUI_AGENT=1 GPUI_AGENT_TOKEN=ci-p4-token ./scripts/ci-recipe.sh
 
 ## Performance (this crate)
 
-P0 session reuse is already on `main` ([PERF.md](PERF.md)). This crate
-adds:
+Session reuse is described in [PERF.md](PERF.md). This crate adds:
 
 - Direct `$param` substitution (no serde round-trip, no `Vec<char>`)
 - Index-only `compile_plan` (no `RecipeStep` clones in Kahn; skip
@@ -378,39 +412,15 @@ cargo bench -p gpui-agent-recipe --bench recipe_plan -- --quick
    adopt rwmcp predicates (`invoice(…).exists`) if a world model lands.
 2. **Path-dep `tmp-core`?** Only if we can take schema/resolve without
    shell resolvers. Default remains local schemas.
-3. **Ephemeral Jupyter mint?** Not in P2. Host token stays optional.
-   Recipe/MCP already require a client token. Ask before minting at bind.
+3. **Ephemeral Jupyter mint?** Recipe/MCP already require a client token.
+   Ask before minting at bind.
 4. **Wire `batch` / pipeline writes?** Read-only waves already pipeline.
    A wire `batch` op is still rejected (ordinary lines are enough).
    Independent **Write** siblings stay sequential so a failed click does
    not run the next one.
 5. **Parallel waves on multiple connections?** Rejected: mutex / UI
    thread / `MAX_CONNECTIONS`.
-6. **App-specific registries on disk?** Today the demo todo schema is
-   baked in. A `schemas/*.json` directory is the obvious next step.
+6. **Schema directories?** Today each schema is a file passed with
+   `--schema` or `GPUI_AGENT_SCHEMA`.
 7. **Fingerprint stability?** Today it is `DefaultHasher` of the
    compiled ops — fine for one process, not a cross-version lock.
-8. **Real desktop PNG (P3).** Landed as
-   [PR #20](https://github.com/hexuria/gpui-agent/pull/20). Headless /
-   daemon / default GUI client stay honest (`screenshot_unavailable`).
-   macOS **embedded-host** uses `screencapture -l`. `--record` /
-   SVG+PPM / ScreenCaptureKit stay later.
-9. **CI receipt assert (P4).** Gate is receipt `ok` (+ `session_reused`), not pixels.
-   Landed as [PR #21](https://github.com/hexuria/gpui-agent/pull/21).
-
-## Layout
-
-```
-crates/gpui-agent-recipe   Recipe / schema / resolve / plan / receipt
-crates/gpui-agent          Session reuse, ndjson buffers, tree/mailbox, screenshot op
-crates/gpui-agent-cli      experimental recipe validate|plan|run|resolve + MCP tools
-examples/recipes/          Sample todo CRUD (JSON canonical + .wants alias)
-docs/RECIPES.md            This note
-docs/TRY_ON_MAC.md         Pull + run recipes on a laptop (headless first)
-docs/RECORDING.md          PNG vs --record (P3)
-docs/SECURITY.md           Caps + recipe threat model
-docs/NO_BRAINER_PLAN.md    P0–P5 roadmap
-.github/workflows/ci.yml   Headless cargo test + recipe receipt
-scripts/ci-recipe.sh       Local/CI recipe receipt assert
-docs/STACK_HYGIENE.md      Leftover #4/#5 closed without merge
-```

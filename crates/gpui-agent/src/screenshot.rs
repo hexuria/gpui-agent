@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn test_png_is_mock_helper_not_a_live_window_capture() {
         // TEST_PNG is for tests/mock hosts (`write_png`). Live Mac capture
-        // is `screencapture -l` (TRY_ON_MAC §8) and is not proven here.
+        // is `screencapture -l` (docs/PROTOCOL.md, Screenshots) and is not proven here.
         assert!(TEST_PNG.starts_with(b"\x89PNG"));
         assert_eq!(TEST_PNG.len(), 67, "1×1 fixture, not a window grab");
         assert_ne!(SCREENSHOT_BACKEND_SCREENCAPTURE, "test_png");

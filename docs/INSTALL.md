@@ -7,8 +7,8 @@ Agents install two binaries. Neither pulls `gpui-kit` / Metal / Vulkan.
 | `gpui-agent` | `crates/gpui-agent-cli` | Protocol CLI + MCP stdio |
 | `todo-headless` | `apps/todo-headless` | Logic daemon (`serve` / `status` / `shutdown`) |
 
-Protocol version is **v1** (`hello.protocol`). Skew: clients and hosts
-with a different `v` fail closed (`authorize_request`).
+Protocol version is 2 (`hello.protocol`). A request with another `v` fails
+with `unsupported protocol version`.
 
 ## cargo install
 
@@ -20,7 +20,29 @@ cargo install gpui-agent-cli
 
 `cargo binstall gpui-agent-cli` downloads the prebuilt binary from the `v*` GitHub Release (`gpui-agent-cli-<target>-v<version>.tgz` and a sibling `.sha256`). `todo-headless` is not published.
 
-From a checkout (this repo does not commit `Cargo.lock`):
+## Release tarball
+
+Each `v*` release has `gpui-agent-cli-<target>-v<version>.tgz` and a
+`.sha256` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+`x86_64-apple-darwin` and `aarch64-apple-darwin`:
+
+```bash
+T=x86_64-unknown-linux-gnu V=0.3.0
+gh release download v$V -R hexuria/gpui-agent -p "gpui-agent-cli-$T-v$V.tgz*"
+sha256sum -c gpui-agent-cli-$T-v$V.tgz.sha256    # macOS: shasum -a 256 -c
+tar xzf gpui-agent-cli-$T-v$V.tgz                # gpui-agent-cli/gpui-agent
+```
+
+## From a checkout
+
+`rust-toolchain.toml` pins Rust 1.99.0.
+
+```bash
+cargo build -p gpui-agent-cli -p todo-headless   # target/debug/gpui-agent, todo-headless
+cargo build -p todo --features embedded-host     # optional: GPUI window with the host in process
+```
+
+Or install them:
 
 ```bash
 cargo install --path crates/gpui-agent-cli --locked=false
@@ -129,8 +151,8 @@ CLI (token required):
 ```
 
 Start `todo-headless serve` with the **same** token. Do not expose MCP
-stdio on a network. The GPUI `todo` window is optional and is a client
-of this daemon ([ADR-001](ADR-001-daemon-sot.md)).
+stdio on a network. The GPUI `todo` window is optional and, without
+`embedded-host`, is a client of this daemon.
 
 ## CI artifacts
 

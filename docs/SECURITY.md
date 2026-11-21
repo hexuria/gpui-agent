@@ -1,4 +1,4 @@
-# Security review — GPUI Agent control plane
+# Security review: gpui-agent
 
 This document is an audit of the opt-in localhost control plane
 (`crates/gpui-agent`, CLI/MCP, sample hosts). It distinguishes **design
@@ -19,7 +19,7 @@ non-empty `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`.
 | Runtime | `GPUI_AGENT=1` (`true` / `yes` / `on`). |
 | Release | Also `GPUI_AGENT_ALLOW_RELEASE=1`. |
 | Bind | **Loopback default.** `from_env` calls `authorize_bind`. IPv4 `127.0.0.0/8` and IPv6 `::1` require a non-empty `GPUI_AGENT_TOKEN` unless `GPUI_AGENT_INSECURE_NO_TOKEN=1`. IPv4-mapped loopback (`::ffff:127.0.0.1`) is **rejected**. Non-loopback (including `0.0.0.0` / `::`) requires `GPUI_AGENT_REMOTE=1` **and** a non-empty `GPUI_AGENT_TOKEN`. |
-| Token | **Required** to bind a host (`GPUI_AGENT_TOKEN`). `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback and prints a banner. When a token is set, every request must send v2 `auth` HMAC (never the raw token). CLI **`recipe run` and `mcp` require** a non-empty client token even on loopback (P2). One-off `click` / `snapshot` / `hello` use the same token as the host for the HMAC. |
+| Token | **Required** to bind a host (`GPUI_AGENT_TOKEN`). `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback and prints a banner. When a token is set, every request must send v2 `auth` HMAC (never the raw token). CLI **`recipe run` and `mcp` require** a non-empty client token even on loopback. One-off `click` / `snapshot` / `hello` use the same token as the host for the HMAC. |
 | Remote client | CLI refuses non-loopback `--addr` unless `--allow-remote` / `GPUI_AGENT_ALLOW_REMOTE=1` **and** a non-empty token (M1: do not leak the secret on a mistype). |
 | Transport | NDJSON over TCP. **Not HTTP. Not TLS.** Remote bind is plaintext + token — lab / trusted network only. Prefer an SSH or Tailscale hop until TLS / mTLS is specified. |
 | Delivery | `semantic` (default) calls widget handlers. `virtual` synthesizes in-process GPUI events. **Never OS HID.** |
@@ -51,7 +51,7 @@ demos and prints a banner. Authenticated remote bind is unchanged.
 
 `hello.auth` remains `"required"` when the host has a token and `"none"`
 otherwise. Remote hosts always have a token, so `hello.auth` is
-`"required"`. P2 recipe/MCP token policy is **not** weakened.
+`"required"`. The recipe/MCP token policy is **not** weakened.
 
 **Deferred:** TLS vs SSH vs mutual TLS, certificate story, OpenGrok /
 Grok Bot pairing UX, ephemeral minted tokens.
@@ -65,7 +65,7 @@ Grok Bot pairing UX, ephemeral minted tokens.
 | M1 | **Medium** | Bug | CLI/MCP accepted any `SocketAddr`. A mistyped or injected `--addr` / `GPUI_AGENT_ADDR` would send `GPUI_AGENT_TOKEN` off-box. | Former `gpui-agent-cli` parsed `addr: SocketAddr` and connected with no loopback check. | User or wrapper runs `gpui-agent --addr 1.2.3.4:17421 hello` with a token in the env → secret leaves the machine. | **Patched, then extended (#14).** Default: `authorize_client` refuses non-loopback. Remote connect requires `--allow-remote` **and** a non-empty token. Host `authorize_bind` refuses `0.0.0.0` / public addrs without `GPUI_AGENT_REMOTE=1` + token. |
 | M2 | **Medium** | Design | TCP loopback has no peer credentials. Any UID on the host can connect. | `TcpListener::bind` on `127.0.0.1`. No Unix socket, no `SO_PEERCRED`. | User B on a shared Linux box automates user A’s app (especially if H1). | **Documented.** Next step: optional `AF_UNIX` socket with `0600` and peer-uid check. Large change; do not add a second transport in this patch. |
 | M3 | **Medium** | Design | `snapshot` returns widget `value`s (draft text, later passwords if an app puts them on the tree). A PNG of the window shows the same pixels. | `todo-core` `tree()` includes `todo-input` value. Protocol has no redaction. | Local client (H1) reads whatever the user typed **or** screenshots the window. | **Documented.** Integrators must not put secrets on the semantic tree **or** the painted window. A protocol-level redaction hook is a later feature. |
-| M4 | **Medium** | Design | `gpui-agent mcp` is a full confused-deputy: stdio `tools/call` maps 1:1 onto protocol ops, including `invoke` and `shutdown`. | `crates/gpui-agent-cli/src/mcp.rs` | Whoever can write to the MCP process (the IDE/agent) can do anything the socket allows. | **Documented / intended.** Treat the MCP client as equivalent to holding the token. Do not expose this stdio shim on a network. P2: `gpui-agent mcp` **refuses to start** without a non-empty client token. Set the same token on the host. |
+| M4 | **Medium** | Design | `gpui-agent mcp` is a full confused-deputy: stdio `tools/call` maps 1:1 onto protocol ops, including `invoke` and `shutdown`. | `crates/gpui-agent-cli/src/mcp.rs` | Whoever can write to the MCP process (the IDE/agent) can do anything the socket allows. | **Documented / intended.** Treat the MCP client as equivalent to holding the token. Do not expose this stdio shim on a network. `gpui-agent mcp` **refuses to start** without a non-empty client token. Set the same token on the host. |
 | M5 | **Medium** | Bug | Mailbox queue was unbounded. A stalled UI thread + fast TCP clients could grow RAM without bound. | Former `AgentMailbox::push` always `Vec::push`. | Local client floods `wait`/`click` while the UI thread is blocked. | **Patched.** `MAX_MAILBOX_DEPTH` (128); further pushes return `mailbox full` without queueing. |
 | L1 | **Low** | Bug | Token compared with `==` (non-constant-time). | Former `dispatch.rs` / mailbox `got == expected`. | Local attacker times responses to recover a short token. Unrealistic vs just reading `/proc/<pid>/environ`. | **Patched.** `tokens_match` XOR-folds both byte strings (`#[inline(never)]`). Still leaks the longer length; acceptable for a local secret. |
 | L2 | **Low** | Bug | Auth / version failures kept the connection open, allowing unlimited guesses on one socket. | Former stream loops `continue` after token errors. | Local brute-force of a short token. | **Patched.** `authorize_request` failures write one error and **close**. |
@@ -73,7 +73,7 @@ Grok Bot pairing UX, ephemeral minted tokens.
 | L4 | **Low** | Bug | Desktop mailbox path authorized the token in the TCP thread, then `delivery=virtual` skipped `handle_request` entirely — so **protocol version was not checked** for virtual click/type/key. | `apps/todo/src/app.rs` `apply_agent` + former `handle_stream_mailbox` | A `v: 99` virtual click still ran if it reached the mailbox. Not a privilege bypass; it would break a future v2 security field. | **Patched.** Mailbox stream calls `authorize_request` (version + token) before `mailbox.wait`. Host path already went through `handle_request`. |
 | L5 | **Low** | Design | Token lives in the process environment (`GPUI_AGENT_TOKEN`), visible via `/proc/<pid>/environ` and some `ps` invocations. | `from_env`, clap `env = "GPUI_AGENT_TOKEN"` | Local attacker with the same or root uid reads the secret. Same class as H1/M2. | **Documented.** Unix-socket + file secret (0600) or an ephemeral printed token is the real fix. |
 | L6 | **Low** | Leftover | No request-rate limit beyond connection/line/mailbox caps. `Wait.timeout_ms` polls `hello.ready` (R9). serde_json nesting is capped by serde’s recursion limit (~128). | `dispatch.rs` `Op::Wait`, `server.rs` | Slowloris is mitigated by idle timeout; CPU spam of small valid ops is still possible. | Acceptable. Add a simple per-connection QPS cap if this becomes a real host. |
-| I1 | **Info** | Positive | `gpui-agent` still has no `unsafe`. Recipe/CLI never map ops onto a shell. `invoke` is an in-process host callback (sample todo: CRUD only). Virtual keys have **no modifiers** (no synthetic ⌘Q on free-form `Op::Key`). Modifier chords go through allow-listed `keybinding` Action ids with `confirm=true` for quit. P3: desktop macOS may exec **`screencapture`** with a host-chosen `-l<CGWindowID>` and a client `path` (same write as `write_png`). Argv is otherwise fixed — not a shell. Tiny `unsafe` lives in `apps/todo` (`objc` `windowNumber` only). | repo-wide `unsafe` grep; `todo-core` `invoke`; `virtual_input.rs` `keystroke_token`; `keybinding.rs` confirm gate; `screenshot.rs` `screencapture_window_argv` | — | Keep `invoke` allow-listed in each app. Never map protocol ops onto a shell. Do not add an env override for the `screencapture` binary. Keep `keystroke_token` modifier-free. |
+| I1 | **Info** | Positive | `gpui-agent` still has no `unsafe`. Recipe/CLI never map ops onto a shell. `invoke` is an in-process host callback (sample todo: CRUD only). Virtual keys have **no modifiers** (no synthetic ⌘Q on free-form `Op::Key`). Modifier chords go through allow-listed `keybinding` Action ids with `confirm=true` for quit. Desktop macOS may exec **`screencapture`** with a host-chosen `-l<CGWindowID>` and a client `path` (same write as `write_png`). Argv is otherwise fixed — not a shell. Tiny `unsafe` lives in `apps/todo` (`objc` `windowNumber` only). | repo-wide `unsafe` grep; `todo-core` `invoke`; `virtual_input.rs` `keystroke_token`; `keybinding.rs` confirm gate; `screenshot.rs` `screencapture_window_argv` | — | Keep `invoke` allow-listed in each app. Never map protocol ops onto a shell. Do not add an env override for the `screencapture` binary. Keep `keystroke_token` modifier-free. |
 | I2 | **Info** | Design | Release gate is `cfg!(debug_assertions)`, not `cfg!(feature = …)`. `cargo run` (dev) does not need `GPUI_AGENT_ALLOW_RELEASE`. | `security.rs` | Shipping a **debug** binary with `GPUI_AGENT=1` baked into a wrapper skips the release latch. | Product builds: release profile + feature off + no env. |
 | I3 | **Info** | Design | Sample `todo` feature `embedded-host` defaults **off**. Copy-paste of an older `default = ["agent"]` snippet would compile the in-process bridge into a product. Runtime still needs `GPUI_AGENT=1`. | `apps/todo/Cargo.toml` | Developer runs a product with leftover env from a test session. | Templates should default the in-process host **off**. This repo already does. |
 | I4 | **Info** | Product | Bind check is IP-literal only (`SocketAddr`). `localhost` as a hostname is not accepted — safer than DNS. CLI and server share `authorize_*`. | `from_env`, `authorize_bind` | — | Keep it this way. |
@@ -152,14 +152,14 @@ The parent process is trusted.
 `gpui-agent recipe run` and MCP `recipe_run` compile a local **JSON**
 recipe (`.wants` also accepted) into ordinary protocol ops and send
 them on one reused TCP session (all-Read waves may pipeline). Design:
-[RECIPES.md](RECIPES.md). Laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md).
+[RECIPES.md](RECIPES.md).
 
 They do **not** add privilege and do **not** bypass PR #3 caps:
 
 | Gate | Recipe path |
 | --- | --- |
 | Opt-in / bind | Host still needs `GPUI_AGENT=1`. CLI still `authorize_client` (loopback default; remote needs `--allow-remote` + token). |
-| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. CLI `recipe run` and `mcp` **refuse to start** without a non-empty client token (P2). Host bind is default-deny (`GPUI_AGENT_TOKEN`); `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback. Set the **same** token on host and client. `hello.auth` advertises `"required"` \| `"none"`. Not a wire `batch` op. |
+| Token / version | Every step is a normal `Request`. `authorize_request` still runs. Missing or **wrong** token fails the step; the server still closes. CLI `recipe run` and `mcp` **refuse to start** without a non-empty client token. Host bind is default-deny (`GPUI_AGENT_TOKEN`); `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback. Set the **same** token on host and client. `hello.auth` advertises `"required"` \| `"none"`. Not a wire `batch` op. |
 | Line / conn / mailbox | Unchanged. Extra recipe cap: 256 steps. |
 | `invoke` | Names must be `SchemaKind::Invoke` on the local registry. Unknown names and protocol names used as invoke (`click`) fail closed. Schema names are `[A-Za-z0-9_.-]`. |
 | Resolve | Keyword score, fail closed. Shell-like / unknown / ambiguous intents do nothing. Never `Command`. |
@@ -183,13 +183,11 @@ Treat `recipe run` / `recipe_run` as equivalent to holding the token
 [RECIPES.md](RECIPES.md#threat-model-recipes-must-not-bypass-caps).
 
 Optional `--screenshot-dir` asks the host for an app-surface PNG after
-steps (receipt lists paths). Headless / Linux / Windows return
-`screenshot_unavailable` and do not invent a file. macOS
-`todo --features embedded-host` writes **this window** via
-`screencapture -l` (Screen Recording). `mode=scrolled` is the same
-honesty plus a `max_height_px` cap (default/max 16384). The default GUI client does not
-host the agent port. Do not put tokens or CI secrets on the painted
-window. See [RECORDING.md](RECORDING.md).
+steps (receipt lists paths). A host that cannot capture returns
+`screenshot_unavailable` and writes no file. `mode=scrolled` adds a
+`max_height_px` cap (default and max 16384). Do not put tokens or CI
+secrets on the painted window. Which hosts capture:
+[PROTOCOL.md](PROTOCOL.md#screenshots).
 
 ### Escalation endpoints (`instinct`/`jev` features)
 
@@ -222,7 +220,7 @@ Headless: `Arc<Mutex<H>>` serializes dispatch. Desktop: TCP thread
 posts onto `AgentMailbox`; the UI thread drains in `TodoApp::render`.
 The TCP thread does not touch GPUI objects. A poisoned mutex still
 `expect`s (one panic fails that connection / the host). Acceptable for
-v1.
+now.
 
 Shutdown sets an atomic flag after the `shutdown` op; in-flight
 connections may finish one more request. Fine.
@@ -230,7 +228,7 @@ connections may finish one more request. Fine.
 ### Dependencies
 
 `gpui-agent` itself depends on `serde`, `serde_json`, `thiserror`, `hmac`, and
-`sha2`. The CLI adds `anyhow` + `clap`. P3 screenshot execs the system
+`sha2`. The CLI adds `anyhow` + `clap`. The screenshot op execs the system
 `screencapture` binary on macOS only (fixed argv). `cargo audit` at review time reported
 **no yanked crates and no vulnerability advisories** on a generated
 lockfile. Six *unmaintained* warnings appear in the GPUI Kit /
@@ -270,7 +268,7 @@ intentionally **not** half-implemented in this patch.
 3. **Snapshot redaction (M3).** Host hook or well-known roles
    (`password`, `secret`) that strip `value` from `snapshot`. Document
    the convention in PROTOCOL.md.
-4. **`hello` advertises auth (done in P2).** `hello.auth: "required" | "none"`
+4. **`hello` advertises auth (done).** `hello.auth: "required" | "none"`
    reflects whether the host has a token configured. Agents can fail
    closed early. CLI `recipe run` / `mcp` still require a client token
    even when `auth` is `"none"` — set the same token on the host anyway.
@@ -290,7 +288,7 @@ intentionally **not** half-implemented in this patch.
 8. **MCP `Content-Length` framing.** The shim is newline JSON. Spec
    hosts (Claude Code, etc.) usually speak MCP-over-stdio with headers.
    Dual-read or migrate; don’t break the current line parser overnight.
-9. **CI: `cargo test` + recipe receipt (P4 — done).**
+9. **CI: `cargo test` + recipe receipt (done).**
    `.github/workflows/ci.yml` runs protocol-crate tests and
    `scripts/ci-recipe.sh` (receipt `ok` + `session_reused`). **Still
    later:** generate or commit a lockfile and `cargo audit` (fail on
@@ -305,7 +303,7 @@ intentionally **not** half-implemented in this patch.
     that virtual clicks toggle a checkbox and the sidebar, and that virtual
     `type` edits the input. The unit gates (`authorize_request` on virtual
     ops, mailbox overflow) stay.
-12. **In-app GPUI offscreen PNG (P3).** Protocol `screenshot` writes a
+12. **In-app GPUI offscreen PNG.** Protocol `screenshot` writes a
     real PNG on **macOS embedded-host** (`screencapture -l` of this
     window; [#20](https://github.com/hexuria/gpui-agent/pull/20)).
     Headless / daemon / default GUI client / Linux / Windows stay
@@ -314,7 +312,7 @@ intentionally **not** half-implemented in this patch.
     ScreenCaptureKit crate stay later.
 13. **AccessKit auto-export** so apps register fewer ids by hand.
 14. **Per-connection QPS cap** if anyone runs this as a long-lived
-    host. Line/connection/mailbox caps are enough for v1.
+    host. Line/connection/mailbox caps are enough today.
 15. **Invoke allow-lists in docs per app.** Sample todo is CRUD-only;
     integrators must not map `invoke` onto a shell. Experimental recipes
     fail closed on unknown invoke names; that is not a substitute for
@@ -323,6 +321,6 @@ intentionally **not** half-implemented in this patch.
 ## Recommended (not implemented here)
 
 Unix sockets (M2), snapshot redaction, and `cargo audit` remain the next
-security follow-ups. P4 does not mint ephemeral tokens. P3 does not add
-ScreenCaptureKit or entitlements. Do not enable the bridge in shipping
+security follow-ups. CI does not mint ephemeral tokens. Screenshots do
+not add ScreenCaptureKit or entitlements. Do not enable the bridge in shipping
 product builds; do not add HTTP without an Origin allow-list.
