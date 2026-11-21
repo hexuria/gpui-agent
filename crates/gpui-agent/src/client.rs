@@ -1025,7 +1025,7 @@ impl AgentClient {
                 if acts && resp.delivery_status.is_none() {
                     resp.delivery_status = Some(match resp.code() {
                         None => DeliveryStatus::DeliveredUnverified,
-                        Some(code) => DeliveryStatus::of_failure(error_code::host_reply_code(code)),
+                        Some(code) => DeliveryStatus::of_failure(code),
                     });
                 }
                 Ok(resp)
@@ -2135,10 +2135,24 @@ mod tests {
 
     #[test]
     fn a_host_error_worded_like_a_transport_failure_was_delivered() {
+        let connect_hint = error_code::hint_for(error_code::CONNECT_FAILED).unwrap();
         let (addr, server) = fake_host(vec![
             // A host that predates `error_code`: only the text.
             Some(serde_json::json!({ "ok": false, "error": "connect to backend failed" })),
-            // A host that classified its own text with the general table.
+            // A 0.3.0 host classifies its own text with the general table
+            // and sends that code's hint, which promises a safe retry.
+            Some(serde_json::json!({
+                "ok": false,
+                "error": "connect to backend failed",
+                "error_code": error_code::CONNECT_FAILED,
+                "hint": connect_hint,
+            })),
+            // The same code without a hint.
+            Some(serde_json::json!({
+                "ok": false,
+                "error": "connect to backend failed",
+                "error_code": error_code::CONNECT_FAILED,
+            })),
             Some(serde_json::json!({
                 "ok": false,
                 "error": "no reply from the payment service",
@@ -2146,17 +2160,31 @@ mod tests {
             })),
         ]);
         let mut client = client_for(addr);
-        let worded = client.call(&Op::click("a")).unwrap_err();
-        assert_eq!(worded.error_code, error_code::HOST_ERROR);
-        assert_eq!(
-            worded.delivery_status,
-            Some(DeliveryStatus::DeliveryUncertain)
-        );
-        let coded = client.call(&Op::click("a")).unwrap_err();
-        assert_eq!(
-            coded.delivery_status,
-            Some(DeliveryStatus::DeliveryUncertain)
-        );
+        for case in ["text only", "code and hint", "code only", "no_reply code"] {
+            let failure = client.call(&Op::click("a")).unwrap_err();
+            assert_eq!(failure.error_code, error_code::HOST_ERROR, "{case}");
+            assert_eq!(failure.hint, None, "{case}");
+            assert_eq!(
+                failure.delivery_status,
+                Some(DeliveryStatus::DeliveryUncertain),
+                "{case}"
+            );
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_read_keeps_no_transport_code_from_a_host_reply() {
+        let (addr, server) = fake_host(vec![Some(serde_json::json!({
+            "ok": false,
+            "error": "connect to backend failed",
+            "error_code": error_code::CONNECT_FAILED,
+            "hint": error_code::hint_for(error_code::CONNECT_FAILED),
+        }))]);
+        let resp = client_for(addr).call_response(&Op::snapshot()).unwrap();
+        assert_eq!(resp.error_code.as_deref(), Some(error_code::HOST_ERROR));
+        assert_eq!(resp.hint, None);
+        assert_eq!(resp.delivery_status, None);
         server.join().unwrap();
     }
 

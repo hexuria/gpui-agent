@@ -1397,8 +1397,18 @@ impl Response {
     }
 
     /// [`fill_error_code`](Self::fill_error_code) for a reply a host sent,
-    /// which no transport-only code can describe.
+    /// which no transport-only code can describe. A transport-only code the
+    /// host sent itself (a 0.3.0 host classifies its own text with the
+    /// general table) becomes `host_error`, and its hint goes with it: the
+    /// `connect_failed` hint says a retry is safe, which a request that
+    /// reached the host cannot promise.
     pub(crate) fn fill_host_reply_code(&mut self) {
+        let sent = self.error_code.as_deref();
+        if sent.is_some_and(|code| crate::error_code::host_reply_code(code) != code) {
+            let code = crate::error_code::HOST_ERROR;
+            self.error_code = Some(code.to_string());
+            self.hint = crate::error_code::hint_for(code).map(str::to_string);
+        }
         self.fill_error_code_with(crate::error_code::host_reply_code_of);
     }
 
