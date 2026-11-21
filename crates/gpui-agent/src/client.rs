@@ -188,13 +188,12 @@ impl LiveSession {
             .get_ref()
             .set_read_timeout(Some(reply_timeout))
             .map_err(|err| WireError::Retryable(err.to_string()))?;
-        let mut id_buf = [0u8; 20];
         let mut wrote = false;
         for (i, op) in ops.iter().enumerate() {
-            let id = fmt_u64(start_id + i as u64, &mut id_buf);
+            let id = (start_id + i as u64).to_string();
             let req = WireRequest {
                 v: PROTOCOL_VERSION,
-                id,
+                id: &id,
                 auth: self.auth.as_deref(),
                 op,
             };
@@ -310,22 +309,6 @@ struct WireRequest<'a> {
     auth: Option<&'a str>,
     #[serde(flatten)]
     op: &'a Op,
-}
-
-/// Decimal `n` into `buf`. Returns a subslice of `buf`.
-fn fmt_u64(n: u64, buf: &mut [u8; 20]) -> &str {
-    let mut n = n;
-    let mut i = buf.len();
-    if n == 0 {
-        buf[i - 1] = b'0';
-        return std::str::from_utf8(&buf[i - 1..]).unwrap();
-    }
-    while n > 0 {
-        i -= 1;
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-    }
-    std::str::from_utf8(&buf[i..]).unwrap()
 }
 
 /// Error prefix when the host took the request and sent no reply in time.
@@ -568,10 +551,8 @@ impl AgentClient {
         timeout: Duration,
         shared_deadline: Option<Instant>,
     ) -> Result<Response, SendError> {
-        let id_num = self.next_id;
+        let id = self.next_id.to_string();
         self.next_id += 1;
-        let mut id_buf = [0u8; 20];
-        let id = fmt_u64(id_num, &mut id_buf);
         let mut last_err = String::new();
         let mut first_attempt = true;
         loop {
@@ -590,9 +571,9 @@ impl AgentClient {
                 timeout
             };
             let result = match shared_deadline {
-                Some(deadline) => self.roundtrip_wire(id, op, deadline),
+                Some(deadline) => self.roundtrip_wire(&id, op, deadline),
                 None => self.roundtrip_wire_with_reply_timeout(
-                    id,
+                    &id,
                     op,
                     attempt_deadline,
                     attempt_timeout,
@@ -652,11 +633,9 @@ impl AgentClient {
                     "operation timed out",
                 )));
             }
-            let id_num = self.next_id;
+            let id = self.next_id.to_string();
             self.next_id += 1;
-            let mut id_buf = [0u8; 20];
-            let id = fmt_u64(id_num, &mut id_buf);
-            match self.roundtrip_wire(id, &request, deadline) {
+            match self.roundtrip_wire(&id, &request, deadline) {
                 Ok(response) => return Ok(response),
                 Err(WireError::Retryable(err)) => {
                     last_err = err;
@@ -685,6 +664,7 @@ impl AgentClient {
         if timeout.is_zero() {
             return Err(WireError::Unsent("operation deadline elapsed".into()));
         }
+        self.drop_closed_session()?;
         if self.session.is_none() {
             match LiveSession::open_until(self.addr, deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
@@ -692,21 +672,6 @@ impl AgentClient {
                     return Err(WireError::Unsent(error));
                 }
                 Err(error) => return Err(WireError::Retryable(error)),
-            }
-        } else {
-            let peer_closed = self.session.as_ref().expect("session").peer_closed();
-            match peer_closed {
-                Ok(false) => {}
-                Ok(true) => {
-                    self.drop_session();
-                    return Err(WireError::Retryable(
-                        "connection closed before request".into(),
-                    ));
-                }
-                Err(error) => {
-                    self.drop_session();
-                    return Err(WireError::Retryable(error.to_string()));
-                }
             }
         }
         if self.refresh_features_on_reconnect && !matches!(op, Op::Hello) {
@@ -717,27 +682,47 @@ impl AgentClient {
             self.drop_session();
             return Err(WireError::Unsent("operation deadline elapsed".into()));
         }
-        self.session
-            .as_mut()
-            .expect("session")
-            .set_io_timeout(remaining)
-            .map_err(WireError::Retryable)?;
+        self.exchange_on_session(|session, legacy_secret_redaction| {
+            session
+                .set_io_timeout(remaining)
+                .map_err(WireError::Retryable)?;
+            session.exchange_wire(id, op, legacy_secret_redaction)
+        })
+    }
+
+    /// Drop a cached session whose peer has already closed, so the request
+    /// is retried on a fresh connection instead of written into a dead one.
+    fn drop_closed_session(&mut self) -> Result<(), WireError> {
+        let Some(session) = self.session.as_ref() else {
+            return Ok(());
+        };
+        let reason = match session.peer_closed() {
+            Ok(false) => return Ok(()),
+            Ok(true) => "connection closed before request".to_string(),
+            Err(error) => error.to_string(),
+        };
+        self.drop_session();
+        Err(WireError::Retryable(reason))
+    }
+
+    /// Run `exchange` on the open session: a success marks it used, a
+    /// failure drops it, since its stream may hold a partial exchange.
+    fn exchange_on_session<T>(
+        &mut self,
+        exchange: impl FnOnce(&mut LiveSession, bool) -> Result<T, WireError>,
+    ) -> Result<T, WireError> {
         let legacy_secret_redaction = self.legacy_secret_redaction();
-        let result =
-            self.session
-                .as_mut()
-                .expect("session")
-                .exchange_wire(id, op, legacy_secret_redaction);
-        match result {
-            Ok(resp) => {
-                self.session.as_mut().expect("session").last_used = Instant::now();
-                Ok(resp)
-            }
-            Err(err) => {
-                self.drop_session();
-                Err(err)
-            }
+        let Some(session) = self.session.as_mut() else {
+            return Err(WireError::Retryable(
+                "connection closed before request".into(),
+            ));
+        };
+        let result = exchange(session, legacy_secret_redaction);
+        match &result {
+            Ok(_) => session.last_used = Instant::now(),
+            Err(_) => self.drop_session(),
         }
+        result
     }
 
     fn roundtrip_wire_with_reply_timeout(
@@ -768,28 +753,15 @@ impl AgentClient {
         if self.refresh_features_on_reconnect && !matches!(op, Op::Hello) {
             self.features().map_err(WireError::Unsent)?;
         }
-        let legacy_secret_redaction = self.legacy_secret_redaction();
-        let result = self
-            .session
-            .as_mut()
-            .expect("session")
-            .exchange_wire_with_timeouts(
+        self.exchange_on_session(|session, legacy_secret_redaction| {
+            session.exchange_wire_with_timeouts(
                 id,
                 op,
                 connect_deadline,
                 reply_timeout,
                 legacy_secret_redaction,
-            );
-        match result {
-            Ok(resp) => {
-                self.session.as_mut().expect("session").last_used = Instant::now();
-                Ok(resp)
-            }
-            Err(err) => {
-                self.drop_session();
-                Err(err)
-            }
-        }
+            )
+        })
     }
 
     fn pipeline_retry(
@@ -834,48 +806,25 @@ impl AgentClient {
         connect_deadline: Instant,
         reply_timeout: Duration,
     ) -> Result<Vec<Response>, WireError> {
+        self.drop_closed_session()?;
         if self.session.is_none() {
             match LiveSession::open_until(self.addr, connect_deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(err) => return Err(WireError::Retryable(err)),
             }
-        } else {
-            let peer_closed = self.session.as_ref().expect("session").peer_closed();
-            match peer_closed {
-                Ok(false) => {}
-                Ok(true) => {
-                    self.drop_session();
-                    return Err(WireError::Retryable(
-                        "connection closed before request".into(),
-                    ));
-                }
-                Err(error) => {
-                    self.drop_session();
-                    return Err(WireError::Retryable(error.to_string()));
-                }
-            }
         }
         if self.refresh_features_on_reconnect {
             self.features().map_err(WireError::Unsent)?;
         }
-        let legacy_secret_redaction = self.legacy_secret_redaction();
-        let result = self.session.as_mut().expect("session").exchange_pipeline(
-            start_id,
-            ops,
-            connect_deadline,
-            reply_timeout,
-            legacy_secret_redaction,
-        );
-        match result {
-            Ok(resps) => {
-                self.session.as_mut().expect("session").last_used = Instant::now();
-                Ok(resps)
-            }
-            Err(err) => {
-                self.drop_session();
-                Err(err)
-            }
-        }
+        self.exchange_on_session(|session, legacy_secret_redaction| {
+            session.exchange_pipeline(
+                start_id,
+                ops,
+                connect_deadline,
+                reply_timeout,
+                legacy_secret_redaction,
+            )
+        })
     }
 
     pub fn expect_ok(&mut self, op: Op) -> Result<Response, String> {
@@ -1591,15 +1540,6 @@ mod tests {
             elapsed < Duration::from_millis(300),
             "pipeline took {elapsed:?} with a 100 ms timeout"
         );
-    }
-
-    #[test]
-    fn fmt_u64_matches_display() {
-        let mut buf = [0u8; 20];
-        assert_eq!(fmt_u64(0, &mut buf), "0");
-        assert_eq!(fmt_u64(1, &mut buf), "1");
-        assert_eq!(fmt_u64(10, &mut buf), "10");
-        assert_eq!(fmt_u64(u64::MAX, &mut buf), u64::MAX.to_string());
     }
 
     #[test]
