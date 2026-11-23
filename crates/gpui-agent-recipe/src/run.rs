@@ -36,7 +36,10 @@ pub enum RunError {
 ///
 /// Default (dir set): every step. `flagged_only`: only steps with
 /// `screenshot: true` in JSON / `--screenshot` in wants.
+///
+/// Build with [`ScreenshotCapture::new`]; new options arrive as new setters.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ScreenshotCapture {
     /// Directory the step PNGs are written into.
     pub dir: PathBuf,
@@ -45,6 +48,26 @@ pub struct ScreenshotCapture {
 }
 
 impl ScreenshotCapture {
+    /// Capture after every step, into `dir`.
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            dir: dir.into(),
+            flagged_only: false,
+        }
+    }
+
+    /// Capture only after steps flagged `screenshot: true` (or after every
+    /// step again).
+    #[must_use]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "the flag mirrors the CLI's --screenshot-flagged"
+    )]
+    pub fn with_flagged_only(mut self, flagged_only: bool) -> Self {
+        self.flagged_only = flagged_only;
+        self
+    }
+
     /// Filename `{index:03}-{sanitized step id}.png` under `dir`.
     pub fn step_path(&self, index: u32, step_id: &str) -> PathBuf {
         self.dir
@@ -341,8 +364,11 @@ fn capture_screenshot(
     if transport == ShotTransport::Inline {
         let written = client
             .screenshot_bytes(gpui_agent::ScreenshotMode::Viewport, None, None)
+            // Through a temp file and a rename: a write that fails leaves an
+            // earlier capture at this path as it was.
             .and_then(|png| {
-                std::fs::write(&path, png).map_err(|err| format!("write {path_str}: {err}"))
+                gpui_agent::atomic_write_png(&path, &png)
+                    .map_err(|err| format!("write {path_str}: {err}"))
             });
         return Some(ScreenshotReceipt {
             path: path_str,

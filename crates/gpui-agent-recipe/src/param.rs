@@ -57,6 +57,29 @@ impl ParamType {
             Self::Bool => value.parse::<bool>().is_ok(),
         }
     }
+
+    /// Whether two accepted values are the same value of this type.
+    /// Numbers compare as numbers (`1` is `1.0` is `1e0`), as JSON Schema
+    /// compares an `enum`; whole numbers compare exactly, at any size.
+    #[expect(
+        clippy::float_cmp,
+        reason = "enum membership is exact equality of the two numbers, not closeness"
+    )]
+    fn same(self, left: &str, right: &str) -> bool {
+        if left == right {
+            return true;
+        }
+        match self {
+            Self::String | Self::Bool => false,
+            Self::Number | Self::Integer => match (left.parse::<i128>(), right.parse::<i128>()) {
+                (Ok(left), Ok(right)) => left == right,
+                _ => matches!(
+                    (left.parse::<f64>(), right.parse::<f64>()),
+                    (Ok(left), Ok(right)) if left == right
+                ),
+            },
+        }
+    }
 }
 
 /// One declared recipe param.
@@ -124,7 +147,12 @@ impl Param {
                 self.ty.as_str()
             ));
         }
-        if !self.allowed.is_empty() && !self.allowed.iter().any(|allowed| allowed == value) {
+        if !self.allowed.is_empty()
+            && !self
+                .allowed
+                .iter()
+                .any(|allowed| self.ty.same(allowed, value))
+        {
             return Err(format!(
                 "param `{}`: `{value}` is not one of: {}",
                 self.name,
@@ -198,7 +226,10 @@ impl Param {
                 Value::Array(self.allowed.iter().map(|v| typed(self.ty, v)).collect()),
             );
         }
-        if let Some(pattern) = &self.pattern {
+        // JSON Schema's `pattern` is an ECMAScript regular expression. A
+        // pattern written in syntax only this crate's engine reads is left
+        // out: it is still checked when the value is bound.
+        if let Some(pattern) = self.pattern.as_ref().filter(|p| is_portable_pattern(p)) {
             out.insert("pattern".into(), json!(pattern));
         }
         if let Some(default) = &self.default {
@@ -267,6 +298,59 @@ impl Param {
     }
 }
 
+/// Whether `pattern` uses only syntax that an ECMAScript engine reads the
+/// same way as this crate's (`regex-lite`). Conservative: anything not
+/// known to be shared counts as not portable.
+///
+/// Not shared: inline flags (`(?i)`, `(?i:…)`), `(?P<name>…)`, escapes
+/// other than the class, control and punctuation ones (`\A`, `\z`,
+/// `\x{…}`), `\-` outside a class, and a `[` inside a class
+/// (`[[:alpha:]]`).
+fn is_portable_pattern(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut in_class = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        let next = bytes.get(at + 1).copied();
+        match bytes[at] {
+            b'\\' => {
+                let shared = match next {
+                    Some(
+                        b'd' | b'D' | b'w' | b'W' | b's' | b'S' | b'n' | b'r' | b't' | b'f' | b'v',
+                    ) => true,
+                    Some(b'b' | b'B') => !in_class,
+                    Some(b'-') => in_class,
+                    Some(b'x') => bytes
+                        .get(at + 2..at + 4)
+                        .is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit)),
+                    Some(other) => b".^$*+?()[]{}|/\\".contains(&other),
+                    None => false,
+                };
+                if !shared {
+                    return false;
+                }
+                at += 2;
+                continue;
+            }
+            b'[' if in_class => return false,
+            b'[' => in_class = true,
+            b']' => in_class = false,
+            b'(' if !in_class && next == Some(b'?') => {
+                let named = bytes.get(at + 2) == Some(&b'<')
+                    && bytes
+                        .get(at + 3)
+                        .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_');
+                if bytes.get(at + 2) != Some(&b':') && !named {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    true
+}
+
 fn scalar_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => Some(text.clone()),
@@ -288,7 +372,7 @@ fn typed(ty: ParamType, text: &str) -> Value {
 }
 
 /// [`typed`], but only when the typed value reads back as the same text:
-/// `enum` and `default` are compared as text, so `1e2` must not become `100.0`.
+/// a recipe is written back as it was read, so `1e2` must not become `100.0`.
 fn exact(ty: ParamType, text: &str) -> Value {
     let value = typed(ty, text);
     if scalar_text(&value).as_deref() == Some(text) {

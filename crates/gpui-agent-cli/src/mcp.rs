@@ -320,7 +320,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "recipe": { "description": "JSON recipe object (canonical) or wants text." },
-                    "set": { "type": "object", "description": "Value for every declared param, and no other keys." },
+                    "set": { "type": "object", "description": "Param name to value. Every required param needs one; an optional param may be left out and takes its default. No key that is not a declared param." },
                     "schema": schema_arg()
                 },
                 "required": ["recipe"]
@@ -333,7 +333,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "recipe": { "description": "JSON recipe object (canonical) or wants text." },
-                    "set": { "type": "object", "description": "Value for every declared param, and no other keys." },
+                    "set": { "type": "object", "description": "Param name to value. Every required param needs one; an optional param may be left out and takes its default. No key that is not a declared param." },
                     "yes": { "type": "boolean" },
                     "screenshot_dir": { "type": "string", "description": "After each step (or flagged steps), write an app-surface PNG. Receipt lists paths; headless/Linux/Windows are screenshot_unavailable; macOS desktop uses screencapture -l of this window." },
                     "screenshot_flagged": { "type": "boolean", "description": "Only steps with screenshot: true." },
@@ -1016,10 +1016,7 @@ fn recipe_run_tool(
     if flagged && dir.is_none() {
         return Err("screenshot_flagged requires screenshot_dir".into());
     }
-    let capture = dir.map(|dir| ScreenshotCapture {
-        dir: std::path::PathBuf::from(dir),
-        flagged_only: flagged,
-    });
+    let capture = dir.map(|dir| ScreenshotCapture::new(dir).with_flagged_only(flagged));
     let options = RunOptions::new().with_yes(yes).with_screenshots(capture);
     match run_plan(client, &plan, &options) {
         Ok(receipt) => serde_json::to_value(receipt).map_err(|err| err.to_string()),

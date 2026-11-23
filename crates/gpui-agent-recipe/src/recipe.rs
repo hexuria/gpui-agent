@@ -23,9 +23,10 @@ const STEP_FIELDS: &[&str] = &["id", "needs", "screenshot", "op"];
 /// JSON is the canonical form; a line-based `.wants` file compiles to
 /// the same struct. Parse with [`Recipe::from_json`] /
 /// [`parse_recipe`] rather than `serde_json::from_str`: only those
-/// reject unknown step fields.
+/// reject unknown step fields. In code, start from [`Recipe::new`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Recipe {
     /// Optional JSON Schema reference for editors; ignored by the runner.
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
@@ -50,7 +51,9 @@ fn recipe_v1() -> u32 {
 }
 
 /// One recipe step: an id, optional `needs` dependencies, and the op.
+/// In code, start from [`RecipeStep::new`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RecipeStep {
     /// Step id — the wave-schedule node name.
     pub id: String,
@@ -66,20 +69,50 @@ pub struct RecipeStep {
     pub op: Op,
 }
 
+impl RecipeStep {
+    /// A step that runs `op`, with no `needs` and no screenshot flag.
+    pub fn new(id: impl Into<String>, op: Op) -> Self {
+        Self {
+            id: id.into(),
+            needs: Vec::new(),
+            screenshot: false,
+            op,
+        }
+    }
+}
+
 impl Recipe {
+    /// A recipe of the current format version with these steps, no params
+    /// and no app.
+    pub fn new(name: impl Into<String>, steps: Vec<RecipeStep>) -> Self {
+        Self {
+            json_schema: None,
+            v: RECIPE_FORMAT_VERSION,
+            name: name.into(),
+            app: None,
+            params: Vec::new(),
+            steps,
+        }
+    }
+
     /// Parse structured recipe JSON, rejecting keys that are not part of
     /// the recipe format or of the step's op.
     ///
     /// # Errors
-    /// [`RecipeErrorCode::Parse`] on malformed JSON or a wrongly typed
-    /// field; [`RecipeErrorCode::UnknownField`] on an unknown key.
+    /// [`RecipeErrorCode::Parse`] on malformed JSON, a key written twice
+    /// in one object, or a wrongly typed field;
+    /// [`RecipeErrorCode::UnknownField`] on an unknown key.
     pub fn from_json(text: &str) -> Result<Self, RecipeError> {
-        let value: Value = serde_json::from_str(text)
-            .map_err(|e| err(RecipeErrorCode::Parse, format!("recipe json: {e}")))?;
+        let parse = |e: serde_json::Error| err(RecipeErrorCode::Parse, format!("recipe json: {e}"));
+        // A `Value` keeps only the last of two equal keys, so they are
+        // refused on the text, before one of them is gone.
+        serde_json::from_str::<NoDuplicateKeys>(text).map_err(parse)?;
+        let value: Value = serde_json::from_str(text).map_err(parse)?;
         Self::from_value(&value)
     }
 
-    /// [`Recipe::from_json`] for an already parsed JSON value.
+    /// [`Recipe::from_json`] for an already parsed JSON value. A key the
+    /// text wrote twice is already down to one here and cannot be refused.
     ///
     /// # Errors
     /// As [`Recipe::from_json`].
@@ -153,6 +186,73 @@ impl Recipe {
     /// linear chain in favor of the explicit DAG.
     pub fn uses_explicit_needs(&self) -> bool {
         self.steps.iter().any(|step| !step.needs.is_empty())
+    }
+}
+
+/// Reads any JSON and keeps nothing: its only job is to fail on an object
+/// that writes one key twice.
+struct NoDuplicateKeys;
+
+impl<'de> Deserialize<'de> for NoDuplicateKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Walk;
+
+        impl<'de> serde::de::Visitor<'de> for Walk {
+            type Value = NoDuplicateKeys;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+
+            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(NoDuplicateKeys)
+            }
+
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(NoDuplicateKeys)
+            }
+
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(NoDuplicateKeys)
+            }
+
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(NoDuplicateKeys)
+            }
+
+            fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(NoDuplicateKeys)
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(NoDuplicateKeys)
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                while seq.next_element::<NoDuplicateKeys>()?.is_some() {}
+                Ok(NoDuplicateKeys)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut seen = BTreeSet::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if seen.contains(&key) {
+                        return Err(serde::de::Error::custom(format!("duplicate field `{key}`")));
+                    }
+                    map.next_value::<NoDuplicateKeys>()?;
+                    seen.insert(key);
+                }
+                Ok(NoDuplicateKeys)
+            }
+        }
+
+        deserializer.deserialize_any(Walk)
     }
 }
 
@@ -429,7 +529,6 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
     }
 
     let mut used = BTreeSet::new();
-    let mut needs_ok = true;
     for step in &recipe.steps {
         let mut seen = BTreeSet::new();
         for need in &step.needs {
@@ -448,7 +547,6 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
                 None
             };
             if let Some(message) = problem {
-                needs_ok = false;
                 errors.push(err(Code::InvalidNeeds, message).at_step(&step.id));
             }
         }
@@ -537,7 +635,20 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
         }
     }
 
-    if needs_ok && crate::plan::schedule(&recipe.steps).is_err() {
+    // Judged on the edges that name another step: a bad `needs` entry is
+    // reported above, and neither is a cycle nor hides one elsewhere.
+    let edges: Vec<RecipeStep> = recipe
+        .steps
+        .iter()
+        .map(|step| {
+            let mut step = step.clone();
+            let id = step.id.clone();
+            step.needs
+                .retain(|need| *need != id && ids.contains(need.as_str()));
+            step
+        })
+        .collect();
+    if crate::plan::schedule(&edges).is_err() {
         errors.push(err(Code::Cycle, "recipe has a dependency cycle"));
     }
     errors
@@ -584,15 +695,20 @@ pub(crate) fn check_invoke_args(
     }
     for (name, value) in map {
         let Some(spec) = schema.args.get(name) else {
+            // Named in `required` with no `args` entry: declared, untyped.
+            if schema.required.contains(name) {
+                continue;
+            }
+            let declared: BTreeSet<&str> = schema
+                .args
+                .keys()
+                .chain(&schema.required)
+                .map(String::as_str)
+                .collect();
             return Err(format!(
                 "invoke `{}` has no arg `{name}` (schema declares: {})",
                 schema.name,
-                schema
-                    .args
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                declared.into_iter().collect::<Vec<_>>().join(", ")
             ));
         };
         if !bound && value.as_str().is_some_and(string_has_placeholder) {
@@ -2500,5 +2616,235 @@ assert todo-item-1 name=$title checked=false
             .unwrap_err();
             assert_eq!(error.code, RecipeErrorCode::Parse);
         }
+    }
+
+    /// A key written twice is refused: the earlier value would be dropped
+    /// without a word, and a reader of the file sees both.
+    #[test]
+    fn duplicate_json_keys_are_rejected() {
+        for (text, key) in [
+            (
+                r#"{"name":"d","steps":[{"id":"a","op":"hello"}],"steps":[{"id":"b","op":"hello"}]}"#,
+                "steps",
+            ),
+            (
+                r#"{"name":"d","steps":[{"id":"a","op":"hello","op":"shutdown"}]}"#,
+                "op",
+            ),
+            (
+                r#"{"name":"d","steps":[{"id":"a","op":"invoke","name":"todo.add","args":{"title":"a","title":"b"}}]}"#,
+                "title",
+            ),
+        ] {
+            for parsed in [
+                Recipe::from_json(text),
+                parse_recipe_source(text, "inline", false),
+            ] {
+                let error = parsed.expect_err(text);
+                assert_eq!(error.code, RecipeErrorCode::Parse, "{error}");
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("duplicate field `{key}`")),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    /// `required` may name an arg that has no `args` entry (`target`,
+    /// `text`, …): it is declared, only untyped.
+    #[test]
+    fn an_arg_named_only_in_required_is_declared() {
+        let schema: OpSchema = serde_json::from_value(json!({
+            "name": "x.press",
+            "kind": "invoke",
+            "description": "press",
+            "required": ["target"],
+            "args": {"label": {"type": "string"}},
+        }))
+        .unwrap();
+        schema.validate().unwrap();
+        for bound in [false, true] {
+            check_invoke_args(
+                &schema,
+                &json!({"target": "button", "label": "Save"}),
+                bound,
+            )
+            .unwrap();
+            let missing = check_invoke_args(&schema, &json!({"label": "Save"}), bound).unwrap_err();
+            assert!(
+                missing.contains("missing required arg `target`"),
+                "{missing}"
+            );
+            let unknown =
+                check_invoke_args(&schema, &json!({"target": "b", "other": 1}), bound).unwrap_err();
+            assert!(unknown.contains("no arg `other`"), "{unknown}");
+            assert!(unknown.contains("label, target"), "{unknown}");
+        }
+    }
+
+    /// One bad `needs` entry does not hide a cycle elsewhere, and is not
+    /// itself reported as one.
+    #[test]
+    fn a_bad_need_does_not_hide_a_cycle() {
+        use RecipeErrorCode as Code;
+        let codes = |text: &str| -> Vec<Code> {
+            lint_recipe(&Recipe::from_json(text).unwrap(), &todo_registry())
+                .iter()
+                .map(|error| error.code)
+                .collect()
+        };
+        let both = r#"{"name":"t","steps":[
+            {"id":"a","needs":["b"],"op":"snapshot"},
+            {"id":"b","needs":["a"],"op":"snapshot"},
+            {"id":"c","needs":["nope"],"op":"snapshot"}]}"#;
+        assert_eq!(codes(both), [Code::InvalidNeeds, Code::Cycle]);
+        let only_bad = r#"{"name":"t","steps":[
+            {"id":"a","needs":["nope","a"],"op":"snapshot"},
+            {"id":"b","needs":["a","a"],"op":"snapshot"}]}"#;
+        assert!(
+            !codes(only_bad).contains(&Code::Cycle),
+            "{:?}",
+            codes(only_bad)
+        );
+    }
+
+    /// Every step the crate writes passes `schemas/recipe.v1.schema.json`:
+    /// a key written as `null` is one whose schema type admits `null`.
+    #[test]
+    fn json_schema_accepts_what_the_serializer_writes() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../schemas/recipe.v1.schema.json"
+        );
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let schema: Value = serde_json::from_str(&text).unwrap();
+        for variant in schema["$defs"]["step"]["oneOf"].as_array().unwrap() {
+            let op = variant["properties"]["op"]["const"].as_str().unwrap();
+            let mut raw = serde_json::Map::new();
+            for key in variant["required"].as_array().unwrap() {
+                let key = key.as_str().unwrap();
+                let sample = match (op, key) {
+                    (_, "op") => json!(op),
+                    ("keybinding", "scope") => json!("global"),
+                    ("swipe", "direction") => json!("up"),
+                    ("system", "action") => json!("back"),
+                    (_, "timeout_ms" | "index" | "scale") => json!(1),
+                    _ => json!("x"),
+                };
+                raw.insert(key.into(), sample);
+            }
+            let step = RecipeStep::deserialize(&Value::Object(raw)).unwrap();
+            let written = serde_json::to_value(&step).unwrap();
+            for (key, value) in written.as_object().unwrap() {
+                let property = &variant["properties"][key];
+                assert!(
+                    !property.is_null(),
+                    "`{op}` writes `{key}`, not in the schema"
+                );
+                let admits_null = match &property["type"] {
+                    Value::Null => true,
+                    Value::String(ty) => ty == "null",
+                    Value::Array(types) => types.iter().any(|ty| ty == "null"),
+                    _ => false,
+                };
+                assert!(
+                    !value.is_null() || admits_null,
+                    "`{op}` writes `{key}: null`, schema type is {}",
+                    property["type"]
+                );
+            }
+        }
+    }
+
+    /// A number param's `enum` is compared as numbers, as the input schema
+    /// a caller validates against compares it; a string `enum` stays text.
+    #[test]
+    fn a_numeric_enum_binds_what_its_input_schema_accepts() {
+        let recipe = Recipe::from_value(&json!({
+            "name": "n",
+            "params": [
+                {"name": "n", "type": "number", "enum": [1.0, 5]},
+                {"name": "m", "type": "number", "enum": ["1e2"], "default": "1e2"},
+                {"name": "i", "type": "integer", "enum": [9_007_199_254_740_993_i64]},
+                {"name": "s", "enum": ["1.0"]},
+            ],
+            "steps": [{
+                "id": "s1", "op": "invoke", "name": "todo.add",
+                "args": {"n": "$n", "m": "$m", "i": "$i", "s": "$s"},
+            }],
+        }))
+        .unwrap();
+        let check = |name: &str, value: &str| recipe.param(name).unwrap().check(value);
+        for value in ["1", "1.0", "1e0", "5", "5.0"] {
+            check("n", value).unwrap();
+        }
+        check("n", "2").unwrap_err();
+        for value in ["100", "1e2", "100.0"] {
+            check("m", value).unwrap();
+        }
+        check("i", "9007199254740993").unwrap();
+        check("i", "9007199254740992").unwrap_err();
+        check("s", "1.0").unwrap();
+        check("s", "1").unwrap_err();
+        let properties = &recipe.input_schema()["properties"];
+        assert_eq!(properties["n"]["enum"], json!([1.0, 5]));
+        assert_eq!(properties["m"]["enum"], json!([100.0]));
+        assert_eq!(properties["m"]["default"], json!(100.0));
+    }
+
+    /// The input schema's `pattern` is read by ECMAScript validators, so it
+    /// carries only patterns that mean the same there; the others are still
+    /// checked when the value is bound.
+    #[test]
+    fn input_schema_exports_only_patterns_javascript_reads() {
+        let exported = |pattern: &str| -> bool {
+            let recipe = Recipe::from_value(&json!({
+                "name": "p",
+                "params": [{"name": "p", "pattern": pattern}],
+                "steps": [{
+                    "id": "s1", "op": "invoke", "name": "todo.add", "args": {"title": "$p"},
+                }],
+            }))
+            .unwrap();
+            validate_recipe(&recipe, &todo_registry()).expect(pattern);
+            let property = &recipe.input_schema()["properties"]["p"];
+            assert!(
+                property["pattern"].is_null() || property["pattern"] == pattern,
+                "{property}"
+            );
+            !property["pattern"].is_null()
+        };
+        for pattern in [
+            r"^[0-9]+\.00$",
+            r"^(?:yes|no)$",
+            r"^(?<year>\d{4})-\d\d$",
+            r"^[\w\-.]+@\w+$",
+            r"\x41\t",
+        ] {
+            assert!(exported(pattern), "{pattern}");
+        }
+        for pattern in [
+            "(?i)^yes$",
+            "^(?i:yes)$",
+            r"(?P<year>\d{4})",
+            r"\Ayes\z",
+            "[[:alpha:]]+",
+            r"\x{41}",
+            r"a\-b",
+        ] {
+            assert!(!exported(pattern), "{pattern}");
+        }
+        let recipe = Recipe::from_value(&json!({
+            "name": "p",
+            "params": [{"name": "p", "pattern": "(?i)^yes$"}],
+            "steps": [{"id": "s1", "op": "invoke", "name": "todo.add", "args": {"title": "$p"}}],
+        }))
+        .unwrap();
+        recipe.param("p").unwrap().check("YES").unwrap();
+        recipe.param("p").unwrap().check("no").unwrap_err();
     }
 }

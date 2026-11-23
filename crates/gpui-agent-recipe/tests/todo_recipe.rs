@@ -313,10 +313,7 @@ fn screenshot_dir_records_a_receipt_entry_per_step() {
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
     let dir = std::env::temp_dir().join(format!("gpui-agent-wide-shots-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let capture = ScreenshotCapture {
-        dir: dir.clone(),
-        flagged_only: false,
-    };
+    let capture = ScreenshotCapture::new(dir.clone());
 
     let (mut client, shutdown) = spawn_todo();
     let receipt = run_plan(
@@ -521,10 +518,7 @@ fn headless_screenshots_are_honestly_unavailable() {
     let dir =
         std::env::temp_dir().join(format!("gpui-agent-shots-headless-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let capture = ScreenshotCapture {
-        dir: dir.clone(),
-        flagged_only: false,
-    };
+    let capture = ScreenshotCapture::new(dir.clone());
 
     let (mut client, shutdown) = spawn_todo();
     let receipt = run_plan(
@@ -587,6 +581,102 @@ impl AgentHost for PngHost {
     }
 }
 
+/// A host that speaks the protocol by hand and lists no
+/// `screenshot_inline`: it is sent a file name, writes the PNG under its own
+/// directory and answers with `path` as given (or with none).
+fn host_file_shot_host(reported: Option<&'static str>) -> std::net::SocketAddr {
+    use gpui_agent::protocol::{HelloAuth, PROTOCOL_VERSION, Request, Response};
+    use std::io::{BufRead, BufReader, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test fixture");
+    let addr = listener.local_addr().expect("test fixture");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().expect("test fixture"));
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let request: Request = serde_json::from_str(&line).expect("test fixture");
+                let mut response = Response::ok(&request.id);
+                match request.op {
+                    Op::Hello | Op::Wait { .. } => {
+                        response.hello = Some(HelloInfo {
+                            protocol: PROTOCOL_VERSION,
+                            app: "host-file-shots".into(),
+                            platform: PlatformKind::Headless,
+                            os: gpui_agent::protocol::host_os(),
+                            ready: true,
+                            deliveries: Vec::new(),
+                            auth: HelloAuth::None,
+                            bundle_id: None,
+                            executable: None,
+                            features: Vec::new(),
+                            framework: None,
+                            device: None,
+                        });
+                    }
+                    Op::Screenshot { path, inline, .. } => {
+                        assert!(!inline, "a host without the feature is not asked for bytes");
+                        assert_eq!(
+                            path.as_deref(),
+                            Some("001-wait.png"),
+                            "the host is sent the file name only"
+                        );
+                        response.result = Some(match reported {
+                            Some(path) => serde_json::json!({"path": path}),
+                            None => serde_json::json!({}),
+                        });
+                    }
+                    _ => response = Response::err(&request.id, "unexpected operation"),
+                }
+                let response = serde_json::to_string(&response).expect("test fixture");
+                if writeln!(stream, "{response}").is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    addr
+}
+
+#[test]
+fn host_written_step_png_is_reported_where_the_host_says() {
+    let recipe = gpui_agent_recipe::Recipe::from_json(
+        r#"{"name":"shots","steps":[{"id":"wait","op":"wait"}]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let dir = std::env::temp_dir().join(format!("gpui-agent-shots-host-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = |reported| {
+        let mut client = AgentClient::connect(host_file_shot_host(reported))
+            .with_timeout(Duration::from_secs(3));
+        let options = RunOptions::new().with_screenshots(Some(ScreenshotCapture::new(&dir)));
+        run_plan(&mut client, &plan, &options).unwrap()
+    };
+
+    let receipt = run(Some("/host/shots/001-wait.png"));
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(receipt.screenshots.len(), 1, "{receipt:?}");
+    assert!(receipt.screenshots[0].ok, "{receipt:?}");
+    assert_eq!(receipt.screenshots[0].path, "/host/shots/001-wait.png");
+    // The client wrote nothing: the file is the host's.
+    assert!(!dir.join("001-wait.png").exists());
+
+    // A host that names no path: the receipt falls back to the name it was
+    // asked to write, under the client's directory.
+    let receipt = run(None);
+    assert!(receipt.screenshots[0].ok, "{receipt:?}");
+    assert_eq!(
+        receipt.screenshots[0].path,
+        dir.join("001-wait.png").to_string_lossy()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn mocked_host_writes_step_pngs_onto_receipt() {
     let store = Arc::new(Mutex::new(PngHost {
@@ -608,10 +698,7 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
     let dir = std::env::temp_dir().join(format!("gpui-agent-shots-mock-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
-    let every = ScreenshotCapture {
-        dir: dir.clone(),
-        flagged_only: false,
-    };
+    let every = ScreenshotCapture::new(dir.clone());
     let receipt = run_plan(
         &mut client,
         &plan,
@@ -632,10 +719,7 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
     }
 
     let flagged_dir = dir.join("flagged");
-    let flagged = ScreenshotCapture {
-        dir: flagged_dir.clone(),
-        flagged_only: true,
-    };
+    let flagged = ScreenshotCapture::new(flagged_dir.clone()).with_flagged_only(true);
     let flagged_receipt = run_plan(
         &mut client,
         &plan,

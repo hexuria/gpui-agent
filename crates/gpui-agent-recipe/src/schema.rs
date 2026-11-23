@@ -7,8 +7,10 @@ use crate::error::{RecipeError, RecipeErrorCode, err};
 /// TMP-shaped operation contract: effects, required inputs, result hint.
 ///
 /// This is a local mapping schema, not a `tmp-core` dependency. Unknown
-/// intents fail closed; nothing here shells out.
+/// intents fail closed; nothing here shells out. In code, start from
+/// [`OpSchema::new`] and set the fields that apply.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct OpSchema {
     /// Stable schema name (`todo.add`, `click`, `shutdown`).
     pub name: String,
@@ -68,6 +70,7 @@ pub enum Effect {
 
 /// Type/required spec for one `Invoke` arg.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ArgSchema {
     /// Wire type name (`string`, `number`, `bool`, …).
     #[serde(rename = "type")]
@@ -77,7 +80,34 @@ pub struct ArgSchema {
     pub required: bool,
 }
 
+impl ArgSchema {
+    /// An optional arg of wire type `ty`.
+    pub fn new(ty: impl Into<String>) -> Self {
+        Self {
+            ty: ty.into(),
+            required: false,
+        }
+    }
+}
+
 impl OpSchema {
+    /// A schema with only its name, kind and description: no declared
+    /// effects (treated as Write), no args, not idempotent, not verified.
+    pub fn new(name: impl Into<String>, kind: SchemaKind, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            description: description.into(),
+            effects: Vec::new(),
+            idempotent: false,
+            verified: false,
+            required: Vec::new(),
+            args: BTreeMap::new(),
+            result: None,
+            keywords: Vec::new(),
+        }
+    }
+
     /// Reject empty/invalid names and `required` entries with no
     /// `args` spec. Duplicate names are the registry's job:
     /// [`Registry::insert`](crate::registry::Registry::insert) replaces,

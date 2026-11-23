@@ -8,6 +8,7 @@ use crate::schema::{Effect, SchemaKind};
 
 /// A `$param`/slot filled while materializing an op.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct TokenFill {
     /// The placeholder name.
     pub name: String,
