@@ -170,23 +170,43 @@ pub fn png_write_temp_path(dest: &Path, n: u32) -> PathBuf {
 /// Write `png` onto `dest` via an adjacent temp file then `rename`.
 /// Unix rename replaces atomically; that is not a pre-delete.
 ///
+/// On Unix a file that replaces a regular file keeps that file's mode, and
+/// is never more open than it while it is written: a private capture stays
+/// private. A new file takes the process default, as any new file does.
+///
 /// # Errors
 ///
-/// Parent-dir creation, the temp write, or the rename.
+/// Parent-dir creation, the temp write, keeping the mode, or the rename.
 pub fn atomic_write_png(dest: &Path, png: &[u8]) -> Result<(), String> {
     if let Some(parent) = dest.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
     }
+    // Not through a symlink: the rename replaces the link itself.
+    #[cfg(unix)]
+    let replaced = std::fs::symlink_metadata(dest)
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map(|meta| meta.permissions());
     let mut n = 0u32;
     let tmp = loop {
         let candidate = png_write_temp_path(dest, n);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if let Some(permissions) = &replaced {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            // The umask can only take bits away from this.
+            options.mode(permissions.mode() & 0o777);
+        }
+        match options.open(&candidate) {
             Ok(mut file) => {
-                if let Err(err) = std::io::Write::write_all(&mut file, png) {
+                let written = std::io::Write::write_all(&mut file, png);
+                #[cfg(unix)]
+                let written = written.and_then(|()| match &replaced {
+                    Some(permissions) => file.set_permissions(permissions.clone()),
+                    None => Ok(()),
+                });
+                if let Err(err) = written {
                     let _ = std::fs::remove_file(&candidate);
                     return Err(format!("{}: {err}", candidate.display()));
                 }
@@ -727,5 +747,33 @@ mod tests {
             err.contains('-') || err.contains("flag"),
             "argv last slot must not be a flag: {err}"
         );
+    }
+
+    /// A capture that replaces a private file stays private, and is never
+    /// more open than that file while it is being written.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_keeps_the_replaced_files_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("gpui-agent-atomic-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        for private in [0o600, 0o640] {
+            let dest = dir.join(format!("shot-{private:o}.png"));
+            std::fs::write(&dest, b"old-bytes").unwrap();
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(private)).unwrap();
+            atomic_write_png(&dest, TEST_PNG).unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), TEST_PNG);
+            assert_eq!(mode(&dest), private, "{private:o}");
+        }
+        // A new file takes the process default, as any new file does.
+        let fresh = dir.join("fresh.png");
+        atomic_write_png(&fresh, TEST_PNG).unwrap();
+        let plain = dir.join("plain");
+        std::fs::write(&plain, b"x").unwrap();
+        assert_eq!(mode(&fresh), mode(&plain));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

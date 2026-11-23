@@ -87,7 +87,7 @@ fn protocol(
         idempotent,
         verified: true,
         required: required.iter().map(|s| (*s).to_string()).collect(),
-        args: BTreeMap::new(),
+        args: None,
         result: None,
         keywords: keywords.iter().map(|s| (*s).to_string()).collect(),
     }
@@ -247,7 +247,7 @@ fn todo_app_registry() -> Registry {
         idempotent: false,
         verified: true,
         required: vec!["title".into()],
-        args: add_args,
+        args: Some(add_args),
         result: Some(json!({"id": "u64", "title": "string", "done": "bool"})),
         keywords: vec![
             "add".into(),
@@ -269,7 +269,7 @@ fn todo_app_registry() -> Registry {
         idempotent: false,
         verified: true,
         required: vec!["id".into()],
-        args: id_args.clone(),
+        args: Some(id_args.clone()),
         result: Some(json!({"id": "u64", "title": "string", "done": "bool"})),
         keywords: vec![
             "toggle".into(),
@@ -288,7 +288,7 @@ fn todo_app_registry() -> Registry {
         idempotent: false,
         verified: true,
         required: vec!["id".into()],
-        args: id_args,
+        args: Some(id_args),
         result: Some(json!({"id": "u64", "title": "string", "done": "bool"})),
         keywords: vec!["delete".into(), "remove".into(), "todo".into()],
     })
@@ -302,7 +302,7 @@ fn todo_app_registry() -> Registry {
         idempotent: true,
         verified: true,
         required: vec![],
-        args: BTreeMap::new(),
+        args: Some(BTreeMap::new()),
         result: Some(json!([{"id": "u64", "title": "string", "done": "bool"}])),
         keywords: vec!["list".into(), "todos".into(), "items".into()],
     })
@@ -316,7 +316,7 @@ fn todo_app_registry() -> Registry {
         idempotent: false,
         verified: true,
         required: vec![],
-        args: BTreeMap::new(),
+        args: Some(BTreeMap::new()),
         result: Some(json!({"sidebar_open": "bool"})),
         keywords: vec!["sidebar".into(), "nav".into()],
     })
@@ -348,7 +348,7 @@ fn todo_app_registry() -> Registry {
             idempotent: false,
             verified: true,
             required: vec![],
-            args: BTreeMap::new(),
+            args: None,
             result: None,
             keywords: keywords.iter().map(|s| (*s).to_string()).collect(),
         })
@@ -455,7 +455,7 @@ mod tests {
                 idempotent: false,
                 verified: false,
                 required: vec![],
-                args: BTreeMap::new(),
+                args: None,
                 result: None,
                 keywords: vec![],
             })

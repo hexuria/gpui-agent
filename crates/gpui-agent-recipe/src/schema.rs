@@ -31,9 +31,12 @@ pub struct OpSchema {
     /// Arg names that must be filled before dispatch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required: Vec<String>,
-    /// Per-arg type specs for `Invoke` schemas.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub args: BTreeMap<String, ArgSchema>,
+    /// Per-arg type specs for `Invoke` schemas. `None` (the file leaves
+    /// `args` out): the invoke's args are not listed, and only `required`
+    /// is enforced. `Some` (even `{}`): these are all of them, and an arg
+    /// named neither here nor in `required` is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<BTreeMap<String, ArgSchema>>,
     /// Expected result shape (documentation/eval only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
@@ -91,8 +94,14 @@ impl ArgSchema {
 }
 
 impl OpSchema {
+    /// The spec of arg `name`, when `args` lists it.
+    pub fn arg(&self, name: &str) -> Option<&ArgSchema> {
+        self.args.as_ref()?.get(name)
+    }
+
     /// A schema with only its name, kind and description: no declared
-    /// effects (treated as Write), no args, not idempotent, not verified.
+    /// effects (treated as Write), args not listed, not idempotent, not
+    /// verified.
     pub fn new(name: impl Into<String>, kind: SchemaKind, description: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -102,7 +111,7 @@ impl OpSchema {
             idempotent: false,
             verified: false,
             required: Vec::new(),
-            args: BTreeMap::new(),
+            args: None,
             result: None,
             keywords: Vec::new(),
         }
@@ -133,7 +142,7 @@ impl OpSchema {
             ));
         }
         for req in &self.required {
-            if !self.args.contains_key(req)
+            if self.arg(req).is_none()
                 && !matches!(
                     req.as_str(),
                     "target" | "text" | "value" | "key" | "name" | "binding" | "scope"
@@ -166,7 +175,7 @@ mod tests {
             idempotent: true,
             verified: true,
             required: vec![],
-            args: BTreeMap::new(),
+            args: None,
             result: None,
             keywords: vec![],
         };
@@ -183,7 +192,7 @@ mod tests {
             idempotent: false,
             verified: false,
             required: vec![],
-            args: BTreeMap::new(),
+            args: None,
             result: None,
             keywords: vec![],
         };
@@ -200,7 +209,7 @@ mod tests {
             idempotent: false,
             verified: false,
             required: vec!["payload".into()],
-            args: BTreeMap::new(),
+            args: None,
             result: None,
             keywords: vec![],
         };

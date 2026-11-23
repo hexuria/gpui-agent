@@ -782,8 +782,20 @@ fn run() -> Result<()> {
     });
     let allow_remote = cli.allow_remote || session.is_some_and(|session| session.allow_remote);
     let request_timeout = cli.request_timeout_ms.map(Duration::from_millis);
-    gpui_agent::authorize_client(addr, token.as_deref(), allow_remote)
-        .with_context(|| format!("refusing agent address {addr}"))?;
+    if let Err(refused) = gpui_agent::authorize_client(addr, token.as_deref(), allow_remote) {
+        let context = format!("refusing agent address {addr}");
+        // A recipe command rejected before running prints an envelope, so
+        // its refusal is typed; `main` prints it.
+        return Err(if matches!(cli.command, Command::Recipe { .. }) {
+            anyhow::Error::new(CallFailure::with_code(
+                format!("{context}: {refused}"),
+                gpui_agent::error_code::UNAUTHORIZED,
+                None,
+            ))
+        } else {
+            anyhow::Error::new(refused).context(context)
+        });
+    }
 
     if matches!(cli.command, Command::Doctor) {
         let mut client = connect(addr, request_timeout);

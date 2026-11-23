@@ -157,14 +157,28 @@
               "const": "snapshot"
             },
             "since": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "minimum": 0
             },
             "format": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "json",
+                "compact",
+                null
+              ]
             },
             "fingerprints": {
-              "type": "boolean"
+              "type": [
+                "boolean",
+                "null"
+              ]
             }
           },
           "required": [
@@ -229,12 +243,19 @@
               "const": "events"
             },
             "since": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "minimum": 0
             },
             "limit": {
-              "type": "integer",
-              "minimum": 0
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 4294967295
             }
           },
           "required": [
@@ -277,7 +298,10 @@
               ]
             },
             "expect_fingerprint": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
@@ -326,7 +350,10 @@
               ]
             },
             "expect_fingerprint": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
@@ -370,7 +397,10 @@
               "type": "string"
             },
             "expect_fingerprint": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
@@ -420,7 +450,10 @@
               ]
             },
             "expect_fingerprint": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
@@ -461,10 +494,17 @@
               "type": "string"
             },
             "chord": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "scope": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "focused",
+                "global"
+              ]
             },
             "confirm": {
               "type": "boolean"
@@ -513,6 +553,38 @@
           "additionalProperties": false
         },
         {
+          "title": "keybinding.list",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "keybinding.list"
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false,
+          "description": "Alias of `keybindings`."
+        },
+        {
           "title": "assert",
           "type": "object",
           "properties": {
@@ -540,25 +612,46 @@
               "type": "string"
             },
             "name": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "value": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "role": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "checked": {
-              "type": "boolean"
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "exists": {
-              "type": "boolean"
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "visible": {
-              "type": "boolean"
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "in_viewport": {
-              "type": "boolean"
+              "type": [
+                "boolean",
+                "null"
+              ]
             }
           },
           "required": [
@@ -674,25 +767,46 @@
               "type": "string"
             },
             "name": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "value": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "role": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "checked": {
-              "type": "boolean"
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "exists": {
-              "type": "boolean"
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "visible": {
-              "type": "boolean"
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "in_viewport": {
-              "type": "boolean"
+              "type": [
+                "boolean",
+                "null"
+              ]
             }
           },
           "required": [
@@ -759,17 +873,31 @@
               "const": "screenshot"
             },
             "path": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "mode": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "viewport",
+                "scrolled"
+              ]
             },
             "target": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "max_height_px": {
-              "type": "integer",
-              "minimum": 0
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 4294967295
             },
             "inline": {
               "type": "boolean"
@@ -810,7 +938,8 @@
             },
             "index": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 4294967295
             }
           },
           "required": [
@@ -846,16 +975,28 @@
               "const": "press"
             },
             "target": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "x": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "y": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "expect_fingerprint": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             }
@@ -891,13 +1032,22 @@
               "const": "scroll"
             },
             "target": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "x": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "y": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "dx": {
               "type": "number"
@@ -937,13 +1087,22 @@
               "const": "hover"
             },
             "target": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "x": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "y": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             }
           },
           "required": [
@@ -977,25 +1136,46 @@
               "const": "drag"
             },
             "from": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "to": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "target": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "x": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "y": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "dx": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "dy": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             }
           },
           "required": [
@@ -1029,13 +1209,25 @@
               "const": "swipe"
             },
             "target": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "direction": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "up",
+                "down",
+                "left",
+                "right"
+              ]
             },
             "distance": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             }
           },
           "required": [
@@ -1070,16 +1262,28 @@
               "const": "long_press"
             },
             "target": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "x": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "y": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "duration_ms": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "minimum": 0
             }
           },
@@ -1114,7 +1318,10 @@
               "const": "pinch"
             },
             "target": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "scale": {
               "type": "number"
@@ -1152,13 +1359,22 @@
               "const": "viewport"
             },
             "width": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "height": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "preset": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -1231,10 +1447,23 @@
               "const": "system"
             },
             "action": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "back",
+                "home",
+                "rotate",
+                "keyboard_show",
+                "keyboard_hide",
+                "background",
+                "foreground",
+                "open_url"
+              ]
             },
             "value": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
