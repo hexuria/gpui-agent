@@ -29,6 +29,9 @@ gpui-agent-policy = { workspace = true, optional = true }
 [dev-dependencies]
 todo-core.workspace = true
 criterion = "0.5"
+# Tests only: checks `schemas/recipe.v1.schema.json` against the parser.
+# No default features: they add an HTTP client for remote `$ref`s.
+jsonschema = { version = "0.63", default-features = false }
 
 [[bench]]
 name = "recipe_plan"

@@ -6,7 +6,10 @@
   "type": "object",
   "properties": {
     "$schema": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "v": {
       "const": 1,
@@ -17,7 +20,10 @@
       "minLength": 1
     },
     "app": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "params": {
       "type": "array",
