@@ -35,7 +35,11 @@ pub struct OpSchema {
     /// `args` out): the invoke's args are not listed, and only `required`
     /// is enforced. `Some` (even `{}`): these are all of them, and an arg
     /// named neither here nor in `required` is refused.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "listed_args",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub args: Option<BTreeMap<String, ArgSchema>>,
     /// Expected result shape (documentation/eval only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,6 +47,14 @@ pub struct OpSchema {
     /// Intent-matching keywords beyond the name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+}
+
+/// `args` when the file writes it: a map, never `null`. Left out, the
+/// field's default (`None`) applies and this is not called.
+fn listed_args<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, ArgSchema>>, D::Error> {
+    BTreeMap::deserialize(deserializer).map(Some)
 }
 
 /// How a schema name maps onto the wire.

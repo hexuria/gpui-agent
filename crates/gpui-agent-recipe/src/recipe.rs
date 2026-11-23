@@ -2848,6 +2848,9 @@ assert todo-item-1 name=$title checked=false
             (r"^[a-z\s]+$", r"^[a-z\t\n\x0B\f\r ]+$"),
             (r"^.+\.$", r"^[^\n]+\.$"),
             (r"^[.]$", r"^[.]$"),
+            (r"^[a-z0-9_-]+$", r"^[a-z0-9_-]+$"),
+            (r"^[-a-z\s]+$", r"^[-a-z\t\n\x0B\f\r ]+$"),
+            (r"^[^-a\x2Dz]$", r"^[^-a\x2Dz]$"),
         ] {
             assert_eq!(exported(pattern).as_deref(), Some(written), "{pattern}");
             // Same pattern to this crate's engine, spelled either way.
@@ -2884,6 +2887,12 @@ assert todo-item-1 name=$title checked=false
             r"\x{41}",
             r"a\-b",
             r"^[^\S]+$",
+            // A hyphen in a class is a range only between two single
+            // characters; ECMAScript refuses or reads the rest differently.
+            r"^[--\s]+$",
+            r"^[--\d]+$",
+            r"^[a-z-9]+$",
+            r"^[--]+$",
         ] {
             assert_eq!(exported(pattern), None, "{pattern}");
         }
@@ -2923,6 +2932,12 @@ assert todo-item-1 name=$title checked=false
         // Written back as it was read, so the file keeps saying so.
         assert_eq!(serde_json::to_value(&closed).unwrap()["args"], json!({}));
 
+        // `null` is neither: a schema that writes `args` writes a map.
+        let null = serde_json::from_value::<OpSchema>(json!({
+            "name": "x.list", "kind": "invoke", "description": "list", "args": null,
+        }));
+        assert!(null.is_err(), "{null:?}");
+
         let open = schema(Value::Null);
         check_invoke_args(&open, &json!({"limit": 1}), true).unwrap();
         check_invoke_args(&open, &json!("text"), true).unwrap();
@@ -2942,12 +2957,15 @@ assert todo-item-1 name=$title checked=false
     type SchemaVariant = (String, Value, serde_json::Map<String, Value>);
 
     fn schema_variants() -> Option<Vec<SchemaVariant>> {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../schemas/recipe.v1.schema.json"
-        );
-        // Read at run time: the file lives outside the published crate.
-        let text = std::fs::read_to_string(path).ok()?;
+        // Read at run time: the file lives outside the published crate,
+        // which is the one place there is nothing to compare with. In the
+        // workspace a missing file fails the test instead of passing it.
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !workspace.join("Cargo.toml").exists() {
+            return None;
+        }
+        let text = std::fs::read_to_string(workspace.join("schemas/recipe.v1.schema.json"))
+            .expect("the workspace has schemas/recipe.v1.schema.json");
         let schema: Value = serde_json::from_str(&text).unwrap();
         let variants = schema["$defs"]["step"]["oneOf"].as_array().unwrap();
         Some(
@@ -3042,6 +3060,14 @@ assert todo-item-1 name=$title checked=false
                 }
             }
         }
+        // Known and not expressible: JSON Schema's `integer` is any number
+        // with no fractional part, so it admits `1.0`; the parser reads a
+        // whole-number field only from a JSON integer. `property_admits`
+        // follows the parser here, so this is the one place a validator
+        // accepts a step that `recipe validate` then refuses.
+        let decimal = json!({"id": "a", "op": "events", "limit": 1.0});
+        assert!(RecipeStep::deserialize(decimal).is_err());
+
         // Every spelling of an op the parser reads is a schema variant.
         let step: RecipeStep =
             serde_json::from_value(json!({"id": "a", "op": "keybinding.list"})).unwrap();

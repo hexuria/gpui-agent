@@ -298,9 +298,27 @@ impl Param {
     }
 }
 
+/// What a character class has read so far, which decides what a `-`
+/// after it means.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClassMember {
+    /// Nothing yet: a `-` here is a literal hyphen.
+    Start,
+    /// A single character: a `-` here starts a range.
+    Single,
+    /// A set (`\d`, `\s`) or the end of a range: a `-` here is a literal
+    /// hyphen only as the class's last member.
+    Closed,
+    /// The literal hyphen that opened the class.
+    Hyphen,
+}
+
 /// `pattern` as an ECMAScript engine must be given it to match what this
 /// crate's engine (`regex-lite`) matches, or `None` when it has no such
-/// spelling. Conservative: syntax not known to be shared has none.
+/// spelling. Conservative: syntax not known to be shared has none. The
+/// ECMAScript reading meant is the Unicode one (the `u` flag, which JSON
+/// Schema validators such as Ajv use): without it `.` and a class count a
+/// character outside the Basic Multilingual Plane as two.
 ///
 /// Three things are spelled out, because the two engines read them
 /// differently: `.` (here any character but a line feed), and `\s` / `\S`
@@ -310,37 +328,81 @@ impl Param {
 /// No spelling: inline flags (`(?i)`, `(?i:…)`), `(?P<name>…)`, escapes
 /// other than the class, control and punctuation ones (`\A`, `\z`,
 /// `\x{…}`), `\-` outside a class, `\S` inside one, a `[` inside a class
-/// (`[[:alpha:]]`), and a class that opens with `]`.
+/// (`[[:alpha:]]`), a class that opens with `]`, and a `-` in a class that
+/// is not its first member, its last, or between two single characters
+/// (`[--\s]`, `[\d-a]`, `[a-z-9]`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scan over the pattern; every arm shares the class state"
+)]
 fn ecmascript_pattern(pattern: &str) -> Option<String> {
     const SPACES: &str = r"\t\n\x0B\f\r ";
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::with_capacity(pattern.len());
-    let mut in_class = false;
+    // `Some` inside a character class.
+    let mut class: Option<ClassMember> = None;
+    // A range's `-` was just read; the next single character ends it.
+    let mut range_open = false;
+    // A single character was read inside a class.
+    let single = |class: &mut Option<ClassMember>, range_open: &mut bool| {
+        if class.is_some() {
+            *class = Some(if *range_open {
+                ClassMember::Closed
+            } else {
+                ClassMember::Single
+            });
+            *range_open = false;
+        }
+    };
     let mut at = 0;
     while at < chars.len() {
         let next = chars.get(at + 1).copied();
         match chars[at] {
             '\\' => {
-                match next? {
-                    's' if in_class => out.push_str(SPACES),
-                    's' => {
-                        out.push('[');
-                        out.push_str(SPACES);
-                        out.push(']');
+                let escaped = next?;
+                match escaped {
+                    's' | 'S' | 'd' | 'D' | 'w' | 'W' => {
+                        // A set cannot end a range.
+                        if range_open || (escaped == 'S' && class.is_some()) {
+                            return None;
+                        }
+                        match (escaped, class.is_some()) {
+                            ('s', true) => out.push_str(SPACES),
+                            ('s', false) => {
+                                out.push('[');
+                                out.push_str(SPACES);
+                                out.push(']');
+                            }
+                            ('S', _) => {
+                                out.push_str("[^");
+                                out.push_str(SPACES);
+                                out.push(']');
+                            }
+                            _ => {
+                                out.push('\\');
+                                out.push(escaped);
+                            }
+                        }
+                        if class.is_some() {
+                            class = Some(ClassMember::Closed);
+                        }
+                        at += 2;
                     }
-                    'S' if !in_class => {
-                        out.push_str("[^");
-                        out.push_str(SPACES);
-                        out.push(']');
+                    'x' => {
+                        let hex = chars.get(at + 2..at + 4)?;
+                        if !hex.iter().all(char::is_ascii_hexdigit) {
+                            return None;
+                        }
+                        out.push_str(r"\x");
+                        out.extend(hex);
+                        single(&mut class, &mut range_open);
+                        at += 4;
                     }
-                    escaped => {
+                    _ => {
                         let shared = match escaped {
-                            'd' | 'D' | 'w' | 'W' | 'n' | 'r' | 't' | 'f' | 'v' => true,
-                            'b' | 'B' => !in_class,
-                            '-' => in_class,
-                            'x' => chars
-                                .get(at + 2..at + 4)
-                                .is_some_and(|hex| hex.iter().all(char::is_ascii_hexdigit)),
+                            'n' | 'r' | 't' | 'f' | 'v' => true,
+                            'b' | 'B' => class.is_none(),
+                            '-' => class.is_some(),
                             other => r".^$*+?()[]{}|/\".contains(other),
                         };
                         if !shared {
@@ -348,31 +410,43 @@ fn ecmascript_pattern(pattern: &str) -> Option<String> {
                         }
                         out.push('\\');
                         out.push(escaped);
+                        single(&mut class, &mut range_open);
+                        at += 2;
                     }
                 }
-                at += 2;
                 continue;
             }
-            '[' if in_class => return None,
+            '[' if class.is_some() => return None,
             '[' => {
                 // `[]…]` and `[^]…]` hold a `]` here; ECMAScript reads an
                 // empty class.
-                let first = match next {
-                    Some('^') => chars.get(at + 2).copied(),
-                    other => other,
-                };
+                let negated = next == Some('^');
+                let first = chars.get(at + if negated { 2 } else { 1 }).copied();
                 if first == Some(']') {
                     return None;
                 }
-                in_class = true;
+                class = Some(ClassMember::Start);
+                out.push('[');
+                if negated {
+                    out.push('^');
+                }
+                at += if negated { 2 } else { 1 };
+                continue;
             }
-            ']' => in_class = false,
-            '.' if !in_class => {
+            ']' if class.is_some() => class = None,
+            '-' if class.is_some() => match class {
+                Some(ClassMember::Start) => class = Some(ClassMember::Hyphen),
+                Some(ClassMember::Hyphen) => return None,
+                Some(_) if next == Some(']') => {}
+                Some(ClassMember::Single) if next != Some('-') => range_open = true,
+                _ => return None,
+            },
+            '.' if class.is_none() => {
                 out.push_str(r"[^\n]");
                 at += 1;
                 continue;
             }
-            '(' if !in_class && next == Some('?') => {
+            '(' if class.is_none() && next == Some('?') => {
                 let named = chars.get(at + 2) == Some(&'<')
                     && chars
                         .get(at + 3)
@@ -381,7 +455,7 @@ fn ecmascript_pattern(pattern: &str) -> Option<String> {
                     return None;
                 }
             }
-            _ => {}
+            _ => single(&mut class, &mut range_open),
         }
         out.push(chars[at]);
         at += 1;

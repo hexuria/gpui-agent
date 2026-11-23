@@ -740,7 +740,23 @@ fn run() -> Result<()> {
     if matches!(&cli.command, Command::Doctor) {
         check_cli_target_selector_conflicts(&cli, sources)?;
     }
-    let (target, session) = resolve_cli_target(&root, &cli, sources)?;
+    // `recipe run` is the one recipe command that reaches here. Its output
+    // contract gives every refusal before the run an envelope, so a refusal
+    // that is not typed yet becomes one; `main` prints it.
+    let recipe_run = matches!(cli.command, Command::Recipe { .. });
+    let refused = move |err: anyhow::Error| {
+        let typed = err.is::<CallFailure>() || err.is::<gpui_agent_recipe::RecipeError>();
+        if recipe_run && !typed {
+            anyhow::Error::new(CallFailure::with_code(
+                format!("{err:#}"),
+                gpui_agent::error_code::BAD_REQUEST,
+                None,
+            ))
+        } else {
+            err
+        }
+    };
+    let (target, session) = resolve_cli_target(&root, &cli, sources).map_err(refused)?;
     // Say which app discovery picked before acting on it, so a command that lands in the wrong
     // window is visible. Stderr keeps stdout (and `mcp`'s protocol) clean.
     // `@e3` stands for a node of the last `snapshot --refs` of this host.
@@ -762,11 +778,12 @@ fn run() -> Result<()> {
         .skip(1)
         .any(|arg| arg.to_str().is_some_and(refs::has_ref))
     {
-        used_refs = refs::resolve(&root, target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
+        used_refs =
+            refs::resolve(&root, target.addr, &mut args[1..]).map_err(|e| refused(anyhow!(e)))?;
         (cli, sources) = parse_cli_from(args);
     }
     let addr = target.addr;
-    let wait = requested_wait(&cli)?;
+    let wait = requested_wait(&cli).map_err(refused)?;
     if let Some(session) = &session {
         eprintln!("gpui-agent: session {} -> {addr}", session.name);
     } else if target.app.is_some() {

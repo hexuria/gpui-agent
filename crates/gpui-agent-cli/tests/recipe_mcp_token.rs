@@ -80,6 +80,26 @@ fn recipe_run_remote_without_token_prints_an_envelope() {
     }
 }
 
+/// Any refusal before the recipe is read carries an envelope: here a
+/// session that does not exist.
+#[test]
+fn recipe_run_with_a_missing_session_prints_an_envelope() {
+    let output = cli_bin()
+        .args(["--session", "no-such-session-9f3a", "--token", "t"])
+        .args(["recipe", "run", "/no-such-recipe.json"])
+        .output()
+        .expect("spawn");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout_of(&output)).expect("envelope on stdout");
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(envelope["error_code"], "bad_request", "{envelope}");
+    let err = stderr_of(&output);
+    assert!(err.contains(envelope["error"].as_str().unwrap()), "{err}");
+    assert!(err.contains("no-such-session-9f3a"), "{err}");
+    assert!(!err.contains("no-such-recipe"), "{err}");
+}
+
 /// A recipe sent to MCP as a JSON object is checked for a key written
 /// twice, as recipe text is: the request line still has both.
 #[test]

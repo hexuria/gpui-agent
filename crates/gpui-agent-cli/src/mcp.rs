@@ -1073,7 +1073,10 @@ fn unique_recipe_keys(params: &Value, line: &[u8]) -> Result<(), String> {
     let recipe_tool = params
         .get("name")
         .and_then(Value::as_str)
-        .is_some_and(|name| name.starts_with("recipe_"));
+        .is_some_and(|name| name.starts_with("recipe_"))
+        || params
+            .get("arguments")
+            .is_some_and(|args| args.get("recipe").is_some());
     if !recipe_tool {
         return Ok(());
     }
