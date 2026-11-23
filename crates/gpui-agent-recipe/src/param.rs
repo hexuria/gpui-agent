@@ -226,10 +226,10 @@ impl Param {
                 Value::Array(self.allowed.iter().map(|v| typed(self.ty, v)).collect()),
             );
         }
-        // JSON Schema's `pattern` is an ECMAScript regular expression. A
-        // pattern written in syntax only this crate's engine reads is left
-        // out: it is still checked when the value is bound.
-        if let Some(pattern) = self.pattern.as_ref().filter(|p| is_portable_pattern(p)) {
+        // JSON Schema's `pattern` is an ECMAScript regular expression, so
+        // it is written as that engine reads it. A pattern with no such
+        // spelling is left out: it is still checked when the value is bound.
+        if let Some(pattern) = self.pattern.as_deref().and_then(ecmascript_pattern) {
             out.insert("pattern".into(), json!(pattern));
         }
         if let Some(default) = &self.default {
@@ -298,57 +298,169 @@ impl Param {
     }
 }
 
-/// Whether `pattern` uses only syntax that an ECMAScript engine reads the
-/// same way as this crate's (`regex-lite`). Conservative: anything not
-/// known to be shared counts as not portable.
+/// What a character class has read so far, which decides what a `-`
+/// after it means.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClassMember {
+    /// Nothing yet: a `-` here is a literal hyphen.
+    Start,
+    /// A single character: a `-` here starts a range.
+    Single,
+    /// A set (`\d`, `\s`) or the end of a range: a `-` here is a literal
+    /// hyphen only as the class's last member.
+    Closed,
+    /// The literal hyphen that opened the class.
+    Hyphen,
+}
+
+/// `pattern` as an ECMAScript engine must be given it to match what this
+/// crate's engine (`regex-lite`) matches, or `None` when it has no such
+/// spelling. Conservative: syntax not known to be shared has none. The
+/// ECMAScript reading meant is the Unicode one (the `u` flag, which JSON
+/// Schema validators such as Ajv use): without it `.` and a class count a
+/// character outside the Basic Multilingual Plane as two.
 ///
-/// Not shared: inline flags (`(?i)`, `(?i:…)`), `(?P<name>…)`, escapes
+/// Three things are spelled out, because the two engines read them
+/// differently: `.` (here any character but a line feed), and `\s` / `\S`
+/// (here the six ASCII whitespace characters; ECMAScript adds the no-break
+/// space and the other Unicode spaces).
+///
+/// No spelling: inline flags (`(?i)`, `(?i:…)`), `(?P<name>…)`, escapes
 /// other than the class, control and punctuation ones (`\A`, `\z`,
-/// `\x{…}`), `\-` outside a class, and a `[` inside a class
-/// (`[[:alpha:]]`).
-fn is_portable_pattern(pattern: &str) -> bool {
-    let bytes = pattern.as_bytes();
-    let mut in_class = false;
+/// `\x{…}`), `\-` outside a class, `\S` inside one, a `[` inside a class
+/// (`[[:alpha:]]`), a class that opens with `]`, and a `-` in a class that
+/// is not its first member, its last, or between two single characters
+/// (`[--\s]`, `[\d-a]`, `[a-z-9]`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scan over the pattern; every arm shares the class state"
+)]
+fn ecmascript_pattern(pattern: &str) -> Option<String> {
+    const SPACES: &str = r"\t\n\x0B\f\r ";
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::with_capacity(pattern.len());
+    // `Some` inside a character class.
+    let mut class: Option<ClassMember> = None;
+    // A range's `-` was just read; the next single character ends it.
+    let mut range_open = false;
+    // A single character was read inside a class.
+    let single = |class: &mut Option<ClassMember>, range_open: &mut bool| {
+        if class.is_some() {
+            *class = Some(if *range_open {
+                ClassMember::Closed
+            } else {
+                ClassMember::Single
+            });
+            *range_open = false;
+        }
+    };
     let mut at = 0;
-    while at < bytes.len() {
-        let next = bytes.get(at + 1).copied();
-        match bytes[at] {
-            b'\\' => {
-                let shared = match next {
-                    Some(
-                        b'd' | b'D' | b'w' | b'W' | b's' | b'S' | b'n' | b'r' | b't' | b'f' | b'v',
-                    ) => true,
-                    Some(b'b' | b'B') => !in_class,
-                    Some(b'-') => in_class,
-                    Some(b'x') => bytes
-                        .get(at + 2..at + 4)
-                        .is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit)),
-                    Some(other) => b".^$*+?()[]{}|/\\".contains(&other),
-                    None => false,
-                };
-                if !shared {
-                    return false;
+    while at < chars.len() {
+        let next = chars.get(at + 1).copied();
+        match chars[at] {
+            '\\' => {
+                let escaped = next?;
+                match escaped {
+                    's' | 'S' | 'd' | 'D' | 'w' | 'W' => {
+                        // A set cannot end a range.
+                        if range_open || (escaped == 'S' && class.is_some()) {
+                            return None;
+                        }
+                        match (escaped, class.is_some()) {
+                            ('s', true) => out.push_str(SPACES),
+                            ('s', false) => {
+                                out.push('[');
+                                out.push_str(SPACES);
+                                out.push(']');
+                            }
+                            ('S', _) => {
+                                out.push_str("[^");
+                                out.push_str(SPACES);
+                                out.push(']');
+                            }
+                            _ => {
+                                out.push('\\');
+                                out.push(escaped);
+                            }
+                        }
+                        if class.is_some() {
+                            class = Some(ClassMember::Closed);
+                        }
+                        at += 2;
+                    }
+                    'x' => {
+                        let hex = chars.get(at + 2..at + 4)?;
+                        if !hex.iter().all(char::is_ascii_hexdigit) {
+                            return None;
+                        }
+                        out.push_str(r"\x");
+                        out.extend(hex);
+                        single(&mut class, &mut range_open);
+                        at += 4;
+                    }
+                    _ => {
+                        let shared = match escaped {
+                            'n' | 'r' | 't' | 'f' | 'v' => true,
+                            'b' | 'B' => class.is_none(),
+                            '-' => class.is_some(),
+                            other => r".^$*+?()[]{}|/\".contains(other),
+                        };
+                        if !shared {
+                            return None;
+                        }
+                        out.push('\\');
+                        out.push(escaped);
+                        single(&mut class, &mut range_open);
+                        at += 2;
+                    }
                 }
-                at += 2;
                 continue;
             }
-            b'[' if in_class => return false,
-            b'[' => in_class = true,
-            b']' => in_class = false,
-            b'(' if !in_class && next == Some(b'?') => {
-                let named = bytes.get(at + 2) == Some(&b'<')
-                    && bytes
+            '[' if class.is_some() => return None,
+            '[' => {
+                // `[]…]` and `[^]…]` hold a `]` here; ECMAScript reads an
+                // empty class.
+                let negated = next == Some('^');
+                let first = chars.get(at + if negated { 2 } else { 1 }).copied();
+                if first == Some(']') {
+                    return None;
+                }
+                class = Some(ClassMember::Start);
+                out.push('[');
+                if negated {
+                    out.push('^');
+                }
+                at += if negated { 2 } else { 1 };
+                continue;
+            }
+            ']' if class.is_some() => class = None,
+            '-' if class.is_some() => match class {
+                Some(ClassMember::Start) => class = Some(ClassMember::Hyphen),
+                Some(ClassMember::Hyphen) => return None,
+                Some(_) if next == Some(']') => {}
+                Some(ClassMember::Single) if next != Some('-') => range_open = true,
+                _ => return None,
+            },
+            '.' if class.is_none() => {
+                out.push_str(r"[^\n]");
+                at += 1;
+                continue;
+            }
+            '(' if class.is_none() && next == Some('?') => {
+                let named = chars.get(at + 2) == Some(&'<')
+                    && chars
                         .get(at + 3)
-                        .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_');
-                if bytes.get(at + 2) != Some(&b':') && !named {
-                    return false;
+                        .is_some_and(|c| c.is_ascii_alphabetic() || *c == '_');
+                if chars.get(at + 2) != Some(&':') && !named {
+                    return None;
                 }
             }
-            _ => {}
+            _ => single(&mut class, &mut range_open),
         }
+        out.push(chars[at]);
         at += 1;
     }
-    true
+    Some(out)
 }
 
 fn scalar_text(value: &Value) -> Option<String> {

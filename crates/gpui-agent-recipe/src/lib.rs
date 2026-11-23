@@ -40,7 +40,7 @@ pub use plan::{OrderCheck, PLAN_FORMAT_VERSION, Plan, PlannedStep, compile_plan,
 pub use receipt::{RECEIPT_FORMAT_VERSION, Receipt, ScreenshotReceipt, StepReceipt};
 pub use recipe::{
     MAX_RECIPE_STEPS, RECIPE_FORMAT_VERSION, Recipe, RecipeStep, apply_params, lint_recipe,
-    parse_recipe, parse_recipe_source, parse_wants, validate_recipe,
+    parse_recipe, parse_recipe_source, parse_wants, reject_duplicate_keys, validate_recipe,
 };
 pub use registry::{
     Registry, load_schema_file, protocol_registry, registry_from_schema_paths, todo_registry,

@@ -689,7 +689,7 @@ mod instinct_resolve {
                 idempotent: true,
                 verified: true,
                 required: vec![],
-                args: BTreeMap::new(),
+                args: None,
                 result: None,
                 keywords: keywords.iter().map(|s| (*s).to_string()).collect(),
             }

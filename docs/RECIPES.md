@@ -94,7 +94,9 @@ with `recipe_unknown_field` instead of being ignored.
 `schemas/recipe.v1.schema.json` is the JSON Schema (2020-12) for this
 structure, for editors and pre-checks. `recipe validate` is the
 authority: it also checks ids, `needs`, params, and invoke args, which a
-JSON Schema cannot.
+JSON Schema cannot. One more thing a JSON Schema cannot say: its
+`integer` admits a whole number written with a decimal point (`1.0`),
+and a whole-number step field here must be written without one (`1`).
 
 File handling: a `.json` path is always parsed as JSON. Any other path
 is `.wants`, unless the text starts with `{`. Path `-` reads stdin.
@@ -142,11 +144,17 @@ A `params` entry is a bare name (a required string) or an object:
 | `pattern` | `string` params only. Regular expression that must match somewhere in the value; anchor with `^…$` |
 | `description` | Free text for people and form builders |
 
-- The input schema `validate` prints carries `pattern` only when the
-  expression reads the same in ECMAScript, which is what JSON Schema
-  validators run. One that uses syntax only this tool reads (an inline
-  flag such as `(?i)`, `(?P<name>…)`, `\A`, `\z`, `[[:alpha:]]`) is left
-  out of the schema and still checked at `plan` / `run`.
+- The input schema `validate` prints carries `pattern` as ECMAScript
+  reads it, which is what JSON Schema validators run. Three things are
+  spelled out there, because this tool reads them more narrowly: `.` is
+  any character but a line feed, and `\s` / `\S` are the six ASCII
+  whitespace characters (a no-break space is not one). A pattern in
+  syntax only this tool reads (an inline flag such as `(?i)`,
+  `(?P<name>…)`, `\A`, `\z`, `[[:alpha:]]`), or a class with a `-` that
+  is not first, last, or between two single characters, is left out of
+  the schema and still checked at `plan` / `run`. The exported pattern is
+  meant for a validator that compiles it with the Unicode (`u`) flag, as
+  Ajv does by default.
 - A value that fails `type`, `enum`, or `pattern` fails `plan` / `run`
   with `recipe_invalid_param_value`. A bad declaration fails `validate`
   with `recipe_invalid_param`; an unknown key in the object fails with
@@ -190,7 +198,10 @@ also take a `schema` argument. Sample: `examples/schemas/todo.json`.
 - the name is registered with `"kind": "invoke"`
   (else `recipe_unknown_invoke`);
 - every arg in `required`, or marked `"required": true`, is present;
-- if the schema declares `args`, no other arg is passed;
+- if the schema has `args`, no arg is passed that is named neither there
+  nor in `required`. `"args": {}` therefore means the invoke takes none.
+  A schema that leaves `args` out does not list its args, and their
+  names are not checked. `"args": null` is neither and is refused;
 - each arg has its declared type (`string`, `number`, `integer`, `bool`,
   `object`, `array`; other type names are not checked). An arg that
   still contains a placeholder is type-checked after binding.
@@ -350,7 +361,7 @@ violation rather than the first.
 | `error_code` | Raised by | Meaning |
 | --- | --- | --- |
 | `recipe_io` | all | A recipe or schema file could not be read |
-| `recipe_parse` | all | Not valid JSON / `.wants`, a JSON key written twice in one object, or a field has the wrong type |
+| `recipe_parse` | all | Not valid JSON / `.wants`, a JSON key written twice in one object (in a recipe file, recipe text, or an MCP recipe tool's request), or a field has the wrong type |
 | `recipe_unknown_field` | all | A key the recipe format or the step's op does not have |
 | `recipe_unsupported_version` | validate | `v` is not `1` |
 | `recipe_invalid` | validate | Empty name, no steps, or more than 256 steps |

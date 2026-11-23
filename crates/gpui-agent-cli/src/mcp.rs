@@ -62,7 +62,10 @@ pub(crate) fn run(
                 continue;
             }
             "tools/list" => json!({ "tools": tools() }),
-            "tools/call" => tools_call_result(&mut client, &params, schema_paths),
+            "tools/call" => match unique_recipe_keys(&params, &line_buf) {
+                Ok(()) => tools_call_result(&mut client, &params, schema_paths),
+                Err(refused) => tool_error(refused),
+            },
             "ping" => json!({}),
             other => {
                 write_msg(
@@ -1052,11 +1055,33 @@ fn tools_call_result(client: &mut AgentClient, params: &Value, schema_paths: &[P
                 "text": serde_json::to_string(&value).unwrap_or_else(|err| err.to_string())
             }]
         }),
-        Err(err) => json!({
-            "isError": true,
-            "content": [{ "type": "text", "text": tool_error_text(err) }]
-        }),
+        Err(err) => tool_error(err),
     }
+}
+
+fn tool_error(error: String) -> Value {
+    json!({
+        "isError": true,
+        "content": [{ "type": "text", "text": tool_error_text(error) }]
+    })
+}
+
+/// Refuse a recipe tool's request whose line writes a key twice in one
+/// object. A recipe sent as a JSON object is already down to the last of
+/// the two in `params`; the line still has both.
+fn unique_recipe_keys(params: &Value, line: &[u8]) -> Result<(), String> {
+    let recipe_tool = params
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.starts_with("recipe_"))
+        || params
+            .get("arguments")
+            .is_some_and(|args| args.get("recipe").is_some());
+    if !recipe_tool {
+        return Ok(());
+    }
+    let text = std::str::from_utf8(line).map_err(|err| err.to_string())?;
+    gpui_agent_recipe::reject_duplicate_keys(text).map_err(recipe_fail)
 }
 
 fn recipe_resolve_tool(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, String> {

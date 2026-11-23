@@ -58,6 +58,103 @@ fn recipe_run_without_token_fails_fast() {
     assert!(err.contains(envelope["error"].as_str().unwrap()), "{err}");
 }
 
+/// A remote address without a token is refused before the recipe is read;
+/// that refusal carries an envelope too.
+#[test]
+fn recipe_run_remote_without_token_prints_an_envelope() {
+    for extra in [&["--allow-remote"][..], &[]] {
+        let output = cli_bin()
+            .args(["--addr", "192.0.2.1:9"])
+            .args(extra)
+            .args(["recipe", "run", "/no-such-recipe.json"])
+            .output()
+            .expect("spawn");
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let envelope: serde_json::Value =
+            serde_json::from_str(&stdout_of(&output)).expect("envelope on stdout");
+        assert_eq!(envelope["ok"], false, "{envelope}");
+        assert_eq!(envelope["error_code"], "unauthorized", "{envelope}");
+        let err = stderr_of(&output);
+        assert!(err.contains(envelope["error"].as_str().unwrap()), "{err}");
+        assert!(!err.contains("no-such-recipe"), "{err}");
+    }
+}
+
+/// Any refusal before the recipe is read carries an envelope: here a
+/// session that does not exist.
+#[test]
+fn recipe_run_with_a_missing_session_prints_an_envelope() {
+    let output = cli_bin()
+        .args(["--session", "no-such-session-9f3a", "--token", "t"])
+        .args(["recipe", "run", "/no-such-recipe.json"])
+        .output()
+        .expect("spawn");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout_of(&output)).expect("envelope on stdout");
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(envelope["error_code"], "bad_request", "{envelope}");
+    let err = stderr_of(&output);
+    assert!(err.contains(envelope["error"].as_str().unwrap()), "{err}");
+    assert!(err.contains("no-such-session-9f3a"), "{err}");
+    assert!(!err.contains("no-such-recipe"), "{err}");
+}
+
+/// A recipe sent to MCP as a JSON object is checked for a key written
+/// twice, as recipe text is: the request line still has both.
+#[test]
+fn mcp_recipe_object_with_a_duplicate_key_is_refused() {
+    let mut child = cli_bin()
+        .args(["--addr", "127.0.0.1:1", "--token", "t", "mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mcp");
+    {
+        let mut stdin = child.stdin.take().expect("stdin");
+        for (id, recipe) in [
+            (
+                1,
+                r#"{"name":"d","steps":[{"id":"a","op":"hello"}],"steps":[{"id":"b","op":"hello"}]}"#,
+            ),
+            (2, r#"{"name":"d","steps":[{"id":"a","op":"hello"}]}"#),
+        ] {
+            writeln!(
+                stdin,
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"recipe_validate","arguments":{{"recipe":{recipe}}}}}}}"#
+            )
+            .expect("write call");
+        }
+        stdin.flush().ok();
+    }
+    let output = child.wait_with_output().expect("mcp exit");
+    let replies: Vec<serde_json::Value> = stdout_of(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("json-rpc line"))
+        .collect();
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    let text = |reply: &serde_json::Value| -> serde_json::Value {
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    };
+    assert_eq!(replies[0]["result"]["isError"], true, "{}", replies[0]);
+    let refused = text(&replies[0]);
+    assert_eq!(refused["error_code"], "recipe_parse", "{refused}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("duplicate field `steps`"),
+        "{refused}"
+    );
+    assert!(
+        replies[1]["result"].get("isError").is_none(),
+        "{}",
+        replies[1]
+    );
+    assert_eq!(text(&replies[1])["ok"], true, "{}", replies[1]);
+}
+
 #[test]
 fn recipe_run_flagged_without_dir_prints_an_envelope() {
     let output = cli_bin()

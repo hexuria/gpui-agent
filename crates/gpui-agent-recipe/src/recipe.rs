@@ -103,16 +103,17 @@ impl Recipe {
     /// in one object, or a wrongly typed field;
     /// [`RecipeErrorCode::UnknownField`] on an unknown key.
     pub fn from_json(text: &str) -> Result<Self, RecipeError> {
-        let parse = |e: serde_json::Error| err(RecipeErrorCode::Parse, format!("recipe json: {e}"));
         // A `Value` keeps only the last of two equal keys, so they are
         // refused on the text, before one of them is gone.
-        serde_json::from_str::<NoDuplicateKeys>(text).map_err(parse)?;
-        let value: Value = serde_json::from_str(text).map_err(parse)?;
+        reject_duplicate_keys(text)?;
+        let value: Value = serde_json::from_str(text)
+            .map_err(|e| err(RecipeErrorCode::Parse, format!("recipe json: {e}")))?;
         Self::from_value(&value)
     }
 
     /// [`Recipe::from_json`] for an already parsed JSON value. A key the
-    /// text wrote twice is already down to one here and cannot be refused.
+    /// text wrote twice is already down to one here and cannot be refused:
+    /// run [`reject_duplicate_keys`] on the text the value came from.
     ///
     /// # Errors
     /// As [`Recipe::from_json`].
@@ -187,6 +188,21 @@ impl Recipe {
     pub fn uses_explicit_needs(&self) -> bool {
         self.steps.iter().any(|step| !step.needs.is_empty())
     }
+}
+
+/// Refuse JSON text in which one object writes a key twice.
+///
+/// [`Recipe::from_json`] runs this on its text. A caller that receives a
+/// recipe inside a larger JSON message (an MCP request) and parses that
+/// message itself runs it on the message's text: once the recipe is a
+/// [`Value`], the earlier key is gone.
+///
+/// # Errors
+/// [`RecipeErrorCode::Parse`], naming the repeated key (or the JSON error).
+pub fn reject_duplicate_keys(text: &str) -> Result<(), RecipeError> {
+    serde_json::from_str::<NoDuplicateKeys>(text)
+        .map(|_| ())
+        .map_err(|e| err(RecipeErrorCode::Parse, format!("recipe json: {e}")))
 }
 
 /// Reads any JSON and keeps nothing: its only job is to fail on an object
@@ -672,13 +688,14 @@ pub(crate) fn check_invoke_args(
     let map = match args {
         Value::Null => &empty,
         Value::Object(map) => map,
-        _ if schema.args.is_empty() && schema.required.is_empty() => return Ok(()),
+        _ if schema.args.is_none() && schema.required.is_empty() => return Ok(()),
         _ => return Err(format!("invoke `{}` args must be an object", schema.name)),
     };
     let required = schema.required.iter().map(String::as_str).chain(
         schema
             .args
             .iter()
+            .flatten()
             .filter(|(_, spec)| spec.required)
             .map(|(name, _)| name.as_str()),
     );
@@ -690,17 +707,17 @@ pub(crate) fn check_invoke_args(
             ));
         }
     }
-    if schema.args.is_empty() {
+    // Args not listed at all: only `required` is known about them.
+    let Some(listed) = &schema.args else {
         return Ok(());
-    }
+    };
     for (name, value) in map {
-        let Some(spec) = schema.args.get(name) else {
+        let Some(spec) = listed.get(name) else {
             // Named in `required` with no `args` entry: declared, untyped.
             if schema.required.contains(name) {
                 continue;
             }
-            let declared: BTreeSet<&str> = schema
-                .args
+            let declared: BTreeSet<&str> = listed
                 .keys()
                 .chain(&schema.required)
                 .map(String::as_str)
@@ -708,7 +725,11 @@ pub(crate) fn check_invoke_args(
             return Err(format!(
                 "invoke `{}` has no arg `{name}` (schema declares: {})",
                 schema.name,
-                declared.into_iter().collect::<Vec<_>>().join(", ")
+                if declared.is_empty() {
+                    "none".to_string()
+                } else {
+                    declared.into_iter().collect::<Vec<_>>().join(", ")
+                }
             ));
         };
         if !bound && value.as_str().is_some_and(string_has_placeholder) {
@@ -744,7 +765,7 @@ pub(crate) fn coerce_invoke_args(
     let (Some(unbound), Some(bound)) = (unbound.as_object(), bound.as_object_mut()) else {
         return Ok(());
     };
-    for (name, spec) in &schema.args {
+    for (name, spec) in schema.args.iter().flatten() {
         let Some(param) = unbound
             .get(name)
             .and_then(Value::as_str)
@@ -2797,11 +2818,12 @@ assert todo-item-1 name=$title checked=false
     }
 
     /// The input schema's `pattern` is read by ECMAScript validators, so it
-    /// carries only patterns that mean the same there; the others are still
-    /// checked when the value is bound.
+    /// is written the way they read it: `.`, `\s` and `\S` as the sets this
+    /// crate's engine means. A pattern with no such spelling is left out
+    /// and still checked when the value is bound.
     #[test]
-    fn input_schema_exports_only_patterns_javascript_reads() {
-        let exported = |pattern: &str| -> bool {
+    fn input_schema_exports_patterns_as_javascript_reads_them() {
+        let exported = |pattern: &str| -> Option<String> {
             let recipe = Recipe::from_value(&json!({
                 "name": "p",
                 "params": [{"name": "p", "pattern": pattern}],
@@ -2811,21 +2833,50 @@ assert todo-item-1 name=$title checked=false
             }))
             .unwrap();
             validate_recipe(&recipe, &todo_registry()).expect(pattern);
-            let property = &recipe.input_schema()["properties"]["p"];
-            assert!(
-                property["pattern"].is_null() || property["pattern"] == pattern,
-                "{property}"
-            );
-            !property["pattern"].is_null()
+            recipe.input_schema()["properties"]["p"]["pattern"]
+                .as_str()
+                .map(str::to_string)
         };
-        for pattern in [
-            r"^[0-9]+\.00$",
-            r"^(?:yes|no)$",
-            r"^(?<year>\d{4})-\d\d$",
-            r"^[\w\-.]+@\w+$",
-            r"\x41\t",
+        for (pattern, written) in [
+            (r"^[0-9]+\.00$", r"^[0-9]+\.00$"),
+            (r"^(?:yes|no)$", r"^(?:yes|no)$"),
+            (r"^(?<year>\d{4})-\d\d$", r"^(?<year>\d{4})-\d\d$"),
+            (r"^[\w\-.]+@\w+$", r"^[\w\-.]+@\w+$"),
+            (r"\x41\t", r"\x41\t"),
+            (r"^\S+$", r"^[^\t\n\x0B\f\r ]+$"),
+            (r"^a\s*b$", r"^a[\t\n\x0B\f\r ]*b$"),
+            (r"^[a-z\s]+$", r"^[a-z\t\n\x0B\f\r ]+$"),
+            (r"^.+\.$", r"^[^\n]+\.$"),
+            (r"^[.]$", r"^[.]$"),
+            (r"^[a-z0-9_-]+$", r"^[a-z0-9_-]+$"),
+            (r"^[-a-z\s]+$", r"^[-a-z\t\n\x0B\f\r ]+$"),
+            (r"^[^-a\x2Dz]$", r"^[^-a\x2Dz]$"),
         ] {
-            assert!(exported(pattern), "{pattern}");
+            assert_eq!(exported(pattern).as_deref(), Some(written), "{pattern}");
+            // Same pattern to this crate's engine, spelled either way.
+            for value in [
+                "",
+                "a",
+                "a b",
+                "a\tb",
+                "a\u{b}b",
+                "a\u{c}b",
+                "a\u{a0}b",
+                "a\u{2028}b",
+                "a\rb",
+                "a\nb",
+                "ab.",
+                "2024-01",
+                "x@y",
+                " ",
+                "\u{a0}",
+                "\u{3000}",
+                "\r",
+                "\n",
+            ] {
+                let matches = |text: &str| regex_lite::Regex::new(text).unwrap().is_match(value);
+                assert_eq!(matches(pattern), matches(written), "{pattern} on {value:?}");
+            }
         }
         for pattern in [
             "(?i)^yes$",
@@ -2835,16 +2886,69 @@ assert todo-item-1 name=$title checked=false
             "[[:alpha:]]+",
             r"\x{41}",
             r"a\-b",
+            r"^[^\S]+$",
+            // A hyphen in a class is a range only between two single
+            // characters; ECMAScript refuses or reads the rest differently.
+            r"^[--\s]+$",
+            r"^[--\d]+$",
+            r"^[a-z-9]+$",
+            r"^[--]+$",
         ] {
-            assert!(!exported(pattern), "{pattern}");
+            assert_eq!(exported(pattern), None, "{pattern}");
         }
-        let recipe = Recipe::from_value(&json!({
-            "name": "p",
-            "params": [{"name": "p", "pattern": "(?i)^yes$"}],
-            "steps": [{"id": "s1", "op": "invoke", "name": "todo.add", "args": {"title": "$p"}}],
-        }))
+        // What the engines disagree on, and why the sets are spelled out:
+        // a no-break space is not `\s` here, and `.` takes a carriage return.
+        let spaces = Param::named("p");
+        let check = |pattern: &str, value: &str| {
+            let mut param = spaces.clone();
+            param.pattern = Some(pattern.to_string());
+            param.check(value).is_ok()
+        };
+        assert!(check(r"^\S+$", "a\u{a0}b"));
+        assert!(check("^.+$", "a\rb"));
+        assert!(check("(?i)^yes$", "YES"));
+        assert!(!check("(?i)^yes$", "no"));
+    }
+
+    /// `args: {}` says the invoke takes none; leaving `args` out says
+    /// nothing about them.
+    #[test]
+    fn a_schema_that_lists_no_args_takes_none() {
+        let schema = |args: Value| -> OpSchema {
+            let mut row = json!({"name": "x.list", "kind": "invoke", "description": "list"});
+            if !args.is_null() {
+                row["args"] = args;
+            }
+            let schema: OpSchema = serde_json::from_value(row).unwrap();
+            schema.validate().unwrap();
+            schema
+        };
+        let closed = schema(json!({}));
+        check_invoke_args(&closed, &Value::Null, true).unwrap();
+        check_invoke_args(&closed, &json!({}), true).unwrap();
+        let extra = check_invoke_args(&closed, &json!({"limit": 1}), true).unwrap_err();
+        assert!(extra.contains("no arg `limit`"), "{extra}");
+        check_invoke_args(&closed, &json!("text"), true).unwrap_err();
+        // Written back as it was read, so the file keeps saying so.
+        assert_eq!(serde_json::to_value(&closed).unwrap()["args"], json!({}));
+
+        // `null` is neither: a schema that writes `args` writes a map.
+        let null = serde_json::from_value::<OpSchema>(json!({
+            "name": "x.list", "kind": "invoke", "description": "list", "args": null,
+        }));
+        assert!(null.is_err(), "{null:?}");
+
+        let open = schema(Value::Null);
+        check_invoke_args(&open, &json!({"limit": 1}), true).unwrap();
+        check_invoke_args(&open, &json!("text"), true).unwrap();
+        assert!(serde_json::to_value(&open).unwrap().get("args").is_none());
+
+        // The sample app's list takes no args.
+        let recipe = Recipe::from_json(
+            r#"{"name":"t","steps":[{"id":"a","op":"invoke","name":"todo.list","args":{"x":1}}]}"#,
+        )
         .unwrap();
-        recipe.param("p").unwrap().check("YES").unwrap();
-        recipe.param("p").unwrap().check("no").unwrap_err();
+        let error = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert_eq!(error.code, RecipeErrorCode::InvalidArgs, "{error}");
     }
 }
