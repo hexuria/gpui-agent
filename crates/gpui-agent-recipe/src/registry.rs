@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
+use crate::error::{RecipeError, RecipeErrorCode, err};
 use crate::schema::{ArgSchema, Effect, OpSchema, SchemaKind};
 
 /// In-process schema registry. No network, no shell data sources.
@@ -21,7 +22,7 @@ impl Registry {
     ///
     /// # Errors
     /// [`OpSchema::validate`] violations.
-    pub fn insert(&mut self, schema: OpSchema) -> Result<(), String> {
+    pub fn insert(&mut self, schema: OpSchema) -> Result<(), RecipeError> {
         schema.validate()?;
         self.schemas.insert(schema.name.clone(), schema);
         Ok(())
@@ -30,11 +31,14 @@ impl Registry {
     /// Merge `other` into self; names must not collide.
     ///
     /// # Errors
-    /// A message naming the first duplicate or invalid schema.
-    pub fn merge(&mut self, other: Registry) -> Result<(), String> {
+    /// [`RecipeErrorCode::InvalidSchema`] naming the first duplicate or invalid schema.
+    pub fn merge(&mut self, other: Registry) -> Result<(), RecipeError> {
         for schema in other.schemas.into_values() {
             if self.schemas.contains_key(&schema.name) {
-                return Err(format!("duplicate schema `{}`", schema.name));
+                return Err(err(
+                    RecipeErrorCode::InvalidSchema,
+                    format!("duplicate schema `{}`", schema.name),
+                ));
             }
             self.insert(schema)?;
         }
@@ -83,7 +87,7 @@ fn protocol(
         idempotent,
         verified: true,
         required: required.iter().map(|s| (*s).to_string()).collect(),
-        args: BTreeMap::new(),
+        args: None,
         result: None,
         keywords: keywords.iter().map(|s| (*s).to_string()).collect(),
     }
@@ -243,7 +247,7 @@ fn todo_app_registry() -> Registry {
         idempotent: false,
         verified: true,
         required: vec!["title".into()],
-        args: add_args,
+        args: Some(add_args),
         result: Some(json!({"id": "u64", "title": "string", "done": "bool"})),
         keywords: vec![
             "add".into(),
@@ -265,7 +269,7 @@ fn todo_app_registry() -> Registry {
         idempotent: false,
         verified: true,
         required: vec!["id".into()],
-        args: id_args.clone(),
+        args: Some(id_args.clone()),
         result: Some(json!({"id": "u64", "title": "string", "done": "bool"})),
         keywords: vec![
             "toggle".into(),
@@ -284,7 +288,7 @@ fn todo_app_registry() -> Registry {
         idempotent: false,
         verified: true,
         required: vec!["id".into()],
-        args: id_args,
+        args: Some(id_args),
         result: Some(json!({"id": "u64", "title": "string", "done": "bool"})),
         keywords: vec!["delete".into(), "remove".into(), "todo".into()],
     })
@@ -298,7 +302,7 @@ fn todo_app_registry() -> Registry {
         idempotent: true,
         verified: true,
         required: vec![],
-        args: BTreeMap::new(),
+        args: Some(BTreeMap::new()),
         result: Some(json!([{"id": "u64", "title": "string", "done": "bool"}])),
         keywords: vec!["list".into(), "todos".into(), "items".into()],
     })
@@ -312,7 +316,7 @@ fn todo_app_registry() -> Registry {
         idempotent: false,
         verified: true,
         required: vec![],
-        args: BTreeMap::new(),
+        args: Some(BTreeMap::new()),
         result: Some(json!({"sidebar_open": "bool"})),
         keywords: vec!["sidebar".into(), "nav".into()],
     })
@@ -344,7 +348,7 @@ fn todo_app_registry() -> Registry {
             idempotent: false,
             verified: true,
             required: vec![],
-            args: BTreeMap::new(),
+            args: None,
             result: None,
             keywords: keywords.iter().map(|s| (*s).to_string()).collect(),
         })
@@ -373,25 +377,28 @@ pub fn todo_registry() -> Registry {
 /// validated; unknown invoke names stay fail-closed at recipe validate.
 ///
 /// # Errors
-/// A message on read, JSON, or schema-validation failure.
-pub fn load_schema_file(path: &Path) -> Result<Registry, String> {
-    let text = std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
-    let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|err| format!("{}: {err}", path.display()))?;
+/// [`RecipeErrorCode::Io`] on read failure, [`RecipeErrorCode::InvalidSchema`]
+/// on JSON or schema-validation failure.
+pub fn load_schema_file(path: &Path) -> Result<Registry, RecipeError> {
+    let invalid = |detail: &dyn std::fmt::Display| {
+        err(
+            RecipeErrorCode::InvalidSchema,
+            format!("{}: {detail}", path.display()),
+        )
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| err(RecipeErrorCode::Io, format!("{}: {e}", path.display())))?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| invalid(&e))?;
     let rows = if let Some(arr) = value.as_array() {
         arr.clone()
     } else if let Some(arr) = value.get("schemas").and_then(|v| v.as_array()) {
         arr.clone()
     } else {
-        return Err(format!(
-            "{}: expected a JSON array or {{ \"schemas\": [...] }}",
-            path.display()
-        ));
+        return Err(invalid(&"expected a JSON array or { \"schemas\": [...] }"));
     };
     let mut reg = Registry::new();
     for row in rows {
-        let schema: OpSchema =
-            serde_json::from_value(row).map_err(|err| format!("{}: {err}", path.display()))?;
+        let schema: OpSchema = serde_json::from_value(row).map_err(|e| invalid(&e))?;
         reg.insert(schema)?;
     }
     Ok(reg)
@@ -400,8 +407,8 @@ pub fn load_schema_file(path: &Path) -> Result<Registry, String> {
 /// `protocol_registry()` plus files from `GPUI_AGENT_SCHEMA` and `paths`.
 ///
 /// # Errors
-/// A message on schema-file read or validation failure, or duplicates.
-pub fn registry_from_schema_paths(paths: &[PathBuf]) -> Result<Registry, String> {
+/// As [`load_schema_file`], plus [`RecipeErrorCode::InvalidSchema`] on duplicates.
+pub fn registry_from_schema_paths(paths: &[PathBuf]) -> Result<Registry, RecipeError> {
     let mut reg = protocol_registry();
     let mut all = Vec::new();
     if let Some(env) = std::env::var_os("GPUI_AGENT_SCHEMA") {
@@ -448,11 +455,12 @@ mod tests {
                 idempotent: false,
                 verified: false,
                 required: vec![],
-                args: BTreeMap::new(),
+                args: None,
                 result: None,
                 keywords: vec![],
             })
-            .unwrap_err();
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("alphanumeric") || err.contains("name"),
             "{err}"
@@ -471,7 +479,9 @@ mod tests {
             true,
         )
         .expect("built-in schema is valid");
-        let err = crate::recipe::validate_recipe(&recipe, &protocol_registry()).unwrap_err();
+        let err = crate::recipe::validate_recipe(&recipe, &protocol_registry())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("unknown invoke"), "{err}");
         assert!(err.contains("todo.add"), "{err}");
     }
@@ -487,7 +497,9 @@ mod tests {
             true,
         )
         .expect("built-in schema is valid");
-        let err = crate::recipe::validate_recipe(&recipe, &Registry::new()).unwrap_err();
+        let err = crate::recipe::validate_recipe(&recipe, &Registry::new())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("unknown invoke"), "{err}");
         assert!(err.contains("todo.add"), "{err}");
     }

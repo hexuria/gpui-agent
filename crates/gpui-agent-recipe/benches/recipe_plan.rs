@@ -16,7 +16,7 @@ use gpui_agent::protocol::{HelloInfo, Op, PROTOCOL_VERSION, PlatformKind};
 use gpui_agent::server::{AgentServer, ServerLimits};
 use gpui_agent::tree::UiTree;
 use gpui_agent::{DeliveryMode, DispatchResult};
-use gpui_agent_recipe::{Recipe, compile_plan, parse_wants, run_plan, todo_registry};
+use gpui_agent_recipe::{Recipe, RunOptions, compile_plan, parse_wants, run_plan, todo_registry};
 
 fn wants_body(n: usize) -> String {
     let mut body = String::from("wait\n");
@@ -212,8 +212,8 @@ fn recipe_run_session(c: &mut Criterion) {
     c.bench_function("recipe_run_32_hellos_one_session", |b| {
         let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
         b.iter(|| {
-            let receipt =
-                run_plan(black_box(&mut client), black_box(&plan), false).expect("bench fixture");
+            let receipt = run_plan(black_box(&mut client), black_box(&plan), &RunOptions::new())
+                .expect("bench fixture");
             black_box(receipt.ok);
         });
     });
@@ -235,8 +235,12 @@ fn recipe_run_session(c: &mut Criterion) {
     c.bench_function("recipe_run_32_hello_wave_sequential", |b| {
         let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
         b.iter(|| {
-            let receipt = run_plan(black_box(&mut client), black_box(&hello_plan), false)
-                .expect("bench fixture");
+            let receipt = run_plan(
+                black_box(&mut client),
+                black_box(&hello_plan),
+                &RunOptions::new(),
+            )
+            .expect("bench fixture");
             black_box(receipt.ok);
         });
     });

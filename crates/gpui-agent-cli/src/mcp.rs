@@ -9,8 +9,8 @@ use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
 use gpui_agent::{CallFailure, OutlineOptions, WaitFor, error_code};
 use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
 use gpui_agent_recipe::{
-    RunError, ScreenshotCapture, compile_plan, parse_recipe_source, registry_from_schema_paths,
-    resolve_intent, run_plan_with_screenshots, validate_recipe,
+    RecipeError, RecipeErrorCode, RunError, RunOptions, ScreenshotCapture, compile_plan,
+    parse_recipe_source, registry_from_schema_paths, resolve_intent, run_plan, validate_recipe,
 };
 use serde_json::{Value, json};
 
@@ -62,7 +62,10 @@ pub(crate) fn run(
                 continue;
             }
             "tools/list" => json!({ "tools": tools() }),
-            "tools/call" => tools_call_result(&mut client, &params, schema_paths),
+            "tools/call" => match unique_recipe_keys(&params, &line_buf) {
+                Ok(()) => tools_call_result(&mut client, &params, schema_paths),
+                Err(refused) => tool_error(refused),
+            },
             "ping" => json!({}),
             other => {
                 write_msg(
@@ -303,7 +306,7 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "recipe_validate",
-            "[experimental] Lint a JSON recipe of protocol ops (`.wants` text also accepted). Does not contact the host.",
+            "Lint a JSON recipe of protocol ops (`.wants` text also accepted). Does not contact the host.",
             json!({
                 "type": "object",
                 "properties": {
@@ -315,12 +318,12 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "recipe_plan",
-            "[experimental] Compile a JSON recipe to a wave plan (effects, fingerprint). Does not run it. `.wants` text also accepted.",
+            "Compile a JSON recipe to a wave plan (effects, fingerprint). Does not run it. `.wants` text also accepted.",
             json!({
                 "type": "object",
                 "properties": {
                     "recipe": { "description": "JSON recipe object (canonical) or wants text." },
-                    "set": { "type": "object", "description": "Parameter bindings." },
+                    "set": { "type": "object", "description": "Param name to value. Every required param needs one; an optional param may be left out and takes its default. No key that is not a declared param." },
                     "schema": schema_arg()
                 },
                 "required": ["recipe"]
@@ -328,12 +331,12 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "recipe_run",
-            "[experimental] Validate, plan, and execute a JSON recipe sequentially on one reused TCP session. `.wants` also accepted. This MCP process already required a token; each step still carries it. Pass yes=true if the plan includes shutdown.",
+            "Validate, plan, and execute a JSON recipe sequentially on one reused TCP session. `.wants` also accepted. This MCP process already required a token; each step still carries it. Pass yes=true if the plan includes shutdown.",
             json!({
                 "type": "object",
                 "properties": {
                     "recipe": { "description": "JSON recipe object (canonical) or wants text." },
-                    "set": { "type": "object", "description": "Parameter bindings." },
+                    "set": { "type": "object", "description": "Param name to value. Every required param needs one; an optional param may be left out and takes its default. No key that is not a declared param." },
                     "yes": { "type": "boolean" },
                     "screenshot_dir": { "type": "string", "description": "After each step (or flagged steps), write an app-surface PNG. Receipt lists paths; headless/Linux/Windows are screenshot_unavailable; macOS desktop uses screencapture -l of this window." },
                     "screenshot_flagged": { "type": "boolean", "description": "Only steps with screenshot: true." },
@@ -913,20 +916,35 @@ fn recipe_text(args: &Value) -> Result<String, String> {
     }
 }
 
-fn recipe_set(args: &Value) -> std::collections::BTreeMap<String, String> {
+/// A [`RecipeError`] as tool error text: `{error, error_code, step?}`.
+#[expect(clippy::needless_pass_by_value, reason = "used as a `map_err` adapter")]
+fn recipe_fail(error: RecipeError) -> String {
+    error.envelope().to_string()
+}
+
+fn recipe_set(args: &Value) -> Result<std::collections::BTreeMap<String, String>, String> {
     let mut map = std::collections::BTreeMap::new();
-    if let Some(Value::Object(obj)) = args.get("set") {
-        for (k, v) in obj {
-            map.insert(
-                k.clone(),
-                match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                },
-            );
+    match args.get("set") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(obj)) => {
+            for (k, v) in obj {
+                map.insert(
+                    k.clone(),
+                    match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    },
+                );
+            }
+        }
+        Some(_) => {
+            return Err(recipe_fail(RecipeError::new(
+                RecipeErrorCode::InvalidParam,
+                "`set` must be an object of param name to value",
+            )));
         }
     }
-    map
+    Ok(map)
 }
 
 fn recipe_schema_paths(cli: &[PathBuf], args: &Value) -> Vec<PathBuf> {
@@ -945,27 +963,38 @@ fn recipe_schema_paths(cli: &[PathBuf], args: &Value) -> Vec<PathBuf> {
     paths
 }
 
+fn recipe_registry(
+    schema_paths: &[PathBuf],
+    args: &Value,
+) -> Result<gpui_agent_recipe::Registry, String> {
+    registry_from_schema_paths(&recipe_schema_paths(schema_paths, args)).map_err(recipe_fail)
+}
+
+fn recipe_source(args: &Value) -> Result<gpui_agent_recipe::Recipe, String> {
+    parse_recipe_source(&recipe_text(args)?, "inline", false).map_err(recipe_fail)
+}
+
 fn recipe_validate(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, String> {
-    let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
-    validate_recipe(
-        &recipe,
-        &registry_from_schema_paths(&recipe_schema_paths(schema_paths, args))?,
-    )?;
-    serde_json::to_value(serde_json::json!({
+    let recipe = recipe_source(args)?;
+    validate_recipe(&recipe, &recipe_registry(schema_paths, args)?).map_err(recipe_fail)?;
+    Ok(json!({
         "ok": true,
         "name": recipe.name,
         "steps": recipe.steps.len(),
+        "params": recipe.param_names(),
+        "input_schema": recipe.input_schema(),
+        "explicit_needs": recipe.uses_explicit_needs(),
     }))
-    .map_err(|err| err.to_string())
 }
 
 fn recipe_plan(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, String> {
-    let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
+    let recipe = recipe_source(args)?;
     let plan = compile_plan(
         &recipe,
-        &recipe_set(args),
-        &registry_from_schema_paths(&recipe_schema_paths(schema_paths, args))?,
-    )?;
+        &recipe_set(args)?,
+        &recipe_registry(schema_paths, args)?,
+    )
+    .map_err(recipe_fail)?;
     serde_json::to_value(plan).map_err(|err| err.to_string())
 }
 
@@ -974,12 +1003,13 @@ fn recipe_run_tool(
     args: &Value,
     schema_paths: &[PathBuf],
 ) -> Result<Value, String> {
-    let recipe = parse_recipe_source(&recipe_text(args)?, "inline", false)?;
+    let recipe = recipe_source(args)?;
     let plan = compile_plan(
         &recipe,
-        &recipe_set(args),
-        &registry_from_schema_paths(&recipe_schema_paths(schema_paths, args))?,
-    )?;
+        &recipe_set(args)?,
+        &recipe_registry(schema_paths, args)?,
+    )
+    .map_err(recipe_fail)?;
     let yes = args.get("yes").and_then(Value::as_bool).unwrap_or(false);
     let flagged = args
         .get("screenshot_flagged")
@@ -989,17 +1019,25 @@ fn recipe_run_tool(
     if flagged && dir.is_none() {
         return Err("screenshot_flagged requires screenshot_dir".into());
     }
-    let capture = dir.map(|dir| ScreenshotCapture {
-        dir: std::path::PathBuf::from(dir),
-        flagged_only: flagged,
-    });
-    match run_plan_with_screenshots(client, &plan, yes, capture.as_ref()) {
+    let capture = dir.map(|dir| ScreenshotCapture::new(dir).with_flagged_only(flagged));
+    let options = RunOptions::new().with_yes(yes).with_screenshots(capture);
+    match run_plan(client, &plan, &options) {
         Ok(receipt) => serde_json::to_value(receipt).map_err(|err| err.to_string()),
-        Err(RunError::Step { receipt, error, .. }) => {
+        Err(RunError::Step {
+            receipt,
+            error,
+            error_code,
+            ..
+        }) => {
             let mut value = serde_json::to_value(*receipt).map_err(|err| err.to_string())?;
             value["error"] = json!(error);
+            value["error_code"] = json!(error_code);
             Err(serde_json::to_string(&value).unwrap_or(error))
         }
+        Err(RunError::NeedsYes) => Err(recipe_fail(RecipeError::new(
+            RecipeErrorCode::Unconfirmed,
+            RunError::NeedsYes.to_string(),
+        ))),
         Err(err) => Err(err.to_string()),
     }
 }
@@ -1017,11 +1055,33 @@ fn tools_call_result(client: &mut AgentClient, params: &Value, schema_paths: &[P
                 "text": serde_json::to_string(&value).unwrap_or_else(|err| err.to_string())
             }]
         }),
-        Err(err) => json!({
-            "isError": true,
-            "content": [{ "type": "text", "text": tool_error_text(err) }]
-        }),
+        Err(err) => tool_error(err),
     }
+}
+
+fn tool_error(error: String) -> Value {
+    json!({
+        "isError": true,
+        "content": [{ "type": "text", "text": tool_error_text(error) }]
+    })
+}
+
+/// Refuse a recipe tool's request whose line writes a key twice in one
+/// object. A recipe sent as a JSON object is already down to the last of
+/// the two in `params`; the line still has both.
+fn unique_recipe_keys(params: &Value, line: &[u8]) -> Result<(), String> {
+    let recipe_tool = params
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.starts_with("recipe_"))
+        || params
+            .get("arguments")
+            .is_some_and(|args| args.get("recipe").is_some());
+    if !recipe_tool {
+        return Ok(());
+    }
+    let text = std::str::from_utf8(line).map_err(|err| err.to_string())?;
+    gpui_agent_recipe::reject_duplicate_keys(text).map_err(recipe_fail)
 }
 
 fn recipe_resolve_tool(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, String> {
@@ -1029,10 +1089,8 @@ fn recipe_resolve_tool(args: &Value, schema_paths: &[PathBuf]) -> Result<Value, 
         .get("intent")
         .and_then(Value::as_str)
         .ok_or("missing string `intent`")?;
-    let result = resolve_intent(
-        intent,
-        &registry_from_schema_paths(&recipe_schema_paths(schema_paths, args))?,
-    )?;
+    let result =
+        resolve_intent(intent, &recipe_registry(schema_paths, args)?).map_err(recipe_fail)?;
     serde_json::to_value(result).map_err(|err| err.to_string())
 }
 
@@ -1087,7 +1145,7 @@ mod instinct {
         if paths.is_empty() {
             return Ok(Vec::new());
         }
-        let registry = registry_from_schema_paths(&paths)?;
+        let registry = registry_from_schema_paths(&paths).map_err(|err| err.to_string())?;
         Ok(crate::instinct_wiring::offered_invokes(&registry))
     }
 
@@ -1412,11 +1470,11 @@ mod instinct {
         schema_paths: &[PathBuf],
     ) -> Result<Value, String> {
         let paths = recipe_schema_paths(schema_paths, args);
-        let registry = registry_from_schema_paths(&paths)?;
+        let registry = registry_from_schema_paths(&paths).map_err(|err| err.to_string())?;
         let schema = registry
             .get(name)
             .ok_or_else(|| format!("invoke schema `{name}` not in registry"))?;
-        invoke_args(schema, clause)
+        invoke_args(schema, clause).map_err(|err| err.to_string())
     }
 }
 
@@ -1492,9 +1550,10 @@ mod tests {
             let name = tool["name"].as_str().unwrap_or("");
             if name.starts_with("recipe_") {
                 let desc = tool["description"].as_str().unwrap_or("");
-                assert!(
+                assert_eq!(
                     desc.to_ascii_lowercase().contains("experimental"),
-                    "{name} should be labeled experimental: {desc}"
+                    name == "recipe_resolve",
+                    "only recipe_resolve is experimental: {name}: {desc}"
                 );
             }
         }

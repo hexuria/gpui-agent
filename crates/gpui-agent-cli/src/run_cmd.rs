@@ -63,7 +63,7 @@ pub(crate) fn run(mut client: AgentClient, opts: RunOpts<'_>) -> Result<()> {
         let s = registry
             .get(name)
             .ok_or_else(|| format!("invoke `{name}` not in schema"))?;
-        invoke_args(s, clause)
+        invoke_args(s, clause).map_err(|err| err.to_string())
     };
     // M7: `--escalate-cmd` wraps the local policy in an abstain-only
     // fallback and enables the `kind:"text"` tier on deterministic

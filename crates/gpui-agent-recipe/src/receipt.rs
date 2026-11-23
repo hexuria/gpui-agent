@@ -1,9 +1,20 @@
 use gpui_agent::DeliveryStatus;
 use serde::{Deserialize, Serialize};
 
+/// Version of the [`Receipt`] JSON shape (`v`).
+pub const RECEIPT_FORMAT_VERSION: u32 = 1;
+
+fn receipt_v1() -> u32 {
+    RECEIPT_FORMAT_VERSION
+}
+
 /// Whole-recipe run outcome — deterministic payload for `recipe run`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Receipt {
+    /// [`RECEIPT_FORMAT_VERSION`].
+    #[serde(default = "receipt_v1")]
+    pub v: u32,
     /// Every step succeeded.
     pub ok: bool,
     /// Recipe name from the plan.
@@ -24,6 +35,7 @@ pub struct Receipt {
 
 /// One executed step: result, error envelope, and timing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct StepReceipt {
     /// Step id from the recipe.
     pub id: String,
@@ -51,6 +63,7 @@ pub struct StepReceipt {
 /// Path the host was asked to write. `ok` is false on
 /// `screenshot_unavailable` (no fake PNG is created).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ScreenshotReceipt {
     /// Requested output path.
     pub path: String,

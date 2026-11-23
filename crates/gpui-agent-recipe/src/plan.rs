@@ -1,15 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::hash::{Hash, Hasher};
 
 use gpui_agent::protocol::Op;
 use serde::Serialize;
 
-use crate::recipe::{Recipe, RecipeStep, apply_params, validate_recipe};
+use crate::error::{RecipeError, RecipeErrorCode, err};
+use crate::recipe::{
+    Recipe, RecipeStep, apply_params, check_invoke_args, coerce_invoke_args, validate_recipe,
+};
 use crate::registry::Registry;
 use crate::schema::{Effect, SchemaKind};
 
 /// One scheduled recipe step with its wave placement and annotations.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct PlannedStep {
     /// Step id from the recipe.
     pub id: String,
@@ -29,9 +32,15 @@ pub struct PlannedStep {
     pub idempotent: bool,
 }
 
+/// Version of the [`Plan`] JSON shape (`v`).
+pub const PLAN_FORMAT_VERSION: u32 = 1;
+
 /// A compiled recipe: ordered steps plus dependency waves.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct Plan {
+    /// [`PLAN_FORMAT_VERSION`].
+    pub v: u32,
     /// Recipe name (bound name when params applied).
     pub name: String,
     /// Optional app the recipe targets.
@@ -47,12 +56,16 @@ pub struct Plan {
     pub effects: Vec<Effect>,
     /// True when the plan includes an Exit effect — needs `--yes`.
     pub requires_yes: bool,
-    /// Content hash of the plan for receipts/caching.
+    /// Content hash of the bound plan (name, step ids, ops, needs):
+    /// `fnv1a64:<16 hex>`. Identical on every platform, process, and
+    /// toolchain for the same crate version; a correlation id, not a
+    /// security digest.
     pub fingerprint: String,
 }
 
 /// Whether a recipe's wave schedule changes when steps are reversed.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct OrderCheck {
     /// Forward and reverse waves differ — the recipe is order-dependent.
     pub order_dependent: bool,
@@ -66,31 +79,37 @@ pub struct OrderCheck {
 /// into dependency waves against `registry` schemas.
 ///
 /// # Errors
-/// A message on validation failure, missing params, unknown `needs`,
-/// unknown invokes, or a dependency cycle.
+/// Any [`validate_recipe`] violation; [`RecipeErrorCode::MissingParam`] /
+/// [`RecipeErrorCode::UnknownParam`] when `set` does not match the
+/// declared params; [`RecipeErrorCode::InvalidParamValue`] /
+/// [`RecipeErrorCode::InvalidArgs`] when a bound invoke arg does not fit
+/// its schema type.
 pub fn compile_plan(
     recipe: &Recipe,
     set: &BTreeMap<String, String>,
     registry: &Registry,
-) -> Result<Plan, String> {
+) -> Result<Plan, RecipeError> {
     validate_recipe(recipe, registry)?;
-    let bound = if recipe.params.is_empty() {
-        None
-    } else {
-        Some(apply_params(recipe, set)?)
-    };
-    let name = bound
-        .as_ref()
-        .map_or(recipe.name.as_str(), |b| b.name.as_str());
-    let app = bound
-        .as_ref()
-        .map_or_else(|| recipe.app.clone(), |b| b.app.clone());
-    let steps = match &bound {
-        Some(bound) => bound.steps.as_slice(),
-        None => recipe.steps.as_slice(),
-    };
+    let mut bound = apply_params(recipe, set)?;
+    for (step, unbound) in bound.steps.iter_mut().zip(&recipe.steps) {
+        let (Op::Invoke { name, args }, Op::Invoke { args: raw, .. }) = (&mut step.op, &unbound.op)
+        else {
+            continue;
+        };
+        let Some(schema) = registry.get(name) else {
+            continue;
+        };
+        coerce_invoke_args(schema, raw, args)
+            .map_err(|m| err(RecipeErrorCode::InvalidParamValue, m).at_step(&step.id))?;
+        check_invoke_args(schema, args, true)
+            .map_err(|m| err(RecipeErrorCode::InvalidArgs, m).at_step(&step.id))?;
+    }
+    let name = bound.name.as_str();
+    let app = bound.app.clone();
+    let steps = bound.steps.as_slice();
     let implicit = steps.iter().all(|step| step.needs.is_empty());
-    let (ordered, waves) = schedule(steps)?;
+    let (ordered, waves) =
+        schedule(steps).map_err(|message| err(RecipeErrorCode::Cycle, message))?;
     let mut planned = Vec::with_capacity(ordered.len());
     let mut effects = BTreeSet::new();
     for &i in &ordered {
@@ -121,6 +140,7 @@ pub fn compile_plan(
     let requires_yes = effects.contains(&Effect::Exit);
     let fingerprint = fingerprint_plan(name, &planned);
     Ok(Plan {
+        v: PLAN_FORMAT_VERSION,
         name: name.to_string(),
         app,
         steps: planned,
@@ -140,7 +160,7 @@ pub fn order_check(
     recipe: &Recipe,
     set: &BTreeMap<String, String>,
     registry: &Registry,
-) -> Result<OrderCheck, String> {
+) -> Result<OrderCheck, RecipeError> {
     let forward = compile_plan(recipe, set, registry)?;
     let mut reversed = recipe.clone();
     reversed.steps.reverse();
@@ -224,7 +244,7 @@ fn lookup(name: &str, registry: &Registry) -> (Option<String>, Vec<Effect>, bool
     }
 }
 
-fn schedule(steps: &[RecipeStep]) -> Result<(Vec<usize>, Vec<Vec<String>>), String> {
+pub(crate) fn schedule(steps: &[RecipeStep]) -> Result<(Vec<usize>, Vec<Vec<String>>), String> {
     if steps.iter().all(|step| step.needs.is_empty()) {
         let ordered: Vec<usize> = (0..steps.len()).collect();
         let waves = steps.iter().map(|step| vec![step.id.clone()]).collect();
@@ -290,15 +310,72 @@ fn fingerprint_plan(name: &str, steps: &[PlannedStep]) -> String {
             "needs": s.needs,
         })).collect::<Vec<_>>(),
     });
-    let bytes = serde_json::to_vec(&payload).unwrap_or_default();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let mut canonical = String::new();
+    write_canonical(&payload, &mut canonical);
+    // FNV-1a 64: fixed constants, so the value never depends on the
+    // toolchain's `DefaultHasher`.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in canonical.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
+/// Compact JSON with object keys sorted, so the text does not depend on
+/// `serde_json`'s map ordering feature. Unset optional op fields are not
+/// serialized at all; an explicit `null` (e.g. in invoke args) is kept.
+fn write_canonical(value: &serde_json::Value, out: &mut String) {
+    use serde_json::Value;
+    match value {
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            let mut members: Vec<_> = map.iter().collect();
+            members.sort_by(|a, b| a.0.cmp(b.0));
+            out.push('{');
+            for (i, (key, member)) in members.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::String(key.clone()).to_string());
+                out.push(':');
+                write_canonical(member, out);
+            }
+            out.push('}');
+        }
+        scalar => out.push_str(&scalar.to_string()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_json_keeps_explicit_nulls() {
+        let render = |value: serde_json::Value| {
+            let mut out = String::new();
+            write_canonical(&value, &mut out);
+            out
+        };
+        assert_eq!(
+            render(serde_json::json!({"b": {"x": null}, "a": 1})),
+            r#"{"a":1,"b":{"x":null}}"#
+        );
+        assert_ne!(
+            render(serde_json::json!({"payload": {"x": null}})),
+            render(serde_json::json!({"payload": {}}))
+        );
+    }
     use crate::recipe::parse_wants;
     use crate::registry::todo_registry;
 
@@ -343,7 +420,9 @@ mod tests {
         }"#,
         )
         .unwrap();
-        let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap_err();
+        let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("cycle"), "{err}");
     }
 
@@ -374,7 +453,9 @@ mod tests {
         }"#,
         )
         .unwrap();
-        let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap_err();
+        let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry())
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("need_me") || err.contains("missing --set"),
             "{err}"
@@ -415,7 +496,35 @@ mod tests {
             r#"{"name":"p","steps":[{"id":"a","op":"invoke","name":"not.a.schema"}]}"#,
         )
         .unwrap();
-        let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap_err();
+        let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("unknown invoke"), "{err}");
+    }
+
+    #[test]
+    fn fingerprint_is_a_fixed_function_of_the_bound_plan() {
+        let recipe = parse_wants("invoke todo.add title=$t\nsnapshot", "fp").unwrap();
+        let set = |v: &str| BTreeMap::from([("t".to_string(), v.to_string())]);
+        let plan = compile_plan(&recipe, &set("Milk"), &todo_registry()).unwrap();
+        // Golden value: changing it breaks receipts stored by callers.
+        assert_eq!(plan.fingerprint, "fnv1a64:d0ee89517c86c524");
+        assert_eq!(plan.v, PLAN_FORMAT_VERSION);
+        let other = compile_plan(&recipe, &set("Eggs"), &todo_registry()).unwrap();
+        assert_ne!(plan.fingerprint, other.fingerprint);
+    }
+
+    #[test]
+    fn placeholder_args_take_the_schema_type_when_bound() {
+        let recipe = parse_wants("invoke todo.toggle id=$id", "ty").unwrap();
+        let set = |v: &str| BTreeMap::from([("id".to_string(), v.to_string())]);
+        let plan = compile_plan(&recipe, &set("3"), &todo_registry()).unwrap();
+        let Op::Invoke { args, .. } = &plan.steps[0].op else {
+            panic!("invoke");
+        };
+        assert_eq!(args["id"], 3);
+        let error = compile_plan(&recipe, &set("x"), &todo_registry()).unwrap_err();
+        assert_eq!(error.code, RecipeErrorCode::InvalidParamValue);
+        assert_eq!(error.step.as_deref(), Some("s1"));
     }
 }

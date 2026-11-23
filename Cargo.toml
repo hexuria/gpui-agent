@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.85"
@@ -20,9 +20,9 @@ repository = "https://github.com/hexuria/gpui-agent"
 homepage = "https://github.com/hexuria/gpui-agent"
 
 [workspace.dependencies]
-gpui-agent = { path = "crates/gpui-agent", version = "0.3.1" }
-gpui-agent-recipe = { path = "crates/gpui-agent-recipe", version = "0.3.1" }
-gpui-agent-policy = { path = "crates/gpui-agent-policy", version = "0.3.1" }
+gpui-agent = { path = "crates/gpui-agent", version = "0.4.0" }
+gpui-agent-recipe = { path = "crates/gpui-agent-recipe", version = "0.4.0" }
+gpui-agent-policy = { path = "crates/gpui-agent-policy", version = "0.4.0" }
 todo-core = { path = "crates/todo-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

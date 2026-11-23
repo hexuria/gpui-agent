@@ -1,77 +1,60 @@
-# Experimental recipes + TMP-inspired mapping
+# Recipes
 
-This is an **experimental** P1 slice. It does not replace semantic RPC,
-does not steal the OS pointer, and does not change protocol v2.
+A recipe is a JSON file of gpui-agent protocol ops (`click`, `set_value`,
+`assert`, `invoke`, …). `gpui-agent recipe run` validates it, compiles it
+to a plan, and runs every step in **one** process on **one** TCP session,
+then prints a receipt. It replaces a tool round-trip per action.
 
-The goal: let an agent **author or reuse a recipe** of gpui-agent ops
-(`click` / `set-value` / `assert` / `invoke` / …) that compiles to a
-plan and runs with **one CLI (or MCP) invocation** — one process, one
-TCP session, many ops — instead of a tool round-trip per action.
+Recipes are a client feature. The host still sees one ordinary NDJSON
+request per step ([PROTOCOL.md](PROTOCOL.md)); there is no wire `batch`
+op, and no cap or auth check is skipped
+([SECURITY.md](SECURITY.md#recipes)).
 
-**Canonical format: JSON.** Line-based `.wants` is still accepted as a
-thin alias.
-Threat model vs PR #3 caps: [SECURITY.md](SECURITY.md#recipes-experimental).
-Wire ops stay one NDJSON request each: [PROTOCOL.md](PROTOCOL.md).
+## Stability
 
-## What was borrowed
+Recipes are stable as of **0.4.0**. Within recipe format `v: 1`, the
+following are frozen. Additions arrive only as new optional fields, new
+error codes, or new commands; nothing listed here is renamed or removed
+without a new format version or a new major crate version.
 
-### From [rwmcp](https://github.com/hexuria/reverse-web-mcp)
-
-Kept the *shape*, not the world-model compiler:
-
-| Idea | Here |
+| Surface | Frozen |
 | --- | --- |
-| `--wants` file: one predicate/op per line, `#` comments | `*.wants` compiles to a `Recipe` (alias) |
-| A successful plan is a reusable recipe with `$params` | JSON `Recipe` + `--set key=value` |
-| `validate` / `plan` / `run` / receipt | `gpui-agent recipe validate\|plan\|run` |
-| Order-check (compile listed vs reversed) | `recipe plan --order-check` |
-| Exit-effect gate (`--yes`) | Recipes that include `shutdown` refuse until `--yes` |
-| Falsifiable receipt (what ran, ok/err, timing) | `Receipt` JSON, optional `--receipt-out` |
-| One command instead of a session | Connection reuse in `AgentClient` (P0) |
+| Recipe file | Fields and rules in [Recipe format](#recipe-format); `schemas/recipe.v1.schema.json` |
+| `.wants` | Line grammar in [`.wants`](#wants) |
+| CLI | `recipe validate`, `recipe plan`, `recipe run`, their flags, exit status, and what is printed on stdout |
+| MCP | `recipe_validate`, `recipe_plan`, `recipe_run`, their arguments and results |
+| Plan JSON | Fields in [Plan](#plan), versioned by `v` |
+| Receipt JSON | Fields in [Receipt](#receipt), versioned by `v` |
+| Errors | The `error_code` strings in [Errors](#errors) |
+| Fingerprint | The algorithm in [Plan](#plan) |
+| Rust API | Public items of `gpui-agent-recipe`, under semver |
 
-Left out on purpose (non-goals):
+Not frozen:
 
-- Full intent-graph / OpenAPI world-model compiler
-- LLM planner / `--goal` / `--answer-with-model`
-- Event-bus scheduler, idempotency keys, resume-from-ledger
-- Parallel multi-connection execution (one socket; all-Read waves may
-  pipeline lines, writes stay sequential — not a thread pool)
-- Surfaces, effectors, CDP driver
+- Human-readable `error` text. Match on `error_code`.
+- `recipe resolve` / `recipe_resolve` and `resolve_intent`: scoring is
+  heuristic and stays labeled experimental.
+- Timing fields' values, and the order of keys in printed JSON.
 
-### From [tmp](https://github.com/codeitlikemiley/tmp) (Tool Mapping Protocol)
+A recipe that validates under one 0.4+ release validates under later
+ones, provided the app schema it is checked against is unchanged. A
+recipe with an unsupported `v` is rejected with
+`recipe_unsupported_version`, never run best-effort.
 
-Kept the *mapping contract*, not the product:
+Rust callers: `RecipeErrorCode`, `RunError`, `SchemaKind`, `Effect` and
+every public struct are `#[non_exhaustive]`. Add a wildcard arm when
+matching, and read struct fields rather than writing a struct literal.
+Build with `Recipe::new`, `RecipeStep::new`, `OpSchema::new`,
+`ArgSchema::new`, `ScreenshotCapture::new`, `RunOptions::new` and
+`Param::named`, then set fields; a recipe or schema file is read with
+`Recipe::from_json` / `load_schema_file`.
 
-| Idea | Here |
-| --- | --- |
-| Schema-backed intent → verified operation | `OpSchema` + `resolve_intent` |
-| Deterministic resolve / compile (no model in the core) | Local keyword scoring; fail closed |
-| Effects + required inputs + result shape **before** run | Printed on `recipe plan` / `recipe resolve` |
-| Allow-list; unknown intent does nothing | Unknown `invoke` names fail validate |
-| Embeddable `tmp-core`-shaped types | Local `Registry` in `gpui-agent-recipe` |
-
-Left out:
-
-- `tmp-agent` Axum server / registry cloud / publish-install
-- Help-text scraping, git/cargo resolvers, **shell `data_source.command`**
-- Workflow YAML runner, TUI verifier
-- A hard path-dep on `tmp-core` (its resolvers exec commands — the
-  wrong default for a UI control plane that must never map onto a shell)
-
-If `tmp-core` later exposes a no-exec schema+resolve feature, we can
-feature-gate a path dependency. Until then, local schemas are the
-honest slice.
-
-## Recipe format (JSON canonical; `.wants` also accepted)
-
-JSON is first-class because the wire protocol is already JSON, rwmcp
-recipes are JSON, and an agent can emit a whole DAG in **one** model
-sample. YAML would add a crate for no gain. Line-based `.wants` exists
-so a human or agent can write a sequence without braces.
+## Recipe format
 
 ```json
 {
-  "v": 2,
+  "$schema": "../../schemas/recipe.v1.schema.json",
+  "v": 1,
   "name": "todo-crud",
   "app": "todo",
   "params": ["title"],
@@ -83,7 +66,160 @@ so a human or agent can write a sequence without braces.
 }
 ```
 
-Equivalent wants file (`examples/recipes/todo-crud.wants`):
+Top level:
+
+| Field | Required | Rule |
+| --- | --- | --- |
+| `v` | No (default `1`) | Must be `1` |
+| `name` | Yes | Non-empty |
+| `app` | No | Informational; copied to the plan |
+| `params` | No | Bare names or [typed entries](#typed-params); names unique, matching `[A-Za-z_][A-Za-z0-9_]*`; each must be used by a step |
+| `steps` | Yes | 1 to 256 steps |
+| `$schema` | No | Editor hint; ignored |
+
+Each step:
+
+| Field | Required | Rule |
+| --- | --- | --- |
+| `id` | Yes | Non-empty, unique, no `$param` |
+| `op` | Yes | A protocol op name, snake_case (`set_value`, `wait_until`, …) |
+| `needs` | No | Ids of other steps; no duplicates, no self, no `$param`, no cycle |
+| `screenshot` | No | `true` marks the step for `--screenshot-flagged` |
+| op fields | Per op | The same fields the op takes on the wire ([PROTOCOL.md](PROTOCOL.md)) |
+
+**Unknown fields are errors**, at the top level and in a step. A step may
+only carry the fields its own op reads, so `"need"` or `"tagret"` fails
+with `recipe_unknown_field` instead of being ignored.
+
+`schemas/recipe.v1.schema.json` is the JSON Schema (2020-12) for this
+structure, for editors and pre-checks. `recipe validate` is the
+authority: it also checks ids, `needs`, params, and invoke args, which a
+JSON Schema cannot. One more thing a JSON Schema cannot say: its
+`integer` admits a whole number written with a decimal point (`1.0`),
+and a whole-number step field here must be written without one (`1`).
+
+File handling: a `.json` path is always parsed as JSON. Any other path
+is `.wants`, unless the text starts with `{`. Path `-` reads stdin.
+
+### Params
+
+- Write `$name` or `${name}` inside any string op field: targets, text,
+  values, assert fields, and strings nested in `invoke` args.
+- `$$` is a literal `$`. `"$$5"` is the text `$5`; `"$$title"` is the
+  text `$title`.
+- A `$` not followed by a name or `{name}` is a literal `$`.
+- Every placeholder must be declared in `params`, and every declared
+  param must be used. Both fail `validate` with `recipe_invalid_param`.
+- `plan` and `run` need a value for every required param
+  (`recipe_missing_param`) and reject values for names the recipe does
+  not declare (`recipe_unknown_param`). Repeating `--set` for one name is
+  an error.
+- Values are substituted as text. One exception: an `invoke` arg written
+  as exactly one placeholder (`"id": "$id"`) whose schema type is
+  `number`, `integer`, or `bool` is converted to that type, so
+  `--set id=1` sends `1`, not `"1"`. A value that does not convert fails
+  with `recipe_invalid_param_value`.
+- Step `id` and `needs` are graph identity and are never substituted.
+
+### Typed params
+
+A `params` entry is a bare name (a required string) or an object:
+
+```json
+"params": [
+  "title",
+  {"name": "count", "type": "integer", "default": 1},
+  {"name": "kind", "enum": ["task", "note"], "description": "What to add"},
+  {"name": "amount", "pattern": "^[0-9]+\\.00$", "required": false}
+]
+```
+
+| Key | Rule |
+| --- | --- |
+| `name` | Required |
+| `type` | `string` (default), `number`, `integer`, `bool` |
+| `required` | Default `true`, or `false` when `default` is set. `true` with a `default` is rejected |
+| `default` | Used when the caller gives no value; must itself pass the checks |
+| `enum` | Non-empty list; the value must equal one entry. `number` and `integer` entries compare as numbers (`1`, `1.0` and `1e0` are one value); the rest compare as text |
+| `pattern` | `string` params only. Regular expression that must match somewhere in the value; anchor with `^…$` |
+| `description` | Free text for people and form builders |
+
+- The input schema `validate` prints carries `pattern` as ECMAScript
+  reads it, which is what JSON Schema validators run. Three things are
+  spelled out there, because this tool reads them more narrowly: `.` is
+  any character but a line feed, and `\s` / `\S` are the six ASCII
+  whitespace characters (a no-break space is not one). A pattern in
+  syntax only this tool reads (an inline flag such as `(?i)`,
+  `(?P<name>…)`, `\A`, `\z`, `[[:alpha:]]`), or a class with a `-` that
+  is not first, last, or between two single characters, is left out of
+  the schema and still checked at `plan` / `run`. The exported pattern is
+  meant for a validator that compiles it with the Unicode (`u`) flag, as
+  Ajv does by default.
+- A value that fails `type`, `enum`, or `pattern` fails `plan` / `run`
+  with `recipe_invalid_param_value`. A bad declaration fails `validate`
+  with `recipe_invalid_param`; an unknown key in the object fails with
+  `recipe_parse`.
+- An optional param with no `default` and no value is absent: every
+  `invoke` arg written as exactly its placeholder (`"amount": "$amount"`,
+  at any depth in `args`) is left out. Such a param may not be used
+  anywhere else; `validate` rejects that.
+  If the left-out arg is one the invoke schema requires, `plan` / `run`
+  fail with `recipe_invalid_args`.
+- `type` checks the value. It does not change how the value is sent:
+  see the `invoke` arg conversion above.
+- `recipe validate` prints `input_schema`, a JSON Schema (2020-12) object
+  built from `params`, for callers that collect or check the values
+  before running.
+
+### Scheduling
+
+- If **no** step has `needs`, the steps run in file order, one per wave.
+- If **any** step has `needs`, the recipe is an explicit DAG. Steps
+  whose dependencies are done form a wave; within a wave, steps are
+  ordered by id. File order is not used.
+- A wave of two or more steps that only read is sent pipelined (N
+  requests written, then N replies read). If one fails, its siblings
+  have already run; the next wave does not start.
+- Every other wave (any write, any exit, or a run with screenshots) is
+  sequential and fail-fast: the first failure stops the run, and later
+  steps do not execute.
+- `recipe plan --order-check` compiles the steps in listed and reversed
+  order and reports whether the waves differ (`order_dependent`).
+
+### `invoke` and app schemas
+
+Protocol ops are always allowed. `invoke` is allowed only for names
+registered in an app schema file, loaded with `--schema PATH`
+(repeatable) or `GPUI_AGENT_SCHEMA` (OS path list). MCP recipe tools
+also take a `schema` argument. Sample: `examples/schemas/todo.json`.
+
+`validate` checks each `invoke` step against its schema:
+
+- the name is registered with `"kind": "invoke"`
+  (else `recipe_unknown_invoke`);
+- every arg in `required`, or marked `"required": true`, is present;
+- if the schema has `args`, no arg is passed that is named neither there
+  nor in `required`. `"args": {}` therefore means the invoke takes none.
+  A schema that leaves `args` out does not list its args, and their
+  names are not checked. `"args": null` is neither and is refused;
+- each arg has its declared type (`string`, `number`, `integer`, `bool`,
+  `object`, `array`; other type names are not checked). An arg that
+  still contains a placeholder is type-checked after binding.
+
+Violations are `recipe_invalid_args`.
+
+### Confirmation
+
+- A plan containing `shutdown`, or a quit keybinding, has
+  `requires_yes: true`. `recipe run` refuses it without `--yes` (MCP:
+  `yes: true`) with `recipe_unconfirmed`, before contacting the host.
+- A quit keybinding step must also carry `"confirm": true`.
+
+## `.wants`
+
+A line-based alias for a recipe with no `needs` (file order). It
+compiles to the same structure; step ids are `s1`, `s2`, …, the name is
+the file stem, and `params` is collected from the placeholders used.
 
 ```
 # bind $title with --set title="Buy milk"
@@ -94,317 +230,227 @@ invoke todo.toggle id=1
 assert todo-item-1 checked=true
 ```
 
-`.json` paths are always parsed as JSON (even if the file does not start
-with `{`). Anything else is `.wants`, unless the text itself starts with
-`{`. Path `-` reads stdin.
-
-Both samples assume a **fresh empty** todo list (`todo-item-1` / `id=1`).
-Restart the host before a second run.
-
-### `.wants` lines
-
-- One protocol op per line. `#` starts a comment; blank lines are skipped.
-- Quotes (`"` / `'`) keep spaces in one token. `title="Buy milk"` and
-  `set-value todo-input "Buy milk"` are both valid. `\"` escapes inside
-  quotes. An unterminated quote is an error.
+- One op per line. `#` starts a comment; blank lines are skipped.
+- `"` or `'` keeps spaces in one token: `title="Buy milk"`. `\"` escapes
+  inside quotes. An unterminated quote is an error.
 - `click` / `type` / `key` accept `--delivery semantic|virtual`.
-- `click` / `type` / `set-value` / `key` accept `--fp <n>`: the step is
-  refused with `stale_target`, and nothing is sent to the app, unless the
-  target's fingerprint (`gpui-agent snapshot --fingerprints`) is still `n`.
-  In JSON the same guard is the step's `expect_fingerprint` field.
-- `keybinding --id … --scope focused|global` (`--confirm` for quit; `--activate` for focused only). `keybindings` lists the catalog.
-- `assert` accepts a target plus `name=` / `checked=` / `--absent` / `--visible` / `--in-viewport` / …
-- `wait_until --timeout-ms N` uses the same assert fields. `wait` stays ready-only.
-  Sample: `examples/recipes/todo-visible.json` toggles `todo-nav` and waits until `visible`.
-- Unknown ops, missing required args, and bad assert fields fail parse.
+- `click` / `type` / `set-value` / `key` accept `--fp <n>` (JSON:
+  `expect_fingerprint`): the step is refused with `stale_target` unless
+  the target's fingerprint is still `n`.
+- `keybinding --id … --scope focused|global`, with `--confirm` for quit
+  and `--activate` for focused only. `keybindings` lists the catalog.
+- `assert <target>` takes `name=` / `value=` / `role=` / `checked=` /
+  `--absent` / `--visible` / `--in-viewport`.
+- `wait_until --timeout-ms N` takes the same fields as `assert`.
+- `--screenshot` on a line marks the step.
+- An unknown op, a missing argument, or a bad assert field is
+  `recipe_parse`, with the line number in the message.
 
-## Commands (`validate` / `plan` / `run` / `resolve`)
+## Commands
 
-These subcommands and the matching MCP tools are labeled
-**experimental** in `--help` / tool descriptions. MCP itself requires a
-token to start; `recipe_run` then sends it on every step.
-
-| Command | Host? | Token? | What it does |
+| Command | Host | Token | Does |
 | --- | --- | --- | --- |
-| `recipe validate <path>` | No | No | Parse + lint (version, ids, `needs`, declared `$params`, invoke allow-list) |
-| `recipe plan <path> [--set k=v] [--order-check]` | No | No | Bind params, schedule waves, print effects / fingerprint / `requires_yes` |
-| `recipe run <path> [--set k=v] [--yes] [--receipt-out FILE] [--screenshot-dir DIR]` | Yes | **Yes** (`GPUI_AGENT_TOKEN` or `--token`, same as host) | Compile, then run ops on one reused TCP session (all-Read waves may pipeline) |
-| `recipe resolve '…'` | No | No | Map prose through the local schema registry (fail closed) |
+| `recipe validate <path>` | No | No | Parse and check every rule above |
+| `recipe plan <path> [--set k=v]… [--order-check]` | No | No | Validate, bind params, print the [plan](#plan) |
+| `recipe run <path> [--set k=v]… [--yes] [--receipt-out FILE] [--screenshot-dir DIR [--screenshot-flagged]]` | Yes | Yes | Plan, run, print the [receipt](#receipt) |
+| `recipe resolve '<intent>'` | No | No | Experimental. Map prose to a schema-backed op, or fail |
 
-MCP tools with the same jobs: `recipe_validate`, `recipe_plan`,
-`recipe_run` (pass `yes: true` for shutdown), `recipe_resolve`. They
-are batching helpers, not app-specific verbs. Per-op tools stay for
-interactive debugging.
+All take `--schema PATH`. `recipe run` requires a non-empty
+`GPUI_AGENT_TOKEN` or `--token`, the same value as the host.
 
 ```bash
-# both terminals — recipe run / mcp require this (same value as the host)
 export GPUI_AGENT_TOKEN=dev-secret
 
-# no host
 gpui-agent recipe validate examples/recipes/todo-crud.json \
   --schema examples/schemas/todo.json
 gpui-agent recipe plan examples/recipes/todo-crud.json \
   --schema examples/schemas/todo.json --set title="Buy milk"
-gpui-agent recipe resolve 'add a todo titled Buy milk' \
-  --schema examples/schemas/todo.json
-
-# host required — JSON is the documented path
 gpui-agent recipe run examples/recipes/todo-crud.json \
   --schema examples/schemas/todo.json --set title="Buy milk"
-
-# AI mid-run: intended PNGs after every step
-# headless / daemon / default GUI client / Linux / Windows: receipt lists screenshot_unavailable (no files)
-# macOS embedded-host todo: real PNG of this window (Screen Recording)
-gpui-agent recipe run examples/recipes/todo-crud.json \
-  --schema examples/schemas/todo.json --set title="Buy milk" \
-  --screenshot-dir artifacts/steps/
 ```
 
-Between **manual** steps, the same observe-only op:
+Output contract:
 
-```bash
-gpui-agent screenshot --out artifacts/steps/mid.png
-```
+| Outcome | Exit | stdout | stderr |
+| --- | --- | --- | --- |
+| `validate` ok | 0 | `{"ok": true, "name", "steps", "params" (names), "input_schema", "explicit_needs"}` | |
+| `plan` ok | 0 | Plan JSON (or order-check JSON) | |
+| `run` ok | 0 | Receipt JSON, `ok: true` | |
+| Rejected before running | 1 | Error envelope | `error: <text>` |
+| `run`, a step failed | 1 | Partial receipt JSON, `ok: false` | `error: <text>` |
 
-JSON steps may set `"screenshot": true`; wants lines may take
-`--screenshot`. With `--screenshot-flagged`, only those steps are
-captured. Names are `001-wait.png`, `002-add.png`, … and appear on the
-receipt. Headless, the daemon, the default GUI-as-daemon-client, and
-Linux/Windows desktop GPUI return `screenshot_unavailable` and **do not
-invent a file**. macOS `todo --features embedded-host` writes **this
-window** via `screencapture -l`. See [RECORDING.md](RECORDING.md).
+`--receipt-out FILE` writes the same receipt JSON to a file, on success
+and on step failure.
 
-Do **not** spawn `gpui-agent` once per op (the old `scripts/smoke.sh`
-pattern). That pays process + TCP handshake every time.
+MCP tools `recipe_validate`, `recipe_plan`, and `recipe_run` take
+`recipe` (a JSON object, or recipe text), `set` (object of param name to
+value), and `schema`; `recipe_run` also takes `yes`, `screenshot_dir`,
+and `screenshot_flagged`. Results are the same JSON as the CLI's stdout.
+Every failure is a tool result with `isError: true` whose text is the
+error envelope, or for a failed step the partial receipt with top-level
+`error` and `error_code` added.
 
-## `$params`
+### Screenshots
 
-- Declare names in JSON `params` (wants files collect `$name` / `${name}`
-  automatically).
-- An undeclared `$placeholder` fails **validate**.
-- A declared param without `--set name=…` fails **plan/run**.
-- Substitution runs after validate, before compile (`$title` and
-  `${title}`). Direct in-place subst (no serde round-trip).
-- `$params` substitute **op payloads only** (targets, text, invoke args,
-  assert names). Step `id` and `needs` are graph identity and are not
-  rewritten — even if a param is named `id`. A `$placeholder` in `id`
-  or `needs` fails **validate**.
+With `--screenshot-dir DIR`, the run asks the host for an app-surface
+PNG after each step (with `--screenshot-flagged`, only steps marked
+`screenshot`). Files are `001-<id>.png`, `002-<id>.png`, … and are
+listed in the receipt. A host that lists the `screenshot_inline` feature
+sends the PNG over the wire and the file is written in `DIR` on the
+client. An older host writes the file itself, under its own screenshot
+directory, and the receipt records the path that host reports. A host that cannot capture (headless, the daemon,
+Linux and Windows desktop) reports `screenshot_unavailable` in the
+receipt and writes no file; the run still succeeds. See
+[RECORDING.md](RECORDING.md).
 
-## DAG / `needs`
+## Plan
 
-- Each step is a protocol `Op` plus `id` and optional `needs`.
-- If **no** step has `needs`, the list is an implicit linear chain.
-- If **any** step has `needs`, the graph is an explicit DAG (Kahn waves;
-  a cycle is an error). Wave order is sorted by step id (deterministic).
-- Unknown `needs`, a step that needs itself, duplicate ids, empty ids /
-  name, empty `steps`, `v` ≠ 1, or more than **256** steps fail validate.
-- All-Read waves (len > 1, every step is only `Effect::Read`) use
-  `rpc_pipeline`: write N request lines, then read N replies. A failed
-  observe still records siblings that already ran; the **next wave**
-  does not start. Extra reads are wasted work, not app mutations.
-- Write, Exit, mixed waves, and `--screenshot-dir` stay **sequential
-  fail-fast** on one socket: a failed step does not run later siblings
-  or later waves. Empty / unknown effects are treated as Write.
-- No wire `batch` op. Each line is still a normal tokened request.
-
-## Receipts
-
-`recipe run` prints a JSON receipt (and optionally `--receipt-out`):
+Printed by `recipe plan`; `Plan` in Rust.
 
 | Field | Meaning |
 | --- | --- |
+| `v` | Plan format version, `1` |
+| `name`, `app` | From the recipe |
+| `steps[]` | In execution order: `id`, bound `op`, `needs`, `effects` (`read` / `write` / `exit`), `schema`, `idempotent`, `screenshot` |
+| `waves[]` | Step ids per wave |
+| `requires_yes` | The plan has an exit effect |
+| `fingerprint` | Identity of the bound plan |
+
+`needs` in a plan includes the implicit previous-step edge of a recipe
+without `needs`.
+
+The fingerprint is `fnv1a64:` followed by 16 lowercase hex digits:
+FNV-1a 64 over the canonical JSON of `{name, steps: [{id, op, needs}]}`
+in execution order, where canonical means compact with object keys sorted
+(unset optional op fields are absent; an explicit `null` is kept). It is the same on every platform and
+toolchain, and changes when the name, a step, a bound value, or the
+order changes. It is a correlation id for receipts and caches, not a
+security digest.
+
+## Receipt
+
+Printed by `recipe run`; `Receipt` in Rust.
+
+| Field | Meaning |
+| --- | --- |
+| `v` | Receipt format version, `1` |
 | `ok` | Every step succeeded |
 | `recipe` | Recipe name |
-| `fingerprint` | Hash of the compiled plan (`DefaultHasher` — fine in one process, not a cross-version lock) |
-| `session_reused` | `AgentClient` still held a live TCP session after the last step |
-| `steps[]` | Per-step `id` / `ok` / `error` / `elapsed_ms` / `result` / optional `screenshot`; a failed step adds its stable `error_code`, and a step that acts adds `delivery_status` (`not_delivered`, `delivery_uncertain`, `delivered_unverified`) |
-| `screenshots[]` | Intended PNG paths (`path` / `ok` / `error`). Unavailable hosts do not fake a file. |
-| `elapsed_ms` | Wall time for the run |
+| `fingerprint` | The plan's fingerprint |
+| `session_reused` | The client still held its TCP session after the last step |
+| `steps[]` | Steps that ran: `id`, `ok`, `elapsed_ms`, `result`; on failure `error` and `error_code`; for ops that act, `delivery_status`; optional `screenshot` |
+| `screenshots[]` | `path`, `ok`, `error` for each requested capture |
+| `elapsed_ms` | Wall time of the run |
 
-A mid-recipe failure (assert miss, host down, bad token) stops the run
-and returns a **partial** receipt: earlier steps stay, later steps do
-not run. Plans with `Effect::Exit` never start unless `--yes` is set.
+When a step fails the receipt is partial: steps that ran are listed, the
+failed step is last (or among its read-only wave), and later steps are
+absent.
 
-## Schema allow-list + resolve
+## Errors
 
-The default CLI/MCP registry is **protocol ops only**. App invoke/id
-schemas load from `--schema PATH` (repeatable) and `GPUI_AGENT_SCHEMA`
-(OS path list). `gpui-agent mcp --schema PATH` is the same flag as
-`recipe`; recipe MCP tools also accept a `schema` argument. Sample todo
-schemas live in
-`examples/schemas/todo.json`. `todo_registry()` still exists for in-process
-tests (protocol + those invoke/id names).
+A recipe rejected before anything runs produces this envelope:
 
-```
-gpui-agent recipe validate examples/recipes/todo-crud.json \
-  --schema examples/schemas/todo.json
+```json
+{ "ok": false, "error_code": "recipe_unknown_field", "error": "recipe json: step `b` has unknown field `need` for op `snapshot`", "step": "b" }
 ```
 
-- `invoke` **names** must be registered as `SchemaKind::Invoke`. Unknown
-  names fail closed. Invoking a protocol name (`click`) is rejected
-  (“not an invoke schema”).
-- Schema names are `[A-Za-z0-9_.-]`. Spaces / shell punctuation cannot
-  be registered.
-- `recipe resolve` scores keywords + names, then materializes an `Op`.
-  Empty, unknown, ambiguous, or shell-like intents (`rm`, `curl`,
-  `bash`, …) return an error. Missing required `title` / `id` also
-  fails. Resolve never shells out.
-- With the `instinct` build feature (on in the CLI's default build),
-  resolve is backed by the
-  `gpui-agent-policy` evidence scorer: verb / schema-name / zone /
-  keyword hits pick the schema, then the same Instinct arbitration
-  decides or abstains. Abstain stays an error — never a guess. A CLI
-  built with `--no-default-features` (and the recipe crate on its own)
-  keeps the keyword resolver and identical scores/outputs.
+`step` is present when the error is about one step. In Rust this is
+`RecipeError { code, message, step }`, and `lint_recipe` returns every
+violation rather than the first.
 
-Protocol ops (`click`, `set_value`, …) are always valid **as** those
-ops. The allow-list is for `invoke` and for prose → schema mapping.
+| `error_code` | Raised by | Meaning |
+| --- | --- | --- |
+| `recipe_io` | all | A recipe or schema file could not be read |
+| `recipe_parse` | all | Not valid JSON / `.wants`, a JSON key written twice in one object (in a recipe file, recipe text, or an MCP recipe tool's request), or a field has the wrong type |
+| `recipe_unknown_field` | all | A key the recipe format or the step's op does not have |
+| `recipe_unsupported_version` | validate | `v` is not `1` |
+| `recipe_invalid` | validate | Empty name, no steps, or more than 256 steps |
+| `recipe_invalid_step` | validate | Step id empty, duplicated, or containing a `$param` |
+| `recipe_invalid_needs` | validate | `needs` entry unknown, duplicated, self, or containing a `$param` |
+| `recipe_cycle` | validate | `needs` form a cycle |
+| `recipe_invalid_param` | validate, `--set` | Param name invalid, duplicated, unused, or undeclared; bad typed-param declaration; `--set` malformed or repeated |
+| `recipe_unknown_invoke` | validate | `invoke` name is not a registered invoke schema |
+| `recipe_invalid_args` | validate, plan | `invoke` args missing, unknown, or of the wrong type |
+| `recipe_unconfirmed` | validate, run | Quit keybinding without `confirm`, or an exit plan without `--yes` |
+| `recipe_missing_param` | plan, run | A required param has no value |
+| `recipe_unknown_param` | plan, run | A value for a param the recipe does not declare |
+| `recipe_invalid_param_value` | plan, run | A value fails its param's `type`, `enum`, or `pattern`, or does not convert to the arg's schema type |
+| `recipe_invalid_schema` | all | A `--schema` file is invalid or redefines a name |
+| `recipe_unresolved` | resolve | The intent did not map to exactly one op |
 
-## Session reuse
+`plan` and `run` validate first, so they can raise every `validate`
+code. A step that fails **during** a run carries the protocol's own
+codes (`assert_failed`, `not_found`, `timeout`, `connect_failed`, …) in
+the receipt, not a `recipe_*` code.
 
-`AgentClient::rpc` opens one TCP session and keeps it (P0). A recipe
-(and a second recipe on the **same** client) reuses that socket. Each
-step is still a normal `Request` (token, version, caps).
+## Rust API
 
-`rpc_once` is the old per-op reconnect path, kept for benches and
-comparison tests. It drops the session after one exchange.
+```rust
+use std::collections::BTreeMap;
+use gpui_agent_recipe::{RunOptions, compile_plan, parse_recipe, run_plan};
 
-This is **not** a new wire `op`. The server still sees one NDJSON
-request per step. The experiment batches on the **client**.
+let recipe = parse_recipe("examples/recipes/todo-crud.json".as_ref())?;
+let set = BTreeMap::from([("title".to_string(), "Buy milk".to_string())]);
+let plan = compile_plan(&recipe, &set, &registry)?;   // validates first
+let receipt = run_plan(&mut client, &plan, &RunOptions::new())?;
+```
 
-## `--yes` for shutdown
+- Parse with `parse_recipe`, `parse_recipe_source`, `Recipe::from_json`,
+  or `Recipe::from_value`. Plain `serde_json::from_str::<Recipe>` does
+  not reject unknown step fields.
+- `validate_recipe` returns the first violation; `lint_recipe` all of
+  them.
+- `run_plan` returns `RunError::Step { id, error, error_code, receipt }`
+  with the partial receipt, or `RunError::NeedsYes`.
 
-`shutdown` is `Effect::Exit`. `recipe plan` sets `requires_yes`.
-`recipe run` without `--yes` (MCP: `yes: true`) returns
-`NeedsYes` and does not contact the host. A bare `gpui-agent shutdown`
-is unchanged — the gate is on the **recipe** path so a reused recipe
-cannot exit the app by accident.
+Migrating from 0.3:
 
-## Threat model (recipes must not bypass caps)
+| 0.3 | 0.4 |
+| --- | --- |
+| `Result<_, String>` | `Result<_, RecipeError>`; use `.code`, or `.to_string()` for the old text |
+| `run_plan(client, plan, yes)` | `run_plan(client, plan, &RunOptions::new().with_yes(yes))` |
+| `run_plan_with_screenshots(…, Some(&capture))` | `RunOptions::new().with_screenshots(Some(capture))` |
+| Exhaustive `match` on `RunError`, `SchemaKind`, `Effect` | Add a `_` arm |
+| Fingerprint: 16 hex digits, toolchain-dependent | `fnv1a64:<16 hex>`; stored 0.3 fingerprints do not match |
+| Unused / undeclared `--set`, unknown fields, unused params accepted | Rejected; fix the recipe |
 
-Recipes are a **confused-deputy amplifier**: they make it cheaper to
-do the same things the CLI already can. They do not add privilege.
+## Security
+
+Recipes add no privilege: they make it cheaper to do what the CLI can
+already do with the same token. Treat `recipe run` and MCP `recipe_run`
+as equivalent to holding the token.
 
 | Gate | Still true |
 | --- | --- |
-| Opt-in | Host still needs `GPUI_AGENT=1` (release: `GPUI_AGENT_ALLOW_RELEASE=1`) |
-| Bind | CLI still `ensure_loopback` before connect |
-| Token | CLI `recipe run` and `mcp` **refuse to start** without a non-empty `GPUI_AGENT_TOKEN` or `--token` (P2). Every recipe step is a normal `Request`; `authorize_request` still runs. Missing/wrong token fails the step and the server still closes. Host bind is default-deny; `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback. **Set the same token on host and client**. `hello.auth` is `"required"` \| `"none"`. |
-| Line / conn / idle / mailbox | Unchanged. Recipe cap 256 is extra, not a replacement. |
-| No OS HID | `delivery` defaults to `semantic`. `virtual` is still in-process GPUI. `--screenshot-dir` is observe-only (macOS **embedded-host**: this window; never the desktop). |
-| No shell | Resolve/plan/run never call `Command`. `invoke` is still an in-process host callback. Unknown invoke names are rejected. |
-| Shutdown | Plans with `Effect::Exit` require `--yes` (rwmcp-style). |
+| Opt-in | Host needs `GPUI_AGENT=1` (release: `GPUI_AGENT_ALLOW_RELEASE=1`) |
+| Bind | Loopback by default; remote needs `--allow-remote` and a token |
+| Token | `recipe run` and `mcp` refuse to start without a client token. Every step is a normal request and is authorized on its own |
+| Caps | Line, connection, idle, and mailbox caps are unchanged. The 256-step cap is extra |
+| No OS input | `delivery` defaults to `semantic`; `virtual` is in-process. Screenshots are observe-only and never the desktop |
+| No shell | Validate, plan, run, and resolve never spawn a process. `invoke` is an in-process host callback, and only for names in the schema |
+| Exit | Plans with an exit effect require `--yes` |
 
-What a recipe **cannot** do:
+Full threat model: [SECURITY.md](SECURITY.md#recipes).
 
-- Bind or send a token off-box
-- Skip version / token checks by batching
-- Turn `invoke` into a shell (the host allow-list is still the law)
-- Grow a request line past `MAX_LINE_BYTES`
-- Open more than `MAX_CONNECTIONS` (one recipe = one client session)
-
-What it **can** do (intentionally): drive the UI as whoever holds the
-token, including `snapshot` field values and `shutdown` (with `--yes`).
-Same as M4 in [SECURITY.md](SECURITY.md). Treat `recipe run` / MCP
-`recipe_run` as equivalent to holding the token.
-
-## Edge-case coverage
-
-Deterministic tests live in `gpui-agent-recipe` (unit + headless
-`spawn_host` integration) and in CLI/MCP parse tests. They cover, at
-least:
-
-- Parse: empty file / comments-only, empty `steps`, bad JSON, unknown
-  op, missing `$params`, cyclic / unknown / self `needs`, duplicate
-  ids, `$params` in step `id`/`needs`, version ≠ 1, 257 steps
-- `.wants` tokenizer: quotes, comments, blanks, invalid lines
-- Resolve: shell-like intents, unknown verbs, ambiguous titles,
-  missing required args
-- Run: assert fail mid-recipe (partial receipt), host down, wrong
-  token, CLI `recipe run` / `mcp` without token fail fast; shutdown
-  without `--yes`; screenshot paths on the receipt;
-  headless `screenshot_unavailable` without a fake PNG; mocked host
-  writes `TEST_PNG` when `--screenshot-dir` / flagged steps are set
-- Session: second recipe on one `AgentClient` stays connected;
-  `rpc_once` reconnects
-- Security: unknown invoke, non-allowlisted schema name, MCP
-  validate/resolve/run-without-yes; MCP `recipe_run` failed assert is
-  `tools/call` `isError` (receipt still in the error text)
+## Tests and CI
 
 ```bash
-cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
-```
-
-## CI (P4)
-
-GitHub Actions (`.github/workflows/ci.yml`) on `ubuntu-latest` runs
-those tests, then `scripts/ci-recipe.sh`: `todo-headless` +
-`gpui-agent recipe run examples/recipes/todo-crud.json` with
-`GPUI_AGENT=1` on loopback and a **test token** (`ci-p4-token`, same
-value on host and client). The job fails unless the receipt JSON has
-`"ok": true` and `"session_reused": true`. No display, no GPU, no
-screenshot files. A failed recipe is a failed check, not a skipped
-visual.
-
-```bash
+cargo test -p gpui-agent-recipe -p gpui-agent-cli
 GPUI_AGENT=1 GPUI_AGENT_TOKEN=ci-p4-token ./scripts/ci-recipe.sh
 ```
 
-## Performance (this crate)
+`ci-recipe.sh` runs `examples/recipes/todo-crud.json` against
+`todo-headless` and fails unless the receipt has `ok: true` and
+`session_reused: true`. It runs in `.github/workflows/ci.yml`. Benches:
+`cargo bench -p gpui-agent-recipe --bench recipe_plan -- --quick`
+([PERF.md](PERF.md)).
 
-P0 session reuse is already on `main` ([PERF.md](PERF.md)). This crate
-adds:
+Both samples assume a fresh, empty todo list (`todo-item-1`, `id=1`);
+restart the host before a second run.
 
-- Direct `$param` substitution (no serde round-trip, no `Vec<char>`)
-- Index-only `compile_plan` (no `RecipeStep` clones in Kahn; skip
-  `apply_params` when `params` is empty)
+## Non-goals
 
-All-Read DAG waves use `rpc_pipeline` (write N lines, then read). Write /
-Exit / mixed waves and `--screenshot-dir` stay sequential fail-fast.
-
-Criterion benches:
-
-```bash
-cargo bench -p gpui-agent --bench agent_perf -- --quick
-cargo bench -p gpui-agent-recipe --bench recipe_plan -- --quick
-```
-
-## Ask later (open product choices)
-
-1. **Freeze the recipe syntax?** Keep dual JSON + wants, drop wants, or
-   adopt rwmcp predicates (`invoice(…).exists`) if a world model lands.
-2. **Path-dep `tmp-core`?** Only if we can take schema/resolve without
-   shell resolvers. Default remains local schemas.
-3. **Ephemeral Jupyter mint?** Not in P2. Host token stays optional.
-   Recipe/MCP already require a client token. Ask before minting at bind.
-4. **Wire `batch` / pipeline writes?** Read-only waves already pipeline.
-   A wire `batch` op is still rejected (ordinary lines are enough).
-   Independent **Write** siblings stay sequential so a failed click does
-   not run the next one.
-5. **Parallel waves on multiple connections?** Rejected: mutex / UI
-   thread / `MAX_CONNECTIONS`.
-6. **App-specific registries on disk?** Today the demo todo schema is
-   baked in. A `schemas/*.json` directory is the obvious next step.
-7. **Fingerprint stability?** Today it is `DefaultHasher` of the
-   compiled ops — fine for one process, not a cross-version lock.
-8. **Real desktop PNG (P3).** Landed as
-   [PR #20](https://github.com/hexuria/gpui-agent/pull/20). Headless /
-   daemon / default GUI client stay honest (`screenshot_unavailable`).
-   macOS **embedded-host** uses `screencapture -l`. `--record` /
-   SVG+PPM / ScreenCaptureKit stay later.
-9. **CI receipt assert (P4).** Gate is receipt `ok` (+ `session_reused`), not pixels.
-   Landed as [PR #21](https://github.com/hexuria/gpui-agent/pull/21).
-
-## Layout
-
-```
-crates/gpui-agent-recipe   Recipe / schema / resolve / plan / receipt
-crates/gpui-agent          Session reuse, ndjson buffers, tree/mailbox, screenshot op
-crates/gpui-agent-cli      experimental recipe validate|plan|run|resolve + MCP tools
-examples/recipes/          Sample todo CRUD (JSON canonical + .wants alias)
-docs/RECIPES.md            This note
-docs/RECORDING.md          PNG vs --record
-docs/SECURITY.md           Caps + recipe threat model
-.github/workflows/ci.yml   Headless cargo test + recipe receipt
-scripts/ci-recipe.sh       Local/CI recipe receipt assert
-```
+- A wire `batch` op, or parallel execution on several connections.
+- An LLM planner, goal solver, or world-model compiler.
+- Resume from a partial receipt, idempotency keys, or retries.
+- Shell or filesystem steps.

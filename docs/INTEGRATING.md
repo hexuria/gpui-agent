@@ -189,7 +189,7 @@ script without polluting `gpui-agent`.
 }
 ```
 
-MCP tools are the protocol ops only, plus experimental `recipe_*`
+MCP tools are the protocol ops only, plus the `recipe_*`
 batching tools (not app-specific verbs). `gpui-agent mcp` **refuses to
 start** without a non-empty `GPUI_AGENT_TOKEN` / `--token`. Set the
 same token on the host. List your ids and invoke names in the project
@@ -214,7 +214,7 @@ reuses a single TCP session across `tools/call`.
       observe-only; headless / Linux / Windows stay
       `screenshot_unavailable`. macOS **embedded-host** writes this
       window (`screencapture -l`). Recipes still cannot bypass
-      [SECURITY.md](SECURITY.md#recipes-experimental). Visual note:
+      [SECURITY.md](SECURITY.md#recipes). Visual note:
       [RECORDING.md](RECORDING.md).
 - [ ] Product builds leave the feature off
 - [ ] `revision()` bumps on every snapshot-affecting mutation — or returns `None` (never a stale `rev`)

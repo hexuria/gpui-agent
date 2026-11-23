@@ -120,8 +120,8 @@ struct Cli {
 const AFTER_HELP: &str = "\
 App-specific helpers (for example the sample todo app) live in examples/,
 not in this CLI. Navigate pages with click + assert on stable ids, or invoke
-a command the host registered. Experimental: batch many ops in one process
-with `recipe validate|plan|run|resolve` (JSON canonical; `.wants` also
+a command the host registered. Batch many ops in one process
+with `recipe validate|plan|run` (JSON canonical; `.wants` also
 accepted — see docs/RECIPES.md). Host bind is default-deny: set
 GPUI_AGENT_TOKEN on the host. `recipe run` and `mcp` require a non-empty
 GPUI_AGENT_TOKEN or --token; set the same value on the host. Non-loopback
@@ -483,7 +483,7 @@ enum Command {
         #[arg(long = "schema", value_name = "PATH")]
         schema: Vec<std::path::PathBuf>,
     },
-    /// Experimental: validate / plan / run / resolve a JSON recipe of protocol ops (`.wants` also accepted). `run` requires a token.
+    /// Validate / plan / run a JSON recipe of protocol ops (`.wants` also accepted); `resolve` is experimental. `run` requires a token.
     Recipe {
         /// App invoke/id schema JSON. Repeatable. Also `GPUI_AGENT_SCHEMA` (OS path list).
         #[arg(long = "schema", value_name = "PATH", global = true)]
@@ -527,10 +527,17 @@ fn main() -> ExitCode {
         Err(err) => {
             // A failed request also prints its envelope on stdout, so a
             // caller parsing JSON gets the code and delivery status.
-            if let Some(failure) = err.downcast_ref::<CallFailure>() {
+            let envelope = err
+                .downcast_ref::<CallFailure>()
+                .map(CallFailure::envelope)
+                .or_else(|| {
+                    err.downcast_ref::<gpui_agent_recipe::RecipeError>()
+                        .map(gpui_agent_recipe::RecipeError::envelope)
+                });
+            if let Some(envelope) = envelope {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&failure.envelope()).expect("envelope serializes")
+                    serde_json::to_string_pretty(&envelope).expect("envelope serializes")
                 );
             }
             eprintln!("error: {err}");
@@ -733,7 +740,23 @@ fn run() -> Result<()> {
     if matches!(&cli.command, Command::Doctor) {
         check_cli_target_selector_conflicts(&cli, sources)?;
     }
-    let (target, session) = resolve_cli_target(&root, &cli, sources)?;
+    // `recipe run` is the one recipe command that reaches here. Its output
+    // contract gives every refusal before the run an envelope, so a refusal
+    // that is not typed yet becomes one; `main` prints it.
+    let recipe_run = matches!(cli.command, Command::Recipe { .. });
+    let refused = move |err: anyhow::Error| {
+        let typed = err.is::<CallFailure>() || err.is::<gpui_agent_recipe::RecipeError>();
+        if recipe_run && !typed {
+            anyhow::Error::new(CallFailure::with_code(
+                format!("{err:#}"),
+                gpui_agent::error_code::BAD_REQUEST,
+                None,
+            ))
+        } else {
+            err
+        }
+    };
+    let (target, session) = resolve_cli_target(&root, &cli, sources).map_err(refused)?;
     // Say which app discovery picked before acting on it, so a command that lands in the wrong
     // window is visible. Stderr keeps stdout (and `mcp`'s protocol) clean.
     // `@e3` stands for a node of the last `snapshot --refs` of this host.
@@ -755,11 +778,12 @@ fn run() -> Result<()> {
         .skip(1)
         .any(|arg| arg.to_str().is_some_and(refs::has_ref))
     {
-        used_refs = refs::resolve(&root, target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
+        used_refs =
+            refs::resolve(&root, target.addr, &mut args[1..]).map_err(|e| refused(anyhow!(e)))?;
         (cli, sources) = parse_cli_from(args);
     }
     let addr = target.addr;
-    let wait = requested_wait(&cli)?;
+    let wait = requested_wait(&cli).map_err(refused)?;
     if let Some(session) = &session {
         eprintln!("gpui-agent: session {} -> {addr}", session.name);
     } else if target.app.is_some() {
@@ -775,8 +799,20 @@ fn run() -> Result<()> {
     });
     let allow_remote = cli.allow_remote || session.is_some_and(|session| session.allow_remote);
     let request_timeout = cli.request_timeout_ms.map(Duration::from_millis);
-    gpui_agent::authorize_client(addr, token.as_deref(), allow_remote)
-        .with_context(|| format!("refusing agent address {addr}"))?;
+    if let Err(refused) = gpui_agent::authorize_client(addr, token.as_deref(), allow_remote) {
+        let context = format!("refusing agent address {addr}");
+        // A recipe command rejected before running prints an envelope, so
+        // its refusal is typed; `main` prints it.
+        return Err(if matches!(cli.command, Command::Recipe { .. }) {
+            anyhow::Error::new(CallFailure::with_code(
+                format!("{context}: {refused}"),
+                gpui_agent::error_code::UNAUTHORIZED,
+                None,
+            ))
+        } else {
+            anyhow::Error::new(refused).context(context)
+        });
+    }
 
     if matches!(cli.command, Command::Doctor) {
         let mut client = connect(addr, request_timeout);
@@ -794,7 +830,14 @@ fn run() -> Result<()> {
     }
     if let Command::Recipe { schema, action } = cli.command {
         let client = if matches!(action, RecipeCommand::Run { .. }) {
-            let token = require_recipe_mcp_token(token.as_deref())?;
+            // Rejected before running: typed, so `main` prints its envelope.
+            let token = require_recipe_mcp_token(token.as_deref()).map_err(|err| {
+                anyhow::Error::new(CallFailure::with_code(
+                    err.to_string(),
+                    gpui_agent::error_code::UNAUTHORIZED,
+                    None,
+                ))
+            })?;
             Some(connect(addr, request_timeout).with_token(token))
         } else {
             None
@@ -1583,8 +1626,8 @@ mod tests {
             "help should not list a todo subcommand:\n{help}"
         );
         assert!(
-            help.to_ascii_lowercase().contains("experimental"),
-            "top-level help should label recipes experimental:\n{help}"
+            help.contains("recipe validate|plan|run"),
+            "top-level help should point at recipes:\n{help}"
         );
     }
 
@@ -1602,7 +1645,7 @@ mod tests {
     }
 
     #[test]
-    fn recipe_help_is_experimental_and_json_first() {
+    fn recipe_help_is_stable_and_json_first() {
         let mut recipe = Cli::command()
             .find_subcommand("recipe")
             .expect("recipe")
@@ -1611,10 +1654,6 @@ mod tests {
             .get_about()
             .map(std::string::ToString::to_string)
             .unwrap_or_default();
-        assert!(
-            about.to_ascii_lowercase().contains("experimental"),
-            "recipe about should say experimental: {about}"
-        );
         assert!(
             about.to_ascii_lowercase().contains("json"),
             "recipe about should mention JSON: {about}"
@@ -1630,10 +1669,19 @@ mod tests {
             .map(std::string::ToString::to_string)
             .unwrap_or_default();
         assert!(
-            about.to_ascii_lowercase().contains("experimental"),
+            !about.to_ascii_lowercase().contains("experimental"),
             "{about}"
         );
         assert!(about.to_ascii_lowercase().contains("json"), "{about}");
+        let resolve = recipe.find_subcommand("resolve").expect("resolve");
+        let about = resolve
+            .get_about()
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            about.to_ascii_lowercase().contains("experimental"),
+            "{about}"
+        );
     }
 
     #[test]

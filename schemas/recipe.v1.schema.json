@@ -1,0 +1,1485 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/hexuria/gpui-agent/main/schemas/recipe.v1.schema.json",
+  "title": "gpui-agent recipe, format v1",
+  "description": "Structure of a recipe file. `gpui-agent recipe validate` additionally checks ids, needs, params, and invoke args against the app schema. See docs/RECIPES.md.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "v": {
+      "const": 1,
+      "description": "Recipe format version. Defaults to 1."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "app": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "params": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "A required string param."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "type": {
+                "enum": [
+                  "string",
+                  "number",
+                  "integer",
+                  "bool",
+                  "boolean"
+                ],
+                "description": "Defaults to string."
+              },
+              "required": {
+                "type": "boolean",
+                "description": "Defaults to true, or false when `default` is set."
+              },
+              "default": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "enum": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
+                }
+              },
+              "pattern": {
+                "type": "string",
+                "description": "Regular expression the value must match. String params only."
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "description": "Params bound by --set: bare names or typed entries. Each must be used as $name or ${name} in a step."
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    }
+  },
+  "required": [
+    "name",
+    "steps"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "step": {
+      "oneOf": [
+        {
+          "title": "hello",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "hello"
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "snapshot",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "snapshot"
+            },
+            "since": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "format": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "json",
+                "compact",
+                null
+              ]
+            },
+            "fingerprints": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "revision",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "revision"
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "events",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "events"
+            },
+            "since": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "limit": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "click",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "click"
+            },
+            "target": {
+              "type": "string"
+            },
+            "delivery": {
+              "enum": [
+                "semantic",
+                "virtual"
+              ]
+            },
+            "expect_fingerprint": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "Node fingerprint from a snapshot; the step fails if the node changed."
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "type",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "type"
+            },
+            "target": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "delivery": {
+              "enum": [
+                "semantic",
+                "virtual"
+              ]
+            },
+            "expect_fingerprint": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "Node fingerprint from a snapshot; the step fails if the node changed."
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "target",
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "set_value",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "set_value"
+            },
+            "target": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            },
+            "expect_fingerprint": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "Node fingerprint from a snapshot; the step fails if the node changed."
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "target",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "key",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "key"
+            },
+            "target": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "delivery": {
+              "enum": [
+                "semantic",
+                "virtual"
+              ]
+            },
+            "expect_fingerprint": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "Node fingerprint from a snapshot; the step fails if the node changed."
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "target",
+            "key"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "keybinding",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "keybinding"
+            },
+            "binding": {
+              "type": "string"
+            },
+            "chord": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "focused",
+                "global"
+              ]
+            },
+            "confirm": {
+              "type": "boolean"
+            },
+            "activate": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "binding",
+            "scope"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "keybindings",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "keybindings"
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "keybinding.list",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "keybinding.list"
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false,
+          "description": "Alias of `keybindings`."
+        },
+        {
+          "title": "assert",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "assert"
+            },
+            "target": {
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checked": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exists": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "visible": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "in_viewport": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "invoke",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "invoke"
+            },
+            "name": {
+              "type": "string"
+            },
+            "args": {}
+          },
+          "required": [
+            "id",
+            "op",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "wait",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "wait"
+            },
+            "timeout_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "wait_until",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "wait_until"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "target": {
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "checked": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "exists": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "visible": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "in_viewport": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "timeout_ms",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "shutdown",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "shutdown"
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "screenshot",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "screenshot"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "viewport",
+                "scrolled"
+              ]
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "max_height_px": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "inline": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "blob",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "blob"
+            },
+            "blob": {
+              "type": "string"
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "blob",
+            "index"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "press",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "press"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "x": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "y": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "expect_fingerprint": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "Node fingerprint from a snapshot; the step fails if the node changed."
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "scroll",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "scroll"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "x": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "y": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "dx": {
+              "type": "number"
+            },
+            "dy": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "hover",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "hover"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "x": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "y": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "drag",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "drag"
+            },
+            "from": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "to": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "x": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "y": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "dx": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "dy": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "swipe",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "swipe"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "up",
+                "down",
+                "left",
+                "right"
+              ]
+            },
+            "distance": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "direction"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "long_press",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "long_press"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "x": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "y": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "duration_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "pinch",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "pinch"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scale": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "scale"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "viewport",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "viewport"
+            },
+            "width": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "height": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "preset": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "paste",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "paste"
+            },
+            "target": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "target",
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "system",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "system"
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "back",
+                "home",
+                "rotate",
+                "keyboard_show",
+                "keyboard_hide",
+                "background",
+                "foreground",
+                "open_url"
+              ]
+            },
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "action"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

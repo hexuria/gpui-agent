@@ -12,8 +12,8 @@ use gpui_agent::protocol::{HelloInfo, Op};
 use gpui_agent::server::spawn_host;
 use gpui_agent::tree::UiTree;
 use gpui_agent_recipe::{
-    RunError, ScreenshotCapture, compile_plan, parse_wants, run_plan, run_plan_with_screenshots,
-    todo_registry, validate_recipe,
+    RunError, RunOptions, ScreenshotCapture, compile_plan, parse_wants, run_plan, todo_registry,
+    validate_recipe,
 };
 use todo_core::TodoStore;
 
@@ -40,7 +40,7 @@ assert todo-item-1 checked=true
     assert!(!plan.requires_yes);
 
     let (mut client, shutdown) = spawn_todo();
-    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    let receipt = run_plan(&mut client, &plan, &RunOptions::new()).expect("run");
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(receipt.steps.len(), 5);
     assert!(
@@ -73,7 +73,7 @@ fn json_todo_crud_with_matching_token_reuses_session() {
     let mut client = AgentClient::connect(addr)
         .with_token("p2-secret")
         .with_timeout(Duration::from_secs(3));
-    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    let receipt = run_plan(&mut client, &plan, &RunOptions::new()).expect("run");
     assert!(receipt.ok, "{receipt:?}");
     assert!(
         receipt.session_reused,
@@ -94,7 +94,7 @@ fn json_todo_visible_wait_until_reuses_session() {
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
 
     let (mut client, shutdown) = spawn_todo();
-    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    let receipt = run_plan(&mut client, &plan, &RunOptions::new()).expect("run");
     assert!(receipt.ok, "{receipt:?}");
     assert!(receipt.session_reused);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -120,7 +120,7 @@ fn json_recipe_params_and_widget_ops() {
     let plan = compile_plan(&recipe, &set, &todo_registry()).unwrap();
 
     let (mut client, shutdown) = spawn_todo();
-    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    let receipt = run_plan(&mut client, &plan, &RunOptions::new()).expect("run");
     assert!(receipt.ok, "{receipt:?}");
     assert!(receipt.session_reused);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -154,7 +154,7 @@ fn independent_read_wave_is_pipelined_on_one_session() {
     );
 
     let (mut client, shutdown) = spawn_todo();
-    let receipt = run_plan(&mut client, &plan, false).expect("run");
+    let receipt = run_plan(&mut client, &plan, &RunOptions::new()).expect("run");
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(receipt.steps.len(), 4);
     assert!(receipt.session_reused);
@@ -181,7 +181,7 @@ fn independent_read_wave_records_siblings_when_one_fails() {
     assert_eq!(plan.waves[1].len(), 3);
 
     let (mut client, shutdown) = spawn_todo();
-    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    let err = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
     match err {
         RunError::Step { id, receipt, .. } => {
             assert_eq!(id, "b");
@@ -208,7 +208,7 @@ fn independent_read_wave_records_siblings_when_one_fails() {
                 "failed read wave must not start the next wave: {receipt:?}"
             );
         }
-        other @ RunError::NeedsYes => panic!("unexpected {other}"),
+        other => panic!("unexpected {other}"),
     }
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -231,7 +231,7 @@ fn independent_write_wave_stops_before_later_sibling() {
     assert_eq!(plan.waves[1], vec!["a".to_string(), "b".to_string()]);
 
     let (mut client, shutdown) = spawn_todo();
-    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    let err = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
     match err {
         RunError::Step { id, receipt, .. } => {
             assert_eq!(id, "a");
@@ -250,7 +250,7 @@ fn independent_write_wave_stops_before_later_sibling() {
                 "later click must not run: {receipt:?}"
             );
         }
-        other @ RunError::NeedsYes => panic!("unexpected {other}"),
+        other => panic!("unexpected {other}"),
     }
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -276,7 +276,7 @@ fn mixed_write_and_read_wave_stays_sequential_fail_fast() {
     );
 
     let (mut client, shutdown) = spawn_todo();
-    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    let err = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
     match err {
         RunError::Step { id, receipt, .. } => {
             assert_eq!(id, "click");
@@ -291,7 +291,7 @@ fn mixed_write_and_read_wave_stays_sequential_fail_fast() {
                 "hello sibling must not run after click fail: {receipt:?}"
             );
         }
-        other @ RunError::NeedsYes => panic!("unexpected {other}"),
+        other => panic!("unexpected {other}"),
     }
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -313,14 +313,15 @@ fn screenshot_dir_records_a_receipt_entry_per_step() {
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
     let dir = std::env::temp_dir().join(format!("gpui-agent-wide-shots-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let capture = ScreenshotCapture {
-        dir: dir.clone(),
-        flagged_only: false,
-    };
+    let capture = ScreenshotCapture::new(dir.clone());
 
     let (mut client, shutdown) = spawn_todo();
-    let receipt = run_plan_with_screenshots(&mut client, &plan, false, Some(&capture))
-        .expect("hello wave succeeds");
+    let receipt = run_plan(
+        &mut client,
+        &plan,
+        &RunOptions::new().with_screenshots(Some(capture)),
+    )
+    .expect("hello wave succeeds");
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(
         receipt.screenshots.len(),
@@ -350,7 +351,7 @@ fn recipe_does_not_bypass_token() {
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
 
     let mut no_token = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
-    let err = run_plan(&mut no_token, &plan, false).unwrap_err();
+    let err = run_plan(&mut no_token, &plan, &RunOptions::new()).unwrap_err();
     match err {
         RunError::Step { error, .. } => {
             assert!(
@@ -358,13 +359,13 @@ fn recipe_does_not_bypass_token() {
                 "recipe must still hit auth: {error}"
             );
         }
-        other @ RunError::NeedsYes => panic!("unexpected {other}"),
+        other => panic!("unexpected {other}"),
     }
 
     let mut with_token = AgentClient::connect(addr)
         .with_token("secret")
         .with_timeout(Duration::from_secs(2));
-    let receipt = run_plan(&mut with_token, &plan, false).expect("authed");
+    let receipt = run_plan(&mut with_token, &plan, &RunOptions::new()).expect("authed");
     assert!(receipt.ok);
 
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -375,7 +376,7 @@ fn shutdown_recipe_requires_yes() {
     let recipe = parse_wants("hello\nshutdown", "bye").unwrap();
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
     let (mut client, shutdown) = spawn_todo();
-    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    let err = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
     assert!(matches!(err, RunError::NeedsYes));
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -391,7 +392,7 @@ invoke todo.toggle id=1
     let recipe = parse_wants(wants, "partial").unwrap();
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
     let (mut client, shutdown) = spawn_todo();
-    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    let err = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
     match err {
         RunError::Step { id, receipt, .. } => {
             assert_eq!(id, "s3");
@@ -417,7 +418,7 @@ invoke todo.toggle id=1
             );
             assert_eq!(receipt.steps[2].delivery_status, None, "{receipt:?}");
         }
-        other @ RunError::NeedsYes => panic!("unexpected {other}"),
+        other => panic!("unexpected {other}"),
     }
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -431,9 +432,11 @@ fn host_down_fails_without_running_later_steps() {
     let recipe = parse_wants("hello\nsnapshot", "down").unwrap();
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
     let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(250));
-    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    let err = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
     match err {
-        RunError::Step { id, receipt, error } => {
+        RunError::Step {
+            id, receipt, error, ..
+        } => {
             assert_eq!(id, "s1");
             assert!(!receipt.ok);
             assert_eq!(receipt.steps.len(), 1);
@@ -448,7 +451,7 @@ fn host_down_fails_without_running_later_steps() {
                 "{error}"
             );
         }
-        other @ RunError::NeedsYes => panic!("unexpected {other}"),
+        other => panic!("unexpected {other}"),
     }
 }
 
@@ -467,7 +470,7 @@ fn wrong_token_fails_closed() {
     let mut client = AgentClient::connect(addr)
         .with_token("wrong")
         .with_timeout(Duration::from_secs(2));
-    let err = run_plan(&mut client, &plan, false).unwrap_err();
+    let err = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
     match err {
         RunError::Step { error, receipt, .. } => {
             assert!(
@@ -477,7 +480,7 @@ fn wrong_token_fails_closed() {
             assert!(!receipt.ok);
             assert_eq!(receipt.steps.len(), 1);
         }
-        other @ RunError::NeedsYes => panic!("unexpected {other}"),
+        other => panic!("unexpected {other}"),
     }
 
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -491,14 +494,14 @@ fn second_recipe_reuses_same_client_session() {
     let snap_plan = compile_plan(&snap, &BTreeMap::new(), &todo_registry()).unwrap();
 
     let (mut client, shutdown) = spawn_todo();
-    let first = run_plan(&mut client, &hello_plan, false).expect("hello");
+    let first = run_plan(&mut client, &hello_plan, &RunOptions::new()).expect("hello");
     assert!(first.ok);
     assert!(
         client.has_session(),
         "first recipe should leave the TCP session open"
     );
 
-    let second = run_plan(&mut client, &snap_plan, false).expect("snapshot");
+    let second = run_plan(&mut client, &snap_plan, &RunOptions::new()).expect("snapshot");
     assert!(second.ok, "{second:?}");
     assert!(
         second.session_reused && client.has_session(),
@@ -515,14 +518,15 @@ fn headless_screenshots_are_honestly_unavailable() {
     let dir =
         std::env::temp_dir().join(format!("gpui-agent-shots-headless-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let capture = ScreenshotCapture {
-        dir: dir.clone(),
-        flagged_only: false,
-    };
+    let capture = ScreenshotCapture::new(dir.clone());
 
     let (mut client, shutdown) = spawn_todo();
-    let receipt = run_plan_with_screenshots(&mut client, &plan, false, Some(&capture))
-        .expect("recipe steps themselves succeed");
+    let receipt = run_plan(
+        &mut client,
+        &plan,
+        &RunOptions::new().with_screenshots(Some(capture)),
+    )
+    .expect("recipe steps themselves succeed");
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(receipt.screenshots.len(), 2);
     assert_eq!(receipt.steps.len(), 2);
@@ -577,6 +581,102 @@ impl AgentHost for PngHost {
     }
 }
 
+/// A host that speaks the protocol by hand and lists no
+/// `screenshot_inline`: it is sent a file name, writes the PNG under its own
+/// directory and answers with `path` as given (or with none).
+fn host_file_shot_host(reported: Option<&'static str>) -> std::net::SocketAddr {
+    use gpui_agent::protocol::{HelloAuth, PROTOCOL_VERSION, Request, Response};
+    use std::io::{BufRead, BufReader, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test fixture");
+    let addr = listener.local_addr().expect("test fixture");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().expect("test fixture"));
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let request: Request = serde_json::from_str(&line).expect("test fixture");
+                let mut response = Response::ok(&request.id);
+                match request.op {
+                    Op::Hello | Op::Wait { .. } => {
+                        response.hello = Some(HelloInfo {
+                            protocol: PROTOCOL_VERSION,
+                            app: "host-file-shots".into(),
+                            platform: PlatformKind::Headless,
+                            os: gpui_agent::protocol::host_os(),
+                            ready: true,
+                            deliveries: Vec::new(),
+                            auth: HelloAuth::None,
+                            bundle_id: None,
+                            executable: None,
+                            features: Vec::new(),
+                            framework: None,
+                            device: None,
+                        });
+                    }
+                    Op::Screenshot { path, inline, .. } => {
+                        assert!(!inline, "a host without the feature is not asked for bytes");
+                        assert_eq!(
+                            path.as_deref(),
+                            Some("001-wait.png"),
+                            "the host is sent the file name only"
+                        );
+                        response.result = Some(match reported {
+                            Some(path) => serde_json::json!({"path": path}),
+                            None => serde_json::json!({}),
+                        });
+                    }
+                    _ => response = Response::err(&request.id, "unexpected operation"),
+                }
+                let response = serde_json::to_string(&response).expect("test fixture");
+                if writeln!(stream, "{response}").is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    addr
+}
+
+#[test]
+fn host_written_step_png_is_reported_where_the_host_says() {
+    let recipe = gpui_agent_recipe::Recipe::from_json(
+        r#"{"name":"shots","steps":[{"id":"wait","op":"wait"}]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let dir = std::env::temp_dir().join(format!("gpui-agent-shots-host-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = |reported| {
+        let mut client = AgentClient::connect(host_file_shot_host(reported))
+            .with_timeout(Duration::from_secs(3));
+        let options = RunOptions::new().with_screenshots(Some(ScreenshotCapture::new(&dir)));
+        run_plan(&mut client, &plan, &options).unwrap()
+    };
+
+    let receipt = run(Some("/host/shots/001-wait.png"));
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(receipt.screenshots.len(), 1, "{receipt:?}");
+    assert!(receipt.screenshots[0].ok, "{receipt:?}");
+    assert_eq!(receipt.screenshots[0].path, "/host/shots/001-wait.png");
+    // The client wrote nothing: the file is the host's.
+    assert!(!dir.join("001-wait.png").exists());
+
+    // A host that names no path: the receipt falls back to the name it was
+    // asked to write, under the client's directory.
+    let receipt = run(None);
+    assert!(receipt.screenshots[0].ok, "{receipt:?}");
+    assert_eq!(
+        receipt.screenshots[0].path,
+        dir.join("001-wait.png").to_string_lossy()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn mocked_host_writes_step_pngs_onto_receipt() {
     let store = Arc::new(Mutex::new(PngHost {
@@ -598,27 +698,34 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
     let dir = std::env::temp_dir().join(format!("gpui-agent-shots-mock-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
-    let every = ScreenshotCapture {
-        dir: dir.clone(),
-        flagged_only: false,
-    };
-    let receipt = run_plan_with_screenshots(&mut client, &plan, false, Some(&every)).unwrap();
+    let every = ScreenshotCapture::new(dir.clone());
+    let receipt = run_plan(
+        &mut client,
+        &plan,
+        &RunOptions::new().with_screenshots(Some(every)),
+    )
+    .unwrap();
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(receipt.screenshots.len(), 2);
     assert!(receipt.screenshots.iter().all(|s| s.ok), "{receipt:?}");
-    let host_base = gpui_agent::screenshot_base_dir();
-    let wait_png = host_base.join("001-wait.png");
-    let add_png = host_base.join("002-add.png");
-    assert_eq!(std::fs::read(&wait_png).unwrap(), gpui_agent::TEST_PNG);
-    assert_eq!(std::fs::read(&add_png).unwrap(), gpui_agent::TEST_PNG);
+    // The receipt's path is where the file actually is: in the client's
+    // `--screenshot-dir`, not wherever the host happens to write.
+    assert_eq!(
+        receipt.screenshots[0].path,
+        dir.join("001-wait.png").to_string_lossy()
+    );
+    for shot in &receipt.screenshots {
+        assert_eq!(std::fs::read(&shot.path).unwrap(), gpui_agent::TEST_PNG);
+    }
 
     let flagged_dir = dir.join("flagged");
-    let flagged = ScreenshotCapture {
-        dir: flagged_dir,
-        flagged_only: true,
-    };
-    let flagged_receipt =
-        run_plan_with_screenshots(&mut client, &plan, false, Some(&flagged)).unwrap();
+    let flagged = ScreenshotCapture::new(flagged_dir.clone()).with_flagged_only(true);
+    let flagged_receipt = run_plan(
+        &mut client,
+        &plan,
+        &RunOptions::new().with_screenshots(Some(flagged)),
+    )
+    .unwrap();
     assert_eq!(flagged_receipt.screenshots.len(), 1);
     assert!(flagged_receipt.screenshots[0].ok);
     assert!(
@@ -626,11 +733,9 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
         "{flagged_receipt:?}"
     );
     assert_eq!(
-        std::fs::read(host_base.join("002-add.png")).unwrap(),
+        std::fs::read(flagged_dir.join("002-add.png")).unwrap(),
         gpui_agent::TEST_PNG
     );
-    let _ = std::fs::remove_file(host_base.join("001-wait.png"));
-    let _ = std::fs::remove_file(host_base.join("002-add.png"));
     let _ = std::fs::remove_dir_all(&dir);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }

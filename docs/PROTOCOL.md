@@ -71,7 +71,7 @@ servers close on bad JSON the same way.
 | `shutdown` | | Ask the host to exit |
 
 These are also the **only** first-class `gpui-agent` CLI commands (plus
-`mcp`, `run`, and experimental `recipe`). App-specific verbs are `invoke` names
+`mcp`, `run`, and `recipe`). App-specific verbs are `invoke` names
 or click targets — not new subcommands. `recipe` is a **client-side**
 batch of the ops above (`AgentClient` reuses one TCP session; `rpc_once`
 is the old reconnect path for benches). It is not a new wire `op`.
@@ -444,8 +444,8 @@ Reuse `gpui-agent-cli` unchanged. Details: [INTEGRATING.md](INTEGRATING.md).
 `wait`, `wait_until`, `hello`, `snapshot`, `screenshot`, `click`, `type`, `set_value`,
 `key`, `keybinding`, `keybindings`, `assert`, `invoke`, `shutdown`
 
-plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
-`recipe_resolve` (JSON canonical; client-side batching; see
+plus `recipe_validate` / `recipe_plan` / `recipe_run` and the
+experimental `recipe_resolve` (JSON canonical; client-side batching; see
 [RECIPES.md](RECIPES.md)), and — with the `instinct` build feature, on
 by default — `locate` (ranked target resolution, abstains instead of
 guessing), `act` (resolve → fingerprint-gated dispatch → re-observe →
@@ -553,4 +553,4 @@ The host picks its own listen port. On bind it writes a JSON record (address, pi
 - Experimental recipes ([RECIPES.md](RECIPES.md)) batch existing ops on
   the client. Additive only; servers that never heard of recipes still
   speak v1 NDJSON one request at a time. Caps and fail-closed invoke:
-  [SECURITY.md](SECURITY.md#recipes-experimental).
+  [SECURITY.md](SECURITY.md#recipes).

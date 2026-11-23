@@ -147,7 +147,7 @@ Same generic ops as the CLI. Stdio lines are now capped at `MAX_LINE_BYTES`.
 Framing is still newline JSON, not MCP `Content-Length` (product gap).
 The parent process is trusted.
 
-### Recipes (experimental)
+### Recipes
 
 `gpui-agent recipe run` and MCP `recipe_run` compile a local **JSON**
 recipe (`.wants` also accepted) into ordinary protocol ops and send

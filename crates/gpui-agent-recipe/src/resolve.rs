@@ -2,11 +2,13 @@ use gpui_agent::protocol::{AssertSpec, Op};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::error::{RecipeError, RecipeErrorCode, err};
 use crate::registry::Registry;
 use crate::schema::{Effect, SchemaKind};
 
 /// A `$param`/slot filled while materializing an op.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct TokenFill {
     /// The placeholder name.
     pub name: String,
@@ -18,6 +20,7 @@ pub struct TokenFill {
 
 /// An intent resolved to a schema-backed op.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct ResolveResult {
     /// Winning schema name.
     pub schema: String,
@@ -46,17 +49,14 @@ pub struct ResolveResult {
 /// original keyword scorer runs unchanged.
 ///
 /// # Errors
-/// A message on empty/ambiguous intent, a missing schema, or a `title`/
-/// `id` token an invoke needs that cannot be extracted.
-pub fn resolve_intent(intent: &str, registry: &Registry) -> Result<ResolveResult, String> {
+/// [`RecipeErrorCode::Unresolved`] on empty/ambiguous intent, a missing
+/// schema, or a `title`/`id` token an invoke needs that cannot be extracted.
+pub fn resolve_intent(intent: &str, registry: &Registry) -> Result<ResolveResult, RecipeError> {
     #[cfg(feature = "instinct")]
-    {
-        instinct_resolve::resolve(intent, registry)
-    }
+    let resolved = instinct_resolve::resolve(intent, registry);
     #[cfg(not(feature = "instinct"))]
-    {
-        resolve_intent_keywords(intent, registry)
-    }
+    let resolved = resolve_intent_keywords(intent, registry);
+    resolved.map_err(|message| err(RecipeErrorCode::Unresolved, message))
 }
 
 #[cfg(not(feature = "instinct"))]
@@ -253,13 +253,19 @@ fn invoke_args_from_intent(
 /// `intent`.
 ///
 /// # Errors
-/// A message when the schema is not an invoke or a `title`/`id` token
-/// it needs cannot be extracted from `intent`.
-pub fn invoke_args(schema: &crate::schema::OpSchema, intent: &str) -> Result<Value, String> {
+/// [`RecipeErrorCode::UnknownInvoke`] when the schema is not an invoke;
+/// [`RecipeErrorCode::Unresolved`] when a `title`/`id` token it needs
+/// cannot be extracted from `intent`.
+pub fn invoke_args(schema: &crate::schema::OpSchema, intent: &str) -> Result<Value, RecipeError> {
     if schema.kind != SchemaKind::Invoke {
-        return Err(format!("{} is not an invoke schema", schema.name));
+        return Err(err(
+            RecipeErrorCode::UnknownInvoke,
+            format!("{} is not an invoke schema", schema.name),
+        ));
     }
-    invoke_args_from_intent(intent, schema).map(|(args, _)| Value::Object(args))
+    invoke_args_from_intent(intent, schema)
+        .map(|(args, _)| Value::Object(args))
+        .map_err(|message| err(RecipeErrorCode::Unresolved, message))
 }
 
 fn required_target(intent: &str, fills: &mut Vec<TokenFill>) -> Result<String, String> {
@@ -683,7 +689,7 @@ mod instinct_resolve {
                 idempotent: true,
                 verified: true,
                 required: vec![],
-                args: BTreeMap::new(),
+                args: None,
                 result: None,
                 keywords: keywords.iter().map(|s| (*s).to_string()).collect(),
             }
@@ -1127,7 +1133,9 @@ mod tests {
 
     #[test]
     fn unknown_intent_fails_closed() {
-        let err = resolve_intent("rm -rf /", &todo_registry()).unwrap_err();
+        let err = resolve_intent("rm -rf /", &todo_registry())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("fail closed"), "{err}");
     }
 
@@ -1147,7 +1155,9 @@ mod tests {
 
     #[test]
     fn empty_intent_fails_closed() {
-        let err = resolve_intent("   ", &todo_registry()).unwrap_err();
+        let err = resolve_intent("   ", &todo_registry())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("empty"), "{err}");
     }
 
@@ -1159,7 +1169,9 @@ mod tests {
             "bash -c 'reboot'",
             "frobnicate xyzzy",
         ] {
-            let err = resolve_intent(intent, &todo_registry()).unwrap_err();
+            let err = resolve_intent(intent, &todo_registry())
+                .unwrap_err()
+                .to_string();
             assert!(err.contains("fail closed"), "{intent}: {err}");
         }
     }
@@ -1167,25 +1179,33 @@ mod tests {
     #[test]
     fn ambiguous_short_intent_fails_closed() {
         // `todo` ties todo.add / todo.toggle / todo.delete at the same score.
-        let err = resolve_intent("todo", &todo_registry()).unwrap_err();
+        let err = resolve_intent("todo", &todo_registry())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("ambiguous"), "{err}");
     }
 
     #[test]
     fn invoke_without_required_title_fails() {
-        let err = resolve_intent("todo.add", &todo_registry()).unwrap_err();
+        let err = resolve_intent("todo.add", &todo_registry())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("title"), "{err}");
     }
 
     #[test]
     fn invoke_without_required_id_fails() {
-        let err = resolve_intent("todo.toggle", &todo_registry()).unwrap_err();
+        let err = resolve_intent("todo.toggle", &todo_registry())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("id"), "{err}");
     }
 
     #[test]
     fn click_without_stable_id_fails() {
-        let err = resolve_intent("click the button", &todo_registry()).unwrap_err();
+        let err = resolve_intent("click the button", &todo_registry())
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("stable id") || err.contains("fail closed") || err.contains("ambiguous"),
             "{err}"
@@ -1195,7 +1215,9 @@ mod tests {
     #[test]
     fn type_and_key_intents_do_not_materialize_from_prose() {
         for intent in ["type", "key"] {
-            let err = resolve_intent(intent, &todo_registry()).unwrap_err();
+            let err = resolve_intent(intent, &todo_registry())
+                .unwrap_err()
+                .to_string();
             assert!(
                 err.contains("materialize")
                     || err.contains("fail closed")

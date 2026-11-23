@@ -2,11 +2,15 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{RecipeError, RecipeErrorCode, err};
+
 /// TMP-shaped operation contract: effects, required inputs, result hint.
 ///
 /// This is a local mapping schema, not a `tmp-core` dependency. Unknown
-/// intents fail closed; nothing here shells out.
+/// intents fail closed; nothing here shells out. In code, start from
+/// [`OpSchema::new`] and set the fields that apply.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct OpSchema {
     /// Stable schema name (`todo.add`, `click`, `shutdown`).
     pub name: String,
@@ -27,9 +31,16 @@ pub struct OpSchema {
     /// Arg names that must be filled before dispatch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required: Vec<String>,
-    /// Per-arg type specs for `Invoke` schemas.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub args: BTreeMap<String, ArgSchema>,
+    /// Per-arg type specs for `Invoke` schemas. `None` (the file leaves
+    /// `args` out): the invoke's args are not listed, and only `required`
+    /// is enforced. `Some` (even `{}`): these are all of them, and an arg
+    /// named neither here nor in `required` is refused.
+    #[serde(
+        default,
+        deserialize_with = "listed_args",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub args: Option<BTreeMap<String, ArgSchema>>,
     /// Expected result shape (documentation/eval only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
@@ -38,13 +49,18 @@ pub struct OpSchema {
     pub keywords: Vec<String>,
 }
 
+/// `args` when the file writes it: a map, never `null`. Left out, the
+/// field's default (`None`) applies and this is not called.
+fn listed_args<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, ArgSchema>>, D::Error> {
+    BTreeMap::deserialize(deserializer).map(Some)
+}
+
 /// How a schema name maps onto the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
-)]
+#[non_exhaustive]
 pub enum SchemaKind {
     /// A first-class protocol op (`click`, `snapshot`, …).
     Protocol,
@@ -57,10 +73,7 @@ pub enum SchemaKind {
 /// A schema's declared side effects (fail closed: unknown = Write).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
-)]
+#[non_exhaustive]
 pub enum Effect {
     /// Observation only.
     Read,
@@ -72,6 +85,7 @@ pub enum Effect {
 
 /// Type/required spec for one `Invoke` arg.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ArgSchema {
     /// Wire type name (`string`, `number`, `bool`, …).
     #[serde(rename = "type")]
@@ -81,38 +95,77 @@ pub struct ArgSchema {
     pub required: bool,
 }
 
+impl ArgSchema {
+    /// An optional arg of wire type `ty`.
+    pub fn new(ty: impl Into<String>) -> Self {
+        Self {
+            ty: ty.into(),
+            required: false,
+        }
+    }
+}
+
 impl OpSchema {
+    /// The spec of arg `name`, when `args` lists it.
+    pub fn arg(&self, name: &str) -> Option<&ArgSchema> {
+        self.args.as_ref()?.get(name)
+    }
+
+    /// A schema with only its name, kind and description: no declared
+    /// effects (treated as Write), args not listed, not idempotent, not
+    /// verified.
+    pub fn new(name: impl Into<String>, kind: SchemaKind, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            description: description.into(),
+            effects: Vec::new(),
+            idempotent: false,
+            verified: false,
+            required: Vec::new(),
+            args: None,
+            result: None,
+            keywords: Vec::new(),
+        }
+    }
+
     /// Reject empty/invalid names and `required` entries with no
     /// `args` spec. Duplicate names are the registry's job:
     /// [`Registry::insert`](crate::registry::Registry::insert) replaces,
     /// [`Registry::merge`](crate::registry::Registry::merge) rejects.
     ///
     /// # Errors
-    /// A message naming the broken invariant.
-    pub fn validate(&self) -> Result<(), String> {
+    /// [`RecipeErrorCode::InvalidSchema`] naming the broken invariant.
+    pub fn validate(&self) -> Result<(), RecipeError> {
         if self.name.trim().is_empty() {
-            return Err("schema name cannot be empty".into());
+            return Err(err(
+                RecipeErrorCode::InvalidSchema,
+                "schema name cannot be empty",
+            ));
         }
         if self
             .name
             .chars()
             .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
         {
-            return Err(format!(
-                "schema name `{}` must be alphanumeric plus _-. ",
-                self.name
+            return Err(err(
+                RecipeErrorCode::InvalidSchema,
+                format!("schema name `{}` must be alphanumeric plus _-. ", self.name),
             ));
         }
         for req in &self.required {
-            if !self.args.contains_key(req)
+            if self.arg(req).is_none()
                 && !matches!(
                     req.as_str(),
                     "target" | "text" | "value" | "key" | "name" | "binding" | "scope"
                 )
             {
-                return Err(format!(
-                    "schema `{}` lists required `{req}` with no args entry",
-                    self.name
+                return Err(err(
+                    RecipeErrorCode::InvalidSchema,
+                    format!(
+                        "schema `{}` lists required `{req}` with no args entry",
+                        self.name
+                    ),
                 ));
             }
         }
@@ -134,7 +187,7 @@ mod tests {
             idempotent: true,
             verified: true,
             required: vec![],
-            args: BTreeMap::new(),
+            args: None,
             result: None,
             keywords: vec![],
         };
@@ -151,7 +204,7 @@ mod tests {
             idempotent: false,
             verified: false,
             required: vec![],
-            args: BTreeMap::new(),
+            args: None,
             result: None,
             keywords: vec![],
         };
@@ -168,11 +221,11 @@ mod tests {
             idempotent: false,
             verified: false,
             required: vec!["payload".into()],
-            args: BTreeMap::new(),
+            args: None,
             result: None,
             keywords: vec![],
         };
-        let err = schema.validate().unwrap_err();
+        let err = schema.validate().unwrap_err().to_string();
         assert!(err.contains("payload"), "{err}");
     }
 }
