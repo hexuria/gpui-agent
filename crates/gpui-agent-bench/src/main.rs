@@ -281,7 +281,7 @@ fn cmd_resolve(corpus: &Path, arm: &str, attempts: u32, out: &Path) -> i32 {
                     rec.insert("got".into(), Value::Null);
                     rec.insert("refused".into(), json!(true));
                     rec.insert("pass".into(), json!(row.expect == "abstain"));
-                    rec.insert("detail".into(), json!(e));
+                    rec.insert("detail".into(), json!(e.to_string()));
                 }
             }
             emit(&mut file, &rec);

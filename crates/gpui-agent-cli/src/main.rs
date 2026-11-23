@@ -801,7 +801,14 @@ fn run() -> Result<()> {
     }
     if let Command::Recipe { schema, action } = cli.command {
         let client = if matches!(action, RecipeCommand::Run { .. }) {
-            let token = require_recipe_mcp_token(token.as_deref())?;
+            // Rejected before running: typed, so `main` prints its envelope.
+            let token = require_recipe_mcp_token(token.as_deref()).map_err(|err| {
+                anyhow::Error::new(CallFailure::with_code(
+                    err.to_string(),
+                    gpui_agent::error_code::UNAUTHORIZED,
+                    None,
+                ))
+            })?;
             Some(connect(addr, request_timeout).with_token(token))
         } else {
             None

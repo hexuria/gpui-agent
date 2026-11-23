@@ -50,6 +50,34 @@ fn recipe_run_without_token_fails_fast() {
         !err.contains("no-such-recipe"),
         "must fail before opening the recipe: {err}"
     );
+    // Rejected before running: the envelope is on stdout all the same.
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout_of(&output)).expect("envelope on stdout");
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(envelope["error_code"], "unauthorized", "{envelope}");
+    assert!(err.contains(envelope["error"].as_str().unwrap()), "{err}");
+}
+
+#[test]
+fn recipe_run_flagged_without_dir_prints_an_envelope() {
+    let output = cli_bin()
+        .args(["--addr", "127.0.0.1:1", "--token", "t"])
+        .args(["recipe", "run", "/no-such-recipe.json"])
+        .arg("--screenshot-flagged")
+        .output()
+        .expect("spawn");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout_of(&output)).expect("envelope on stdout");
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(envelope["error_code"], "bad_request", "{envelope}");
+    assert!(
+        envelope["error"]
+            .as_str()
+            .unwrap()
+            .contains("--screenshot-dir"),
+        "{envelope}"
+    );
 }
 
 #[test]

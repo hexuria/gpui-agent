@@ -102,18 +102,20 @@ pub(crate) fn run(
             screenshot_flagged,
         } => {
             let mut client = client.context("recipe run needs a client")?;
+            // Rejected before running: typed, so `main` prints its envelope.
             if screenshot_flagged && screenshot_dir.is_none() {
-                return Err(anyhow!(
-                    "--screenshot-flagged requires --screenshot-dir DIR"
-                ));
+                return Err(anyhow::Error::new(CallFailure::with_code(
+                    "--screenshot-flagged requires --screenshot-dir DIR",
+                    gpui_agent::error_code::BAD_REQUEST,
+                    None,
+                )));
             }
             let recipe = parse_recipe(&path).map_err(anyhow::Error::new)?;
             let set = parse_set(&set)?;
             let plan = compile_plan(&recipe, &set, &registry).map_err(anyhow::Error::new)?;
-            let capture = screenshot_dir.as_ref().map(|dir| ScreenshotCapture {
-                dir: dir.clone(),
-                flagged_only: screenshot_flagged,
-            });
+            let capture = screenshot_dir
+                .as_ref()
+                .map(|dir| ScreenshotCapture::new(dir).with_flagged_only(screenshot_flagged));
             let options = RunOptions::new().with_yes(yes).with_screenshots(capture);
             match run_plan(&mut client, &plan, &options) {
                 Ok(receipt) => {
@@ -209,5 +211,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("--screenshot-dir"), "{err}");
+        let failure = err.downcast_ref::<CallFailure>().expect("typed");
+        assert_eq!(failure.error_code, gpui_agent::error_code::BAD_REQUEST);
     }
 }

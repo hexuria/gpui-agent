@@ -629,7 +629,10 @@
               "const": "wait"
             },
             "timeout_ms": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "minimum": 0
             }
           },

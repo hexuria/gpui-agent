@@ -42,8 +42,12 @@ recipe with an unsupported `v` is rejected with
 `recipe_unsupported_version`, never run best-effort.
 
 Rust callers: `RecipeErrorCode`, `RunError`, `SchemaKind`, `Effect` and
-the plan/receipt structs are `#[non_exhaustive]`. Add a wildcard arm
-when matching, and read struct fields rather than constructing them.
+every public struct are `#[non_exhaustive]`. Add a wildcard arm when
+matching, and read struct fields rather than writing a struct literal.
+Build with `Recipe::new`, `RecipeStep::new`, `OpSchema::new`,
+`ArgSchema::new`, `ScreenshotCapture::new`, `RunOptions::new` and
+`Param::named`, then set fields; a recipe or schema file is read with
+`Recipe::from_json` / `load_schema_file`.
 
 ## Recipe format
 
@@ -134,10 +138,15 @@ A `params` entry is a bare name (a required string) or an object:
 | `type` | `string` (default), `number`, `integer`, `bool` |
 | `required` | Default `true`, or `false` when `default` is set. `true` with a `default` is rejected |
 | `default` | Used when the caller gives no value; must itself pass the checks |
-| `enum` | Non-empty list; the value must equal one entry |
+| `enum` | Non-empty list; the value must equal one entry. `number` and `integer` entries compare as numbers (`1`, `1.0` and `1e0` are one value); the rest compare as text |
 | `pattern` | `string` params only. Regular expression that must match somewhere in the value; anchor with `^…$` |
 | `description` | Free text for people and form builders |
 
+- The input schema `validate` prints carries `pattern` only when the
+  expression reads the same in ECMAScript, which is what JSON Schema
+  validators run. One that uses syntax only this tool reads (an inline
+  flag such as `(?i)`, `(?P<name>…)`, `\A`, `\z`, `[[:alpha:]]`) is left
+  out of the schema and still checked at `plan` / `run`.
 - A value that fails `type`, `enum`, or `pattern` fails `plan` / `run`
   with `recipe_invalid_param_value`. A bad declaration fails `validate`
   with `recipe_invalid_param`; an unknown key in the object fails with
@@ -341,7 +350,7 @@ violation rather than the first.
 | `error_code` | Raised by | Meaning |
 | --- | --- | --- |
 | `recipe_io` | all | A recipe or schema file could not be read |
-| `recipe_parse` | all | Not valid JSON / `.wants`, or a field has the wrong type |
+| `recipe_parse` | all | Not valid JSON / `.wants`, a JSON key written twice in one object, or a field has the wrong type |
 | `recipe_unknown_field` | all | A key the recipe format or the step's op does not have |
 | `recipe_unsupported_version` | validate | `v` is not `1` |
 | `recipe_invalid` | validate | Empty name, no steps, or more than 256 steps |
