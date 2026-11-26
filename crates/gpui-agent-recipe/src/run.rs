@@ -358,12 +358,15 @@ pub(crate) fn paced_type_ms(text: &str, delay: u64) -> u64 {
 ///   has a character with no keystroke (`text_keystrokes`) fails before
 ///   any key is sent, as one virtual `type` does.
 /// - **The focus is the target's once:** the first key goes to the step's
-///   target, which the host focuses. Every later key goes to the node that
-///   holds the focus then (read from a snapshot), so a host that focuses a
-///   `type` target that is not focused yet never presses the box again:
-///   the caret stays after the typed text, and a code box whose focus moves
-///   on with each digit keeps it there. With no focused node in the tree,
-///   the key goes to the target.
+///   target, which the host focuses. A later key goes to the target, or to
+///   the editable node beside it that the focus moved to (the next cell of
+///   a code box), read from a snapshot before the key: a host that focuses
+///   only an unfocused `type` target never presses the box again, so the
+///   caret stays after the typed text ([`next_key_target`]). Focus that
+///   goes anywhere else stops the step as a partial delivery.
+/// - Between that snapshot and the key the focus could still move (an
+///   app's own timer): the key is not gated on a fingerprint, since the
+///   value a controlled input echoes back may change in that window.
 /// - **A key the host refuses stops the step.** After the first key that
 ///   is a partial delivery: the error says how many keys reached the app
 ///   and the status is `delivery_uncertain`, so a caller does not retry
@@ -398,13 +401,52 @@ fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, C
         ));
     }
     let total = keys.len();
+    // Who had the focus before the first key: a host whose `type` does not
+    // move the focus leaves it there, and the keys still go to the target.
+    let before = match client.snapshot() {
+        Ok(resp) => resp.tree.as_ref().and_then(|tree| focused_in(&tree.nodes)),
+        Err(error) => {
+            let code = error_code_of(&error);
+            return Err(CallFailure::with_code(
+                format!("paced type: no snapshot before the first key: {error}"),
+                code,
+                Some(DeliveryStatus::NotDelivered),
+            ));
+        }
+    };
     let mut to = target.clone();
+    let mut followed = false;
     let mut last = None;
     let mut due = Instant::now();
     for (index, key) in keys.into_iter().enumerate() {
         if index > 0 {
-            if let Some(focused) = focused_node(client) {
-                to = focused;
+            let tree = match client.snapshot() {
+                Ok(resp) => resp.tree.unwrap_or_else(empty_tree),
+                Err(error) => {
+                    let code = error_code_of(&error);
+                    return Err(CallFailure::with_code(
+                        partial(
+                            index,
+                            total,
+                            &format!("no snapshot to follow the focus: {error}"),
+                        ),
+                        code,
+                        Some(DeliveryStatus::DeliveryUncertain),
+                    ));
+                }
+            };
+            match next_key_target(&tree.nodes, target, before.as_deref(), followed) {
+                Ok((next, follows)) => {
+                    to = next;
+                    followed = followed || follows;
+                }
+                Err(why) => {
+                    return Err(CallFailure::with_code(
+                        partial(index, total, &why),
+                        gpui_agent::error_code::HOST_ERROR,
+                        Some(DeliveryStatus::DeliveryUncertain),
+                    ));
+                }
             }
             let now = Instant::now();
             if due > now {
@@ -453,10 +495,79 @@ fn partial(index: usize, total: usize, error: &str) -> String {
     )
 }
 
-/// The id of the node that holds the keyboard focus, if the host reports one.
-fn focused_node(client: &mut AgentClient) -> Option<String> {
-    let tree = client.snapshot().ok()?.tree?;
-    focused_in(&tree.nodes)
+/// Where the next key of a paced `type` aimed at `target` goes, from the
+/// tree after the key before it: `(id, whether it follows the focus)`.
+///
+/// - The target or an editable node beside it (a child of the target's
+///   parent: the next cell of a code box) has the focus: that node.
+/// - The focus has not moved since before the first key, and never went
+///   to the target or beside it (a host whose `type` does not move the
+///   focus): the target.
+/// - No node has the focus and it never was on the target or beside it
+///   (a host that reports no focus): the target.
+/// - Anything else (an autocomplete or a dialog took the focus, a line
+///   break moved it to another form, the focus left the code box):
+///   `Err`, naming where the focus went.
+fn next_key_target(
+    nodes: &[gpui_agent::UiNode],
+    target: &str,
+    before: Option<&str>,
+    followed: bool,
+) -> Result<(String, bool), String> {
+    let focused = focused_in(nodes);
+    let beside = beside(nodes, target);
+    match focused {
+        Some(id) if id == target => Ok((id, true)),
+        Some(id) if !followed && before == Some(id.as_str()) => Ok((target.to_owned(), false)),
+        Some(id) if beside.iter().any(|node| node == &id) => Ok((id, true)),
+        None if !followed => Ok((target.to_owned(), false)),
+        Some(id) => Err(format!("the focus left `{target}` for `{id}`")),
+        None => Err(format!("the focus left `{target}` and no node has it")),
+    }
+}
+
+/// The editable nodes beside `target`: the other children of its parent.
+fn beside(nodes: &[gpui_agent::UiNode], target: &str) -> Vec<String> {
+    fn editable(node: &gpui_agent::UiNode) -> bool {
+        node.enabled
+            && matches!(
+                node.role.as_str(),
+                "textbox" | "textfield" | "searchbox" | "combobox"
+            )
+    }
+    fn parent_of<'a>(
+        nodes: &'a [gpui_agent::UiNode],
+        target: &str,
+    ) -> Option<&'a gpui_agent::UiNode> {
+        nodes.iter().find_map(|node| {
+            if node.children.iter().any(|child| child.id == target) {
+                Some(node)
+            } else {
+                parent_of(&node.children, target)
+            }
+        })
+    }
+    parent_of(nodes, target)
+        .map(|parent| {
+            parent
+                .children
+                .iter()
+                .filter(|child| child.id != target && editable(child))
+                .map(|child| child.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A tree with no nodes (a snapshot reply without one).
+fn empty_tree() -> gpui_agent::UiTree {
+    gpui_agent::UiTree {
+        app: String::new(),
+        platform: gpui_agent::PlatformKind::Headless,
+        ready: false,
+        nodes: Vec::new(),
+        rev: None,
+    }
 }
 
 /// The innermost focused node of `nodes`, depth first.
@@ -615,6 +726,58 @@ mod tests {
             schema: Some("click".into()),
             idempotent: false,
         }
+    }
+
+    fn boxes(focused: Option<&str>) -> Vec<gpui_agent::UiNode> {
+        let input = |id: &str| {
+            let mut node = gpui_agent::UiNode::textbox(id, id);
+            node.focused = focused == Some(id);
+            node
+        };
+        let mut code = gpui_agent::UiNode::new("code", "group", "Code");
+        code.children = vec![input("cell-0"), input("cell-1")];
+        let mut form = gpui_agent::UiNode::new("form", "group", "Form");
+        form.children = vec![input("amount"), code];
+        vec![form, input("elsewhere")]
+    }
+
+    #[test]
+    fn the_next_key_follows_the_focus_only_inside_the_targets_group() {
+        let next = |focused, target, before, followed| {
+            next_key_target(&boxes(focused), target, before, followed)
+        };
+        assert_eq!(
+            next(Some("cell-1"), "cell-0", None, false),
+            Ok(("cell-1".into(), true))
+        );
+        assert_eq!(
+            next(Some("amount"), "amount", None, false),
+            Ok(("amount".into(), true))
+        );
+        // A host whose type does not move the focus: the keys stay on the target.
+        assert_eq!(
+            next(Some("elsewhere"), "amount", Some("elsewhere"), false),
+            Ok(("amount".into(), false))
+        );
+        assert_eq!(
+            next(None, "amount", None, false),
+            Ok(("amount".into(), false))
+        );
+        // Anywhere else, or gone after the focus was on the target.
+        assert!(
+            next(Some("elsewhere"), "amount", None, false)
+                .unwrap_err()
+                .contains("`elsewhere`")
+        );
+        assert!(
+            next(Some("cell-0"), "amount", None, true).is_err(),
+            "not beside amount"
+        );
+        assert!(
+            next(None, "cell-0", None, true)
+                .unwrap_err()
+                .contains("no node has it")
+        );
     }
 
     #[test]

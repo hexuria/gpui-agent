@@ -181,15 +181,27 @@ request per character, `key_delay_ms` apart, as a person types.
 - **Nothing new on the wire.** The host sees ordinary `type` requests, so a
   paced step runs against any host that takes `type`.
 - **The target is focused once.** The first key goes to the step's
-  target; every later key goes to the node that has the focus then, read
-  from a snapshot before the key. So a host that focuses an unfocused
-  `type` target (a press) presses the box once: the caret stays after
-  the typed text, and a code box whose focus moves to its next cell with
-  each digit gets one digit per cell. With no focused node in the tree,
-  every key goes to the target. Whether a box keeps its caret also depends
-  on the host focusing only an unfocused target: NSH's strict hosts do
-  (and an NSH code box is one text field over its cells); a host that
-  presses its target on every `type` moves the caret on every key.
+  target. Before every later key the client reads a snapshot, and the key
+  goes to:
+  - the target, while it has the focus;
+  - an editable node beside it (another child of the target's parent)
+    that the focus moved to: the next cell of a code box whose focus
+    moves on with each digit;
+  - the target, while the focus has not moved from where it was before
+    the first key (a host whose `type` does not focus its target), or no
+    node has ever reported it.
+  Anywhere else (an autocomplete or a dialog took it, a line break moved
+  it to another form, it left the code box) the step stops as a partial
+  delivery: `the focus left <target> for <node>`. So a host that focuses
+  only an unfocused `type` target presses the box once, and its caret
+  stays after the typed text. NSH's strict hosts do (and an NSH code box
+  is one text field over its cells); a host that presses its target on
+  every `type` moves the caret on every key.
+- **No fingerprint on the later keys.** Between the snapshot and the key
+  the focus could still move (an app's own timer); the later keys carry
+  no `expect_fingerprint`, since the value a controlled input echoes back
+  may change in that window. Each snapshot is a whole tree (a diff
+  against `since` would be cheaper on a large form).
 - **All or nothing before the first key.** A `virtual` step whose text has
   a character with no keystroke (only ASCII, space, `\n` and `\t` have one)
   fails before any key is sent, as one virtual `type` does.
@@ -209,8 +221,8 @@ request per character, `key_delay_ms` apart, as a person types.
 - **A key is a Unicode scalar value, not a grapheme:** a combining mark or
   a joined emoji goes as its parts (`\r\n` stays one key). Type such text
   without pacing.
-- Only the first key carries `expect_fingerprint`: each key changes the
-  node's value, and with it the fingerprint.
+- Only the first key carries the step's `expect_fingerprint`: each key
+  changes the node's value, and with it the fingerprint.
 - `key_delay_ms` is not part of the plan [fingerprint](#plan): it changes
   how the text is delivered, not what the plan does.
 - A 0.4.0 client refuses the field (`recipe_unknown_field`): a recipe that

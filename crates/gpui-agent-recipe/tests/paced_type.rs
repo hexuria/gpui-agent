@@ -31,6 +31,11 @@ struct Inputs {
     typed: Vec<(String, String, Option<u64>)>,
     /// How many times a `type` had to focus its target.
     focus_presses: usize,
+    /// A host whose `type` does not move the focus (it calls the box's
+    /// handler without focusing it).
+    still: bool,
+    /// After this many `type`s, an autocomplete list takes the focus.
+    steal_after: Option<usize>,
 }
 
 const CELLS: usize = 6;
@@ -41,7 +46,7 @@ fn cell(index: usize) -> String {
 
 impl Inputs {
     fn focus(&mut self, target: &str) {
-        if self.focused.as_deref() != Some(target) {
+        if !self.still && self.focused.as_deref() != Some(target) {
             self.focus_presses += 1;
             self.focused = Some(target.to_owned());
             // A press lands in the middle of the box: on a filled amount
@@ -90,6 +95,11 @@ impl AgentHost for Inputs {
             ));
         }
         nodes.push(group);
+        // An autocomplete's list, and the first box of the next screen.
+        nodes.push(input("suggestions", String::new()));
+        let mut next = UiNode::new("next", "group", "Next");
+        next.children.push(input("next-field", String::new()));
+        nodes.push(next);
         UiTree {
             app: "inputs".into(),
             platform: PlatformKind::Desktop,
@@ -111,11 +121,25 @@ impl AgentHost for Inputs {
         };
         self.typed
             .push((target.clone(), text.clone(), *expect_fingerprint));
-        match target.as_str() {
+        let result = self.type_into(target, text);
+        if self.steal_after == Some(self.typed.len()) {
+            self.focused = Some("suggestions".into());
+        }
+        result
+    }
+}
+
+impl Inputs {
+    fn type_into(&mut self, target: &str, text: &str) -> Result<DispatchResult, String> {
+        match target {
             "amount" => {
                 self.focus(target);
                 self.amount.insert_str(self.caret, text);
                 self.caret += text.len();
+                // A line break submits the form: the next screen's first box.
+                if text == "\n" {
+                    self.focused = Some("next-field".into());
+                }
             }
             "strict" => {
                 if text.contains('x') {
@@ -297,4 +321,69 @@ fn a_paced_type_longer_than_two_minutes_is_refused_before_it_runs() {
     ))
     .unwrap();
     compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).expect("12 pauses of 10 s fit");
+}
+
+#[test]
+fn a_focus_thief_stops_the_step_with_the_keys_it_typed() {
+    let host = TestHost::spawn(
+        Inputs {
+            steal_after: Some(2),
+            ..Inputs::default()
+        },
+        None,
+    )
+    .unwrap();
+    let Err(RunError::Step { error, receipt, .. }) = run(&host, &paced("amount", "1234", None))
+    else {
+        panic!("the focus went to the suggestions");
+    };
+    assert!(
+        error.contains("stopped at key 3 of 4") && error.contains("for `suggestions`"),
+        "{error}"
+    );
+    assert_eq!(
+        receipt.steps.last().unwrap().delivery_status,
+        Some(DeliveryStatus::DeliveryUncertain)
+    );
+    let inputs = host.host();
+    let inputs = inputs.lock().unwrap();
+    assert_eq!(inputs.amount, "12");
+    assert!(
+        inputs.typed.iter().all(|(target, ..)| target == "amount"),
+        "nothing went to the suggestions"
+    );
+}
+
+#[test]
+fn a_line_break_that_moves_to_another_form_stops_the_step() {
+    let host = TestHost::spawn(Inputs::default(), None).unwrap();
+    let Err(RunError::Step { error, .. }) = run(&host, &paced("amount", "12\\n34", None)) else {
+        panic!("the focus went to the next screen");
+    };
+    assert!(error.contains("for `next-field`"), "{error}");
+    let inputs = host.host();
+    let inputs = inputs.lock().unwrap();
+    assert_eq!(inputs.amount, "12\n");
+    assert!(inputs.typed.iter().all(|(target, ..)| target == "amount"));
+}
+
+#[test]
+fn semantic_typing_into_a_box_while_another_has_the_focus_stays_in_the_box() {
+    let host = TestHost::spawn(
+        Inputs {
+            still: true,
+            focused: Some("strict".into()),
+            ..Inputs::default()
+        },
+        None,
+    )
+    .unwrap();
+    run(&host, &paced("amount", "123", None)).expect("run");
+    let inputs = host.host();
+    let inputs = inputs.lock().unwrap();
+    assert_eq!(inputs.amount, "123");
+    assert_eq!(
+        inputs.strict, "",
+        "nothing went to the box that had the focus"
+    );
 }
