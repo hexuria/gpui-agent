@@ -85,6 +85,7 @@ Each step:
 | `op` | Yes | A protocol op name, snake_case (`set_value`, `wait_until`, …) |
 | `needs` | No | Ids of other steps; no duplicates, no self, no `$param`, no cycle |
 | `screenshot` | No | `true` marks the step for `--screenshot-flagged` |
+| `key_delay_ms` | No | `type` only: [pace](#paced-typing) the text, this many milliseconds (1 to 10000) between two keys |
 | op fields | Per op | The same fields the op takes on the wire ([PROTOCOL.md](PROTOCOL.md)) |
 
 **Unknown fields are errors**, at the top level and in a step. A step may
@@ -171,6 +172,28 @@ A `params` entry is a bare name (a required string) or an object:
   built from `params`, for callers that collect or check the values
   before running.
 
+### Paced typing
+
+A `type` step sends its text as one request. With `key_delay_ms` the
+client sends it one character at a time instead: one ordinary `type`
+request per character (Unicode scalar value; `\r\n` stays one), waiting
+`key_delay_ms` between two of them, as a person types. Input that only
+goes wrong when keys arrive faster than a person types them (a masked
+amount box, a code box that moves the focus on each digit) then behaves
+as it does under a person's hands.
+
+- The host sees ordinary `type` requests, so a paced step runs against
+  any host that takes `type`; nothing new crosses the wire.
+- The step stops at the first key the host refuses, and fails with that
+  refusal. Its receipt `result` is the last key's.
+- Only the first key carries `expect_fingerprint`: each key changes the
+  node's value, and with it the fingerprint.
+- `key_delay_ms` is not part of the plan [fingerprint](#plan): it changes
+  how the text is delivered, not what the plan does.
+- `recipe validate` refuses `key_delay_ms` outside 1 to 10000
+  (`recipe_invalid_step`), and on any op but `type`
+  (`recipe_unknown_field`).
+
 ### Scheduling
 
 - If **no** step has `needs`, the steps run in file order, one per wave.
@@ -237,6 +260,8 @@ assert todo-item-1 checked=true
 - `click` / `type` / `set-value` / `key` accept `--fp <n>` (JSON:
   `expect_fingerprint`): the step is refused with `stale_target` unless
   the target's fingerprint is still `n`.
+- `type` accepts `--key-delay-ms <n>` (JSON: `key_delay_ms`): the text
+  is [paced](#paced-typing), `n` milliseconds between two keys.
 - `keybinding --id … --scope focused|global`, with `--confirm` for quit
   and `--activate` for focused only. `keybindings` lists the catalog.
 - `assert <target>` takes `name=` / `value=` / `role=` / `checked=` /
@@ -311,7 +336,7 @@ Printed by `recipe plan`; `Plan` in Rust.
 | --- | --- |
 | `v` | Plan format version, `1` |
 | `name`, `app` | From the recipe |
-| `steps[]` | In execution order: `id`, bound `op`, `needs`, `effects` (`read` / `write` / `exit`), `schema`, `idempotent`, `screenshot` |
+| `steps[]` | In execution order: `id`, bound `op`, `needs`, `effects` (`read` / `write` / `exit`), `schema`, `idempotent`, `screenshot`, `key_delay_ms` (when set) |
 | `waves[]` | Step ids per wave |
 | `requires_yes` | The plan has an exit effect |
 | `fingerprint` | Identity of the bound plan |

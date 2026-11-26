@@ -739,3 +739,55 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
     let _ = std::fs::remove_dir_all(&dir);
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
+
+#[test]
+fn paced_type_sends_one_key_per_request_with_the_pause_between() {
+    let recipe = gpui_agent_recipe::Recipe::from_json(
+        r#"{"name": "paced", "steps": [
+            {"id": "wait", "op": "wait"},
+            {"id": "amount", "op": "type", "target": "todo-input", "text": "1,234.56", "key_delay_ms": 20}
+        ]}"#,
+    )
+    .unwrap();
+    validate_recipe(&recipe, &todo_registry()).unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    assert_eq!(plan.steps[1].key_delay_ms, Some(20));
+
+    let (mut client, shutdown) = spawn_todo();
+    let receipt = run_plan(&mut client, &plan, &RunOptions::new()).expect("run");
+    assert!(receipt.ok, "{receipt:?}");
+    let typed = &receipt.steps[1];
+    assert_eq!(
+        typed.result.as_ref().and_then(|r| r.get("value")),
+        Some(&serde_json::json!("1,234.56")),
+        "every key arrived, in order: {typed:?}"
+    );
+    // Eight keys, seven pauses of 20 ms between them.
+    assert!(typed.elapsed_ms >= 140, "the keys were paced: {typed:?}");
+
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn paced_type_stops_at_the_first_refused_key() {
+    let recipe = gpui_agent_recipe::Recipe::from_json(
+        r#"{"name": "refused", "steps": [
+            {"id": "amount", "op": "type", "target": "todo-add", "text": "12", "key_delay_ms": 1000}
+        ]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let (mut client, shutdown) = spawn_todo();
+    let started = std::time::Instant::now();
+    let Err(RunError::Step { id, error, .. }) = run_plan(&mut client, &plan, &RunOptions::new())
+    else {
+        panic!("typing into a button must fail");
+    };
+    assert_eq!(id, "amount");
+    assert!(error.contains("not editable"), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "no pause after the refused first key"
+    );
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}

@@ -362,6 +362,14 @@
               ],
               "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
+            },
+            "key_delay_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "Type the text one character per request, this many milliseconds apart (1 to 10000; recipe validate checks the range), as a person types."
             }
           },
           "required": [

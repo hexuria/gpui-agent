@@ -23,6 +23,11 @@ pub struct PlannedStep {
     /// Capture a PNG after this step when `--screenshot-dir` / `--screenshot-flagged`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub screenshot: bool,
+    /// A paced `type`: the pause between two keys
+    /// ([`crate::RecipeStep::key_delay_ms`]). Not part of the fingerprint:
+    /// pacing changes how the text is delivered, not what the plan does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_delay_ms: Option<u64>,
     /// Effects the op declares (Read/Write/Exit/…).
     pub effects: Vec<Effect>,
     /// Registry schema the op resolved to.
@@ -132,6 +137,7 @@ pub fn compile_plan(
             op: step.op.clone(),
             needs,
             screenshot: step.screenshot,
+            key_delay_ms: step.key_delay_ms,
             effects: step_effects,
             schema: schema_name,
             idempotent,

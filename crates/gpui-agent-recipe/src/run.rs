@@ -1,9 +1,9 @@
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_agent::client::AgentClient;
-use gpui_agent::error_code_of;
-use gpui_agent::protocol::Op;
+use gpui_agent::protocol::{Op, Response};
+use gpui_agent::{CallFailure, error_code_of};
 use thiserror::Error;
 
 use crate::plan::{Plan, PlannedStep};
@@ -265,7 +265,7 @@ pub fn run_plan(
         for step in wave_steps {
             let step_started = Instant::now();
             shot_index += 1;
-            match client.call_response(&step.op) {
+            match send_step(client, step) {
                 Ok(resp) => {
                     receipt.session_reused = client.has_session();
                     let ok = resp.ok;
@@ -337,6 +337,66 @@ pub fn run_plan(
     receipt.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     receipt.session_reused = client.has_session();
     Ok(receipt)
+}
+
+/// Sends one sequential step: its op as one request, or a paced `type`
+/// ([`PlannedStep::key_delay_ms`]) as one `type` request per character with
+/// the pause between two of them. A paced step stops at the first key the
+/// host refuses and answers with that refusal; otherwise with the last
+/// key's answer. Only the first key carries the step's fingerprint gate:
+/// each key changes the node's value, and so its fingerprint.
+fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, CallFailure> {
+    let (
+        Some(delay),
+        Op::Type {
+            target,
+            text,
+            delivery,
+            expect_fingerprint,
+        },
+    ) = (step.key_delay_ms, &step.op)
+    else {
+        return client.call_response(&step.op);
+    };
+    let keys = paced_keys(text);
+    if keys.len() < 2 {
+        return client.call_response(&step.op);
+    }
+    let mut last = None;
+    for (index, key) in keys.into_iter().enumerate() {
+        if index > 0 {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
+        let op = Op::Type {
+            target: target.clone(),
+            text: key,
+            delivery: *delivery,
+            expect_fingerprint: if index == 0 {
+                *expect_fingerprint
+            } else {
+                None
+            },
+        };
+        let resp = client.call_response(&op)?;
+        if !resp.ok {
+            return Ok(resp);
+        }
+        last = Some(resp);
+    }
+    Ok(last.expect("a paced step sends at least two keys"))
+}
+
+/// The keys a paced `type` of `text` sends: one per character (Unicode
+/// scalar value). A line break written `\r\n` stays one key.
+fn paced_keys(text: &str) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for ch in text.chars() {
+        match keys.last_mut() {
+            Some(last) if last == "\r" && ch == '\n' => last.push(ch),
+            _ => keys.push(ch.to_string()),
+        }
+    }
+    keys
 }
 
 /// How a step PNG reaches `--screenshot-dir`.
@@ -456,6 +516,7 @@ mod tests {
             op: Op::Hello,
             needs: Vec::new(),
             screenshot: false,
+            key_delay_ms: None,
             effects: vec![Effect::Read],
             schema: Some("hello".into()),
             idempotent: true,
@@ -468,10 +529,22 @@ mod tests {
             op: Op::click("todo-add"),
             needs: Vec::new(),
             screenshot: false,
+            key_delay_ms: None,
             effects: vec![Effect::Write],
             schema: Some("click".into()),
             idempotent: false,
         }
+    }
+
+    #[test]
+    fn paced_keys_are_one_per_character() {
+        assert_eq!(
+            paced_keys("1,234.56"),
+            ["1", ",", "2", "3", "4", ".", "5", "6"]
+        );
+        assert_eq!(paced_keys("ñé"), ["ñ", "é"]);
+        assert_eq!(paced_keys("a\r\nb"), ["a", "\r\n", "b"]);
+        assert!(paced_keys("").is_empty());
     }
 
     #[test]
@@ -484,6 +557,7 @@ mod tests {
             op: Op::Hello,
             needs: Vec::new(),
             screenshot: false,
+            key_delay_ms: None,
             effects: Vec::new(),
             schema: None,
             idempotent: false,
