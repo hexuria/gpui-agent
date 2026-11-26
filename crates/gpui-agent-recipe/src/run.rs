@@ -544,7 +544,7 @@ mod tests {
         );
         assert_eq!(paced_keys("ñé"), ["ñ", "é"]);
         assert_eq!(paced_keys("a\r\nb"), ["a", "\r\n", "b"]);
-        assert!(paced_keys("").is_empty());
+        assert_eq!(paced_keys(""), Vec::<String>::new());
     }
 
     #[test]
