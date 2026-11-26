@@ -403,51 +403,14 @@ fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, C
     let total = keys.len();
     // Who had the focus before the first key: a host whose `type` does not
     // move the focus leaves it there, and the keys still go to the target.
-    let before = match client.snapshot() {
-        Ok(resp) => resp.tree.as_ref().and_then(|tree| focused_in(&tree.nodes)),
-        Err(error) => {
-            let code = error_code_of(&error);
-            return Err(CallFailure::with_code(
-                format!("paced type: no snapshot before the first key: {error}"),
-                code,
-                Some(DeliveryStatus::NotDelivered),
-            ));
-        }
-    };
+    let before = focus_before(client)?;
     let mut to = target.clone();
-    let mut followed = false;
+    let mut focus = Focus::NotYet;
     let mut last = None;
     let mut due = Instant::now();
     for (index, key) in keys.into_iter().enumerate() {
         if index > 0 {
-            let tree = match client.snapshot() {
-                Ok(resp) => resp.tree.unwrap_or_else(empty_tree),
-                Err(error) => {
-                    let code = error_code_of(&error);
-                    return Err(CallFailure::with_code(
-                        partial(
-                            index,
-                            total,
-                            &format!("no snapshot to follow the focus: {error}"),
-                        ),
-                        code,
-                        Some(DeliveryStatus::DeliveryUncertain),
-                    ));
-                }
-            };
-            match next_key_target(&tree.nodes, target, before.as_deref(), followed) {
-                Ok((next, follows)) => {
-                    to = next;
-                    followed = followed || follows;
-                }
-                Err(why) => {
-                    return Err(CallFailure::with_code(
-                        partial(index, total, &why),
-                        gpui_agent::error_code::HOST_ERROR,
-                        Some(DeliveryStatus::DeliveryUncertain),
-                    ));
-                }
-            }
+            to = follow(client, target, before.as_deref(), &mut focus, index, total)?;
             let now = Instant::now();
             if due > now {
                 std::thread::sleep(due - now);
@@ -495,8 +458,72 @@ fn partial(index: usize, total: usize, error: &str) -> String {
     )
 }
 
+/// Whether the keys of a paced `type` have been on the target's focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    /// The focus has not been on the target or beside it yet.
+    NotYet,
+    /// It has: a key now follows it.
+    Followed,
+}
+
+/// Who has the focus before a paced `type`'s first key.
+fn focus_before(client: &mut AgentClient) -> Result<Option<String>, CallFailure> {
+    match client.snapshot() {
+        Ok(resp) => Ok(resp.tree.as_ref().and_then(|tree| focused_in(&tree.nodes))),
+        Err(error) => {
+            let code = error_code_of(&error);
+            Err(CallFailure::with_code(
+                format!("paced type: no snapshot before the first key: {error}"),
+                code,
+                Some(DeliveryStatus::NotDelivered),
+            ))
+        }
+    }
+}
+
+/// The node key `index` of `total` goes to ([`next_key_target`]), from a
+/// snapshot; a partial delivery when there is none or the focus left.
+fn follow(
+    client: &mut AgentClient,
+    target: &str,
+    before: Option<&str>,
+    focus: &mut Focus,
+    index: usize,
+    total: usize,
+) -> Result<String, CallFailure> {
+    let tree = match client.snapshot() {
+        Ok(resp) => resp.tree.unwrap_or_else(empty_tree),
+        Err(error) => {
+            let code = error_code_of(&error);
+            return Err(CallFailure::with_code(
+                partial(
+                    index,
+                    total,
+                    &format!("no snapshot to follow the focus: {error}"),
+                ),
+                code,
+                Some(DeliveryStatus::DeliveryUncertain),
+            ));
+        }
+    };
+    match next_key_target(&tree.nodes, target, before, *focus) {
+        Ok((next, now)) => {
+            if now == Focus::Followed {
+                *focus = Focus::Followed;
+            }
+            Ok(next)
+        }
+        Err(why) => Err(CallFailure::with_code(
+            partial(index, total, &why),
+            gpui_agent::error_code::HOST_ERROR,
+            Some(DeliveryStatus::DeliveryUncertain),
+        )),
+    }
+}
+
 /// Where the next key of a paced `type` aimed at `target` goes, from the
-/// tree after the key before it: `(id, whether it follows the focus)`.
+/// tree after the key before it: `(id, Followed when it follows the focus)`.
 ///
 /// - The target or an editable node beside it (a child of the target's
 ///   parent: the next cell of a code box) has the focus: that node.
@@ -512,15 +539,18 @@ fn next_key_target(
     nodes: &[gpui_agent::UiNode],
     target: &str,
     before: Option<&str>,
-    followed: bool,
-) -> Result<(String, bool), String> {
+    focus: Focus,
+) -> Result<(String, Focus), String> {
     let focused = focused_in(nodes);
     let beside = beside(nodes, target);
+    let not_yet = focus == Focus::NotYet;
     match focused {
-        Some(id) if id == target => Ok((id, true)),
-        Some(id) if !followed && before == Some(id.as_str()) => Ok((target.to_owned(), false)),
-        Some(id) if beside.iter().any(|node| node == &id) => Ok((id, true)),
-        None if !followed => Ok((target.to_owned(), false)),
+        Some(id) if id == target => Ok((id, Focus::Followed)),
+        Some(id) if not_yet && before == Some(id.as_str()) => {
+            Ok((target.to_owned(), Focus::NotYet))
+        }
+        Some(id) if beside.iter().any(|node| node == &id) => Ok((id, Focus::Followed)),
+        None if not_yet => Ok((target.to_owned(), Focus::NotYet)),
         Some(id) => Err(format!("the focus left `{target}` for `{id}`")),
         None => Err(format!("the focus left `{target}` and no node has it")),
     }
@@ -743,8 +773,14 @@ mod tests {
 
     #[test]
     fn the_next_key_follows_the_focus_only_inside_the_targets_group() {
-        let next = |focused, target, before, followed| {
-            next_key_target(&boxes(focused), target, before, followed)
+        let next = |focused, target, before, followed: bool| {
+            let focus = if followed {
+                Focus::Followed
+            } else {
+                Focus::NotYet
+            };
+            next_key_target(&boxes(focused), target, before, focus)
+                .map(|(id, now)| (id, now == Focus::Followed))
         };
         assert_eq!(
             next(Some("cell-1"), "cell-0", None, false),
