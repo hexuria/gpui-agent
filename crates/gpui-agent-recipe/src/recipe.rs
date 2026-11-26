@@ -72,7 +72,11 @@ pub struct RecipeStep {
     /// two of them, as a person types. Without it the text goes as one
     /// request. The client paces the keys; the host sees ordinary `type`
     /// requests, so any host that takes `type` takes a paced step.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "key_delay"
+    )]
     pub key_delay_ms: Option<u64>,
     /// The wire op, flattened into the step JSON.
     #[serde(flatten)]
@@ -137,22 +141,29 @@ impl Recipe {
                 ));
             }
         }
+        // `key_delay_ms` is a step field, not an op's: only `type` reads it.
+        for raw in value
+            .get("steps")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if raw.get("key_delay_ms").is_some() && op_name(raw) != "type" {
+                let id = raw.get("id").and_then(Value::as_str).unwrap_or("?");
+                return Err(err(
+                    RecipeErrorCode::UnknownField,
+                    format!(
+                        "recipe json: step `{id}` has unknown field `key_delay_ms` for op `{}` (only `type` is paced)",
+                        op_name(raw)
+                    ),
+                )
+                .at_step(id));
+            }
+        }
         let recipe = Self::deserialize(value)
             .map_err(|e| err(RecipeErrorCode::Parse, format!("recipe json: {e}")))?;
         let raw_steps = value.get("steps").and_then(Value::as_array);
         for (step, raw) in recipe.steps.iter().zip(raw_steps.into_iter().flatten()) {
-            // `key_delay_ms` is a step field, not an op's: only `type` reads it.
-            if raw.get("key_delay_ms").is_some() && !matches!(step.op, Op::Type { .. }) {
-                return Err(err(
-                    RecipeErrorCode::UnknownField,
-                    format!(
-                        "recipe json: step `{}` has unknown field `key_delay_ms` for op `{}` (only `type` is paced)",
-                        step.id,
-                        op_name(raw)
-                    ),
-                )
-                .at_step(&step.id));
-            }
             if let Some(key) = unknown_step_field(raw, step) {
                 return Err(err(
                     RecipeErrorCode::UnknownField,
@@ -292,6 +303,20 @@ impl<'de> Deserialize<'de> for NoDuplicateKeys {
         }
 
         deserializer.deserialize_any(Walk)
+    }
+}
+
+/// `key_delay_ms` as a recipe file writes it: a whole number of
+/// milliseconds, 1 to [`MAX_KEY_DELAY_MS`] (null and anything else are
+/// refused when the file is read, as the schema refuses them).
+fn key_delay<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    let delay = u64::deserialize(deserializer)?;
+    if (1..=MAX_KEY_DELAY_MS).contains(&delay) {
+        Ok(Some(delay))
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "key_delay_ms must be 1 to {MAX_KEY_DELAY_MS}, got {delay}"
+        )))
     }
 }
 
@@ -1943,14 +1968,17 @@ assert todo-item-1 name=$title checked=false
 
     #[test]
     fn key_delay_must_be_one_to_ten_seconds() {
-        for delay in [0, MAX_KEY_DELAY_MS + 1] {
-            let recipe = Recipe::from_json(&format!(
+        for delay in ["0", "10001", "null", "1.5", "-1", "\"80\""] {
+            let err = Recipe::from_json(&format!(
                 r#"{{"name": "r", "steps": [{{"id": "a", "op": "type", "target": "todo-input", "text": "x", "key_delay_ms": {delay}}}]}}"#
             ))
-            .unwrap();
-            let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
-            assert_eq!(err.code, RecipeErrorCode::InvalidStep, "{delay}: {err}");
+            .unwrap_err();
+            assert_eq!(err.code, RecipeErrorCode::Parse, "{delay}: {err}");
         }
+        // A recipe built in code, or from `.wants`, is checked when validated.
+        let recipe = parse_wants("type todo-input x --key-delay-ms 0", "w").unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert_eq!(err.code, RecipeErrorCode::InvalidStep, "{err}");
         for delay in [1, MAX_KEY_DELAY_MS] {
             let recipe = Recipe::from_json(&format!(
                 r#"{{"name": "r", "steps": [{{"id": "a", "op": "type", "target": "todo-input", "text": "x", "key_delay_ms": {delay}}}]}}"#

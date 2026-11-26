@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui_agent::client::AgentClient;
-use gpui_agent::protocol::{Op, Response};
-use gpui_agent::{CallFailure, error_code_of};
+use gpui_agent::protocol::{DeliveryMode, Op, Response};
+use gpui_agent::{CallFailure, DeliveryStatus, error_code_of};
 use thiserror::Error;
 
 use crate::plan::{Plan, PlannedStep};
@@ -339,12 +339,37 @@ pub fn run_plan(
     Ok(receipt)
 }
 
+/// The longest a paced `type` may take, its pauses together
+/// (`key_delay_ms` times the keys after the first): two minutes.
+/// [`crate::compile_plan`] refuses a longer one before anything is sent.
+pub const MAX_PACED_TYPE_MS: u64 = 120_000;
+
+/// The pauses of a paced `type` of `text` at `delay` ms, together.
+pub(crate) fn paced_type_ms(text: &str, delay: u64) -> u64 {
+    let pauses = u64::try_from(paced_keys(text).len().saturating_sub(1)).unwrap_or(u64::MAX);
+    pauses.saturating_mul(delay)
+}
+
 /// Sends one sequential step: its op as one request, or a paced `type`
-/// ([`PlannedStep::key_delay_ms`]) as one `type` request per character with
-/// the pause between two of them. A paced step stops at the first key the
-/// host refuses and answers with that refusal; otherwise with the last
-/// key's answer. Only the first key carries the step's fingerprint gate:
-/// each key changes the node's value, and so its fingerprint.
+/// ([`PlannedStep::key_delay_ms`]) as one `type` request per character,
+/// `key_delay_ms` apart, as a person types.
+///
+/// - **All or nothing before the first key:** a virtual step whose text
+///   has a character with no keystroke (`text_keystrokes`) fails before
+///   any key is sent, as one virtual `type` does.
+/// - **The focus is the target's once:** the first key goes to the step's
+///   target, which the host focuses. Every later key goes to the node that
+///   holds the focus then (read from a snapshot), so a host that focuses a
+///   `type` target that is not focused yet never presses the box again:
+///   the caret stays after the typed text, and a code box whose focus moves
+///   on with each digit keeps it there. With no focused node in the tree,
+///   the key goes to the target.
+/// - **A key the host refuses stops the step.** After the first key that
+///   is a partial delivery: the error says how many keys reached the app
+///   and the status is `delivery_uncertain`, so a caller does not retry
+///   the whole text on top of what was typed.
+/// - Only the first key carries the step's fingerprint gate: each key
+///   changes the node's value, and so its fingerprint.
 fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, CallFailure> {
     let (
         Some(delay),
@@ -362,13 +387,33 @@ fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, C
     if keys.len() < 2 {
         return client.call_response(&step.op);
     }
+    if *delivery == DeliveryMode::Virtual
+        && let Err(error) = gpui_agent::text_keystrokes(text)
+    {
+        let code = error_code_of(&error);
+        return Err(CallFailure::with_code(
+            error,
+            code,
+            Some(DeliveryStatus::NotDelivered),
+        ));
+    }
+    let total = keys.len();
+    let mut to = target.clone();
     let mut last = None;
+    let mut due = Instant::now();
     for (index, key) in keys.into_iter().enumerate() {
         if index > 0 {
-            std::thread::sleep(Duration::from_millis(delay));
+            if let Some(focused) = focused_node(client) {
+                to = focused;
+            }
+            let now = Instant::now();
+            if due > now {
+                std::thread::sleep(due - now);
+            }
         }
+        due = Instant::now() + Duration::from_millis(delay);
         let op = Op::Type {
-            target: target.clone(),
+            target: to.clone(),
             text: key,
             delivery: *delivery,
             expect_fingerprint: if index == 0 {
@@ -377,18 +422,54 @@ fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, C
                 None
             },
         };
-        let resp = client.call_response(&op)?;
-        if !resp.ok {
-            return Ok(resp);
+        match client.call_response(&op) {
+            Ok(resp) if resp.ok => last = Some(resp),
+            Ok(mut resp) => {
+                if index > 0 {
+                    let error = resp.error.take().unwrap_or_else(|| "request failed".into());
+                    resp.error = Some(partial(index, total, &error));
+                    resp.delivery_status = Some(DeliveryStatus::DeliveryUncertain);
+                }
+                return Ok(resp);
+            }
+            Err(mut failure) => {
+                if index > 0 {
+                    failure.error = partial(index, total, &failure.error);
+                    failure.delivery_status = Some(DeliveryStatus::DeliveryUncertain);
+                }
+                return Err(failure);
+            }
         }
-        last = Some(resp);
     }
     Ok(last.expect("a paced step sends at least two keys"))
 }
 
+/// The error of a paced `type` that stopped at key `index` of `total`.
+fn partial(index: usize, total: usize, error: &str) -> String {
+    format!(
+        "paced type stopped at key {} of {total}: the first {index} reached the app \
+         (snapshot before retrying): {error}",
+        index + 1
+    )
+}
+
+/// The id of the node that holds the keyboard focus, if the host reports one.
+fn focused_node(client: &mut AgentClient) -> Option<String> {
+    let tree = client.snapshot().ok()?.tree?;
+    focused_in(&tree.nodes)
+}
+
+/// The innermost focused node of `nodes`, depth first.
+fn focused_in(nodes: &[gpui_agent::UiNode]) -> Option<String> {
+    nodes.iter().find_map(|node| {
+        focused_in(&node.children).or_else(|| node.focused.then(|| node.id.clone()))
+    })
+}
+
 /// The keys a paced `type` of `text` sends: one per character (Unicode
-/// scalar value). A line break written `\r\n` stays one key.
-fn paced_keys(text: &str) -> Vec<String> {
+/// scalar value, not grapheme: a combining mark or a joined emoji goes as
+/// its parts). A line break written `\r\n` stays one key.
+pub(crate) fn paced_keys(text: &str) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     for ch in text.chars() {
         match keys.last_mut() {

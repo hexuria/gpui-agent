@@ -19,8 +19,10 @@ Exit code 0 when every check passed; 1 otherwise.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -183,6 +185,25 @@ def main():
         nodes["todo-input"].get("value", "") == before + "virtual",
         "virtual type changes todo-input",
         repr(nodes["todo-input"].get("value")),
+    )
+
+    # A paced virtual type (one key per request, `key_delay_ms`): every key lands after the one before, because the
+    # input that already has the focus is not clicked again for each key.
+    before = nodes["todo-input"].get("value", "")
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as recipe:
+        json.dump({"name": "paced-virtual", "steps": [{"id": "keys", "op": "type", "target": "todo-input",
+                                                       "text": "paced 12.5", "delivery": "virtual",
+                                                       "key_delay_ms": 20}]}, recipe)
+    reply, err = run.json("recipe", "run", recipe.name)
+    os.unlink(recipe.name)
+    run.check(reply is not None and reply.get("ok"), "paced virtual type replies ok", err)
+    nodes = run.wait_for(
+        "the paced value", lambda n: n["todo-input"].get("value", "") == before + "paced 12.5"
+    )
+    run.check(
+        nodes["todo-input"].get("value", "") == before + "paced 12.5",
+        "paced virtual type keeps every key after the one before",
+        repr(nodes["todo-input"].get("value", "")),
     )
 
     print("virtual input: " + ("all checks passed" if not run.failed else f"{run.failed} failed"))

@@ -938,7 +938,10 @@ impl TodoApp {
     }
 
     /// Click the target, then give the text input keyboard focus when it is
-    /// the target, so the keystrokes that follow reach it.
+    /// the target, so the keystrokes that follow reach it. A text input that
+    /// already has the focus is not clicked again: the click would move its
+    /// caret to where it lands, and one key per request (a paced `type`)
+    /// would then put each key there instead of after the one before.
     #[cfg(feature = "embedded-host")]
     fn virtual_focus(
         entity: &Entity<Self>,
@@ -946,11 +949,16 @@ impl TodoApp {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<(), String> {
-        Self::virtual_click(entity, target, window, cx)?;
         if target == ids::INPUT {
             let input = entity.read(cx).input.clone();
+            if input.read(cx).focus_handle(cx).is_focused(window) {
+                return Ok(());
+            }
+            Self::virtual_click(entity, target, window, cx)?;
             input.update(cx, |state, cx| state.focus(window, cx));
+            return Ok(());
         }
+        Self::virtual_click(entity, target, window, cx)?;
         Ok(())
     }
 

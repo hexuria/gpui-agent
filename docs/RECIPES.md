@@ -85,7 +85,7 @@ Each step:
 | `op` | Yes | A protocol op name, snake_case (`set_value`, `wait_until`, …) |
 | `needs` | No | Ids of other steps; no duplicates, no self, no `$param`, no cycle |
 | `screenshot` | No | `true` marks the step for `--screenshot-flagged` |
-| `key_delay_ms` | No | `type` only: [pace](#paced-typing) the text, this many milliseconds (1 to 10000) between two keys |
+| `key_delay_ms` | No | `type` only: [pace](#paced-typing) the text, this many milliseconds (1 to 10000) between two keys, 120000 ms of pauses at most |
 | op fields | Per op | The same fields the op takes on the wire ([PROTOCOL.md](PROTOCOL.md)) |
 
 **Unknown fields are errors**, at the top level and in a step. A step may
@@ -176,23 +176,45 @@ A `params` entry is a bare name (a required string) or an object:
 
 A `type` step sends its text as one request. With `key_delay_ms` the
 client sends it one character at a time instead: one ordinary `type`
-request per character (Unicode scalar value; `\r\n` stays one), waiting
-`key_delay_ms` between two of them, as a person types. Input that only
-goes wrong when keys arrive faster than a person types them (a masked
-amount box, a code box that moves the focus on each digit) then behaves
-as it does under a person's hands.
+request per character, `key_delay_ms` apart, as a person types.
 
-- The host sees ordinary `type` requests, so a paced step runs against
-  any host that takes `type`; nothing new crosses the wire.
-- The step stops at the first key the host refuses, and fails with that
-  refusal. Its receipt `result` is the last key's.
+- **Nothing new on the wire.** The host sees ordinary `type` requests, so a
+  paced step runs against any host that takes `type`.
+- **The target is focused once.** The first key goes to the step's
+  target; every later key goes to the node that has the focus then, read
+  from a snapshot before the key. So a host that focuses an unfocused
+  `type` target (a press) presses the box once: the caret stays after
+  the typed text, and a code box whose focus moves to its next cell with
+  each digit gets one digit per cell. With no focused node in the tree,
+  every key goes to the target. Whether a box keeps its caret also depends
+  on the host focusing only an unfocused target: NSH's strict hosts do
+  (and an NSH code box is one text field over its cells); a host that
+  presses its target on every `type` moves the caret on every key.
+- **All or nothing before the first key.** A `virtual` step whose text has
+  a character with no keystroke (only ASCII, space, `\n` and `\t` have one)
+  fails before any key is sent, as one virtual `type` does.
+- **A refusal part way is a partial delivery.** The step stops at the
+  first key the host refuses. After the first key the error says how many
+  keys reached the app (`paced type stopped at key 3 of 4: the first 2
+  reached the app ...`) and the status is `delivery_uncertain`: snapshot
+  before retrying, the box already holds those keys. Its receipt `result`
+  is the last key's.
+- **The pace is a floor.** Each key waits for the reply and a snapshot
+  before the next; a slow host makes the pace slower, never faster.
+- **Bounded.** `key_delay_ms` is 1 to 10000 (anything else is refused when
+  the file is read, `recipe_parse`; on any op but `type`,
+  `recipe_unknown_field`), and the pauses of one step together at most
+  120000 ms (`MAX_PACED_TYPE_MS`; `plan` / `run` refuse a longer one with
+  `recipe_invalid_step` before anything is sent).
+- **A key is a Unicode scalar value, not a grapheme:** a combining mark or
+  a joined emoji goes as its parts (`\r\n` stays one key). Type such text
+  without pacing.
 - Only the first key carries `expect_fingerprint`: each key changes the
   node's value, and with it the fingerprint.
 - `key_delay_ms` is not part of the plan [fingerprint](#plan): it changes
   how the text is delivered, not what the plan does.
-- `recipe validate` refuses `key_delay_ms` outside 1 to 10000
-  (`recipe_invalid_step`), and on any op but `type`
-  (`recipe_unknown_field`).
+- A 0.4.0 client refuses the field (`recipe_unknown_field`): a recipe that
+  paces needs gpui-agent-cli 0.4.1 or later.
 
 ### Scheduling
 

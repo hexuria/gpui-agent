@@ -109,6 +109,23 @@ pub fn compile_plan(
         check_invoke_args(schema, args, true)
             .map_err(|m| err(RecipeErrorCode::InvalidArgs, m).at_step(&step.id))?;
     }
+    for step in &bound.steps {
+        if let (Some(delay), Op::Type { text, .. }) = (step.key_delay_ms, &step.op) {
+            let total = crate::run::paced_type_ms(text, delay);
+            if total > crate::run::MAX_PACED_TYPE_MS {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}`: typing its text {delay} ms a key pauses {total} ms; a paced type \
+                         may pause {} ms at most",
+                        step.id,
+                        crate::run::MAX_PACED_TYPE_MS
+                    ),
+                )
+                .at_step(&step.id));
+            }
+        }
+    }
     let name = bound.name.as_str();
     let app = bound.app.clone();
     let steps = bound.steps.as_slice();
