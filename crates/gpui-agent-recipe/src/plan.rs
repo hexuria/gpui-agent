@@ -5,7 +5,8 @@ use serde::Serialize;
 
 use crate::error::{RecipeError, RecipeErrorCode, err};
 use crate::recipe::{
-    Recipe, RecipeStep, apply_params, check_invoke_args, coerce_invoke_args, validate_recipe,
+    Recipe, RecipeStep, apply_params, check_invoke_args, coerce_invoke_args, step_node_references,
+    validate_recipe,
 };
 use crate::registry::Registry;
 use crate::schema::{Effect, SchemaKind};
@@ -28,6 +29,12 @@ pub struct PlannedStep {
     /// pacing changes how the text is delivered, not what the plan does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_delay_ms: Option<u64>,
+    /// Recipe-only `scroll_until` node pattern; the wire op stays `scroll`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Recipe-only `scroll_until` cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u64>,
     /// Effects the op declares (Read/Write/Exit/…).
     pub effects: Vec<Effect>,
     /// Registry schema the op resolved to.
@@ -89,13 +96,48 @@ pub struct OrderCheck {
 /// declared params; [`RecipeErrorCode::InvalidParamValue`] /
 /// [`RecipeErrorCode::InvalidArgs`] when a bound invoke arg does not fit
 /// its schema type.
+#[expect(
+    clippy::too_many_lines,
+    reason = "binding, validation, scheduling and fingerprinting are one compile pipeline"
+)]
 pub fn compile_plan(
     recipe: &Recipe,
     set: &BTreeMap<String, String>,
     registry: &Registry,
 ) -> Result<Plan, RecipeError> {
     validate_recipe(recipe, registry)?;
+    let implicit = recipe.steps.iter().all(|step| step.needs.is_empty());
+    let positions: BTreeMap<&str, usize> = recipe
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| (step.id.as_str(), index))
+        .collect();
     let mut bound = apply_params(recipe, set)?;
+    for (step_index, step) in bound.steps.iter_mut().enumerate() {
+        for referenced in step_node_references(step) {
+            if referenced == step.id {
+                continue;
+            }
+            if implicit
+                && positions
+                    .get(referenced.as_str())
+                    .is_some_and(|referenced_index| *referenced_index > step_index)
+            {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}` uses ${referenced}.node from a later step; implicit recipes run in file order",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id));
+            }
+            if !implicit && !step.needs.iter().any(|need| need == &referenced) {
+                step.needs.push(referenced);
+            }
+        }
+    }
     for (step, unbound) in bound.steps.iter_mut().zip(&recipe.steps) {
         let (Op::Invoke { name, args }, Op::Invoke { args: raw, .. }) = (&mut step.op, &unbound.op)
         else {
@@ -108,6 +150,64 @@ pub fn compile_plan(
             .map_err(|m| err(RecipeErrorCode::InvalidParamValue, m).at_step(&step.id))?;
         check_invoke_args(schema, args, true)
             .map_err(|m| err(RecipeErrorCode::InvalidArgs, m).at_step(&step.id))?;
+    }
+    // The unbound recipe was already validated. Check only the rules whose
+    // answer can change when a numeric or regex parameter is bound; do not
+    // re-read literal `$` text or bound values as placeholders.
+    for step in &bound.steps {
+        if let Some(delay) = step.key_delay_ms
+            && !(1..=crate::recipe::MAX_KEY_DELAY_MS).contains(&delay)
+        {
+            return Err(err(
+                RecipeErrorCode::InvalidStep,
+                format!(
+                    "step `{}`: key_delay_ms must be 1 to {}, got {delay}",
+                    step.id,
+                    crate::recipe::MAX_KEY_DELAY_MS
+                ),
+            )
+            .at_step(&step.id));
+        }
+        if step.until.is_some() || step.max_steps.is_some() {
+            let Op::Scroll { dx, dy, .. } = &step.op else {
+                continue;
+            };
+            if *dx == 0.0 && *dy == 0.0 {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}`: scroll_until requires a non-zero dx or dy",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id));
+            }
+            if let Some(max_steps) = step.max_steps
+                && !(1..=crate::recipe::MAX_SCROLL_UNTIL_STEPS).contains(&max_steps)
+            {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}`: max_steps must be 1 to {}, got {max_steps}",
+                        step.id,
+                        crate::recipe::MAX_SCROLL_UNTIL_STEPS
+                    ),
+                )
+                .at_step(&step.id));
+            }
+            if let Some(until) = &step.until
+                && let Err(error) = regex_lite::Regex::new(until)
+            {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}`: scroll_until pattern does not compile: {error}",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id));
+            }
+        }
     }
     for step in &bound.steps {
         if let (Some(delay), Op::Type { text, .. }) = (step.key_delay_ms, &step.op) {
@@ -129,7 +229,6 @@ pub fn compile_plan(
     let name = bound.name.as_str();
     let app = bound.app.clone();
     let steps = bound.steps.as_slice();
-    let implicit = steps.iter().all(|step| step.needs.is_empty());
     let (ordered, waves) =
         schedule(steps).map_err(|message| err(RecipeErrorCode::Cycle, message))?;
     let mut planned = Vec::with_capacity(ordered.len());
@@ -155,6 +254,8 @@ pub fn compile_plan(
             needs,
             screenshot: step.screenshot,
             key_delay_ms: step.key_delay_ms,
+            until: step.until.clone(),
+            max_steps: step.max_steps,
             effects: step_effects,
             schema: schema_name,
             idempotent,
@@ -329,11 +430,18 @@ pub(crate) fn schedule(steps: &[RecipeStep]) -> Result<(Vec<usize>, Vec<Vec<Stri
 fn fingerprint_plan(name: &str, steps: &[PlannedStep]) -> String {
     let payload = serde_json::json!({
         "name": name,
-        "steps": steps.iter().map(|s| serde_json::json!({
-            "id": s.id,
-            "op": s.op,
-            "needs": s.needs,
-        })).collect::<Vec<_>>(),
+        "steps": steps.iter().map(|s| {
+            let mut step = serde_json::json!({
+                "id": s.id,
+                "op": s.op,
+                "needs": s.needs,
+            });
+            if let Some(until) = &s.until {
+                step["until"] = serde_json::json!(until);
+                step["max_steps"] = serde_json::json!(s.max_steps.unwrap_or(crate::recipe::DEFAULT_SCROLL_UNTIL_STEPS));
+            }
+            step
+        }).collect::<Vec<_>>(),
     });
     let mut canonical = String::new();
     write_canonical(&payload, &mut canonical);

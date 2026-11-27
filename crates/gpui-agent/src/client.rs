@@ -1247,7 +1247,8 @@ impl AgentClient {
     /// own result as it was (`delivered_unverified`). A target absent from
     /// the first read fails with `not_found` and `not_delivered`, and the
     /// action is not sent. On a [secret](crate::tree::UiNode::is_secret)
-    /// target `after` says whether the value changed, never what it is.
+    /// target `after` says whether the value changed, never what it is. A
+    /// target gone after the action is a change, not a failure.
     ///
     /// # Errors
     ///
@@ -2486,13 +2487,7 @@ mod tests {
             .call(&Op::Assert {
                 spec: AssertSpec {
                     target: "a".into(),
-                    name: None,
-                    value: None,
-                    role: None,
-                    checked: None,
-                    exists: None,
-                    visible: None,
-                    in_viewport: None,
+                    ..Default::default()
                 },
             })
             .unwrap_err();
@@ -2566,6 +2561,30 @@ mod tests {
         assert_eq!(after.value, None);
         let json = serde_json::to_string(&after).unwrap();
         assert!(!json.contains("hunter"), "{json}");
+    }
+
+    #[test]
+    fn a_target_gone_after_the_action_is_verified_change() {
+        let mut empty = tree_with("x", 2);
+        empty["tree"]["nodes"] = serde_json::json!([]);
+        let (addr, server) = fake_host(vec![
+            Some(tree_with("x", 1)),
+            Some(serde_json::json!({ "ok": true })),
+            Some(serde_json::json!({ "ok": true, "rev": 2 })),
+            Some(empty),
+        ]);
+        let resp = client_for(addr).act(&Op::click("a"), true).unwrap();
+        assert_eq!(
+            server.join().unwrap(),
+            ["snapshot", "click", "revision", "snapshot"]
+        );
+        assert_eq!(
+            resp.delivery_status,
+            Some(DeliveryStatus::DeliveredVerified)
+        );
+        let after = resp.after.unwrap();
+        assert!(!after.exists);
+        assert!(after.changed);
     }
 
     #[test]

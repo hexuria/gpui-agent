@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{DeliveryMode, Op, Response};
+use gpui_agent::tree::UiNode;
 use gpui_agent::{CallFailure, DeliveryStatus, error_code_of};
 use thiserror::Error;
 
@@ -23,7 +25,7 @@ pub enum RunError {
     Unsupported(String),
     /// `hello.features` could not be read; nothing after the failed hello
     /// attempt reached the host.
-    #[error("could not read hello.features before the first wave: {0}")]
+    #[error("{0}")]
     PreflightHello(String),
     /// A step's request failed; carries the receipt so far.
     #[error("step `{id}` failed: {error}")]
@@ -214,6 +216,7 @@ pub fn run_plan(
     };
 
     let mut shot_index = 0u32;
+    let mut result_nodes = BTreeMap::new();
     for wave in &plan.waves {
         let wave_steps: Vec<&PlannedStep> = wave
             .iter()
@@ -225,7 +228,24 @@ pub fn run_plan(
             })
             .collect();
         if wave_can_pipeline(&wave_steps, screenshots) {
-            let ops: Vec<&Op> = wave_steps.iter().map(|step| &step.op).collect();
+            let mut effective_ops = Vec::with_capacity(wave_steps.len());
+            for step in &wave_steps {
+                match substitute_step_nodes(&step.op, &result_nodes) {
+                    Ok(op) => effective_ops.push(op),
+                    Err(failure) => {
+                        receipt.ok = false;
+                        receipt.elapsed_ms =
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        return Err(RunError::Step {
+                            id: step.id.clone(),
+                            error: failure.error,
+                            error_code: failure.error_code,
+                            receipt: Box::new(receipt),
+                        });
+                    }
+                }
+            }
+            let ops: Vec<&Op> = effective_ops.iter().collect();
             let step_started = Instant::now();
             match client.rpc_pipeline(&ops) {
                 Ok(resps) => {
@@ -301,16 +321,43 @@ pub fn run_plan(
         for step in wave_steps {
             let step_started = Instant::now();
             shot_index += 1;
-            match send_step(client, step) {
+            let mut effective_step = step.clone();
+            effective_step.op = match substitute_step_nodes(&step.op, &result_nodes) {
+                Ok(op) => op,
+                Err(failure) => {
+                    receipt.ok = false;
+                    receipt.elapsed_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    return Err(RunError::Step {
+                        id: step.id.clone(),
+                        error: failure.error,
+                        error_code: failure.error_code,
+                        receipt: Box::new(receipt),
+                    });
+                }
+            };
+            if let Some(until) = &mut effective_step.until {
+                *until = substitute_step_nodes_in_until(until, &result_nodes);
+            }
+            match send_step(client, &effective_step) {
                 Ok(resp) => {
                     receipt.session_reused = client.has_session();
                     let ok = resp.ok;
                     let error = resp.error.clone();
                     let error_code = resp.code().map(str::to_string);
+                    let result_node = resp
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.get("node"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
                     let screenshot =
                         capture_screenshot(client, screenshots, shot_transport, shot_index, step);
                     if let Some(shot) = screenshot.clone() {
                         receipt.screenshots.push(shot);
+                    }
+                    if ok && let Some(node) = result_node {
+                        result_nodes.insert(step.id.clone(), node);
                     }
                     receipt.steps.push(StepReceipt {
                         id: step.id.clone(),
@@ -410,7 +457,329 @@ pub(crate) fn paced_type_ms(text: &str, delay: u64) -> u64 {
 ///   the whole text on top of what was typed.
 /// - Only the first key carries the step's fingerprint gate: each key
 ///   changes the node's value, and so its fingerprint.
+struct UntilScan {
+    node: Option<String>,
+    rev: Option<u64>,
+    signature: u64,
+}
+
+fn find_container<'a>(node: &'a UiNode, target: &str) -> Option<&'a UiNode> {
+    if node.id == target || node.name == target {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_container(child, target))
+}
+
+fn bounds_inside_container(node: &UiNode, container: &UiNode) -> bool {
+    if !container.bounds.has_area() {
+        // Hosts that cannot measure geometry send zero container bounds;
+        // visibility is the only honest signal there.
+        return true;
+    }
+    if !node.bounds.has_area() {
+        return false;
+    }
+    node.bounds.intersects(container.bounds)
+}
+
+fn matching_descendant(
+    node: &UiNode,
+    container: &UiNode,
+    pattern: &regex_lite::Regex,
+) -> Option<String> {
+    for child in &node.children {
+        if !child.visible {
+            continue;
+        }
+        if (pattern.is_match(&child.id) || pattern.is_match(&child.name))
+            && bounds_inside_container(child, container)
+        {
+            return Some(child.id.clone());
+        }
+        if let found @ Some(_) = matching_descendant(child, container, pattern) {
+            return found;
+        }
+    }
+    None
+}
+
+fn hash_part(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+}
+
+#[expect(
+    clippy::items_after_statements,
+    reason = "the tree walk is local to the hash"
+)]
+fn movement_signature(node: &UiNode) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    fn walk(node: &UiNode, hash: &mut u64) {
+        hash_part(hash, node.id.as_bytes());
+        hash_part(hash, node.name.as_bytes());
+        hash_part(hash, node.role.as_bytes());
+        hash_part(hash, &[u8::from(node.visible)]);
+        for part in [node.bounds.x, node.bounds.y, node.bounds.w, node.bounds.h] {
+            hash_part(hash, &part.to_bits().to_le_bytes());
+        }
+        if let Some(value) = &node.value {
+            hash_part(hash, value.as_bytes());
+        }
+        for child in &node.children {
+            walk(child, hash);
+        }
+    }
+    walk(node, &mut hash);
+    hash
+}
+
+fn snapshot_scan(
+    client: &mut AgentClient,
+    target: &str,
+    pattern: &regex_lite::Regex,
+) -> Result<UntilScan, CallFailure> {
+    let response = client.call(&Op::snapshot())?;
+    let tree = response
+        .tree
+        .as_ref()
+        .ok_or_else(|| CallFailure::from_message("scroll_until snapshot carried no tree"))?;
+    let container = tree
+        .nodes
+        .iter()
+        .find_map(|node| find_container(node, target))
+        .ok_or_else(|| {
+            CallFailure::with_code(
+                format!("scroll_until container `{target}` is not in the snapshot"),
+                gpui_agent::error_code::TARGET_GONE,
+                Some(DeliveryStatus::NotDelivered),
+            )
+        })?;
+    let node = if container.visible {
+        matching_descendant(container, container, pattern)
+    } else {
+        None
+    };
+    Ok(UntilScan {
+        node,
+        rev: response.rev.or(tree.rev),
+        signature: movement_signature(container),
+    })
+}
+
+/// Settle time between a scroll request and the snapshot that reads its effect.
+pub const SCROLL_UNTIL_SETTLE_MS: u64 = 50;
+/// Overall client-side budget for one bounded scroll loop.
+pub const MAX_SCROLL_UNTIL_ELAPSED_MS: u64 = 60_000;
+
+/// Run a recipe-only bounded scroll loop. The host receives only ordinary
+/// `scroll` and `snapshot` requests; `scroll_until` itself is never wire-visible.
+fn scroll_failure(mut failure: CallFailure, until: &str, scrolls_done: u64) -> CallFailure {
+    failure.error = format!(
+        "scroll_until `{until}` failed after {scrolls_done} scroll steps: {}",
+        failure.error
+    );
+    if scrolls_done > 0 {
+        failure.delivery_status = Some(DeliveryStatus::DeliveryUncertain);
+    }
+    failure
+}
+
+#[expect(clippy::too_many_lines, reason = "one bounded scrolling state machine")]
+fn scroll_until_step(
+    client: &mut AgentClient,
+    step: &PlannedStep,
+    until: &str,
+) -> Result<Response, CallFailure> {
+    let Op::Scroll {
+        target,
+        x,
+        y,
+        dx,
+        dy,
+    } = &step.op
+    else {
+        return Err(CallFailure::from_message(
+            "scroll_until requires a scroll op",
+        ));
+    };
+    let max_steps = step
+        .max_steps
+        .unwrap_or(crate::recipe::DEFAULT_SCROLL_UNTIL_STEPS);
+    if *dx == 0.0 && *dy == 0.0 {
+        return Err(CallFailure::with_code(
+            "scroll_until requires a non-zero dx or dy",
+            gpui_agent::error_code::BAD_REQUEST,
+            Some(DeliveryStatus::NotDelivered),
+        ));
+    }
+    let container_target = target.as_deref().ok_or_else(|| {
+        CallFailure::with_code(
+            "scroll_until requires a container target",
+            gpui_agent::error_code::BAD_REQUEST,
+            Some(DeliveryStatus::NotDelivered),
+        )
+    })?;
+    let anchored = format!("^(?:{until})$");
+    let pattern = regex_lite::Regex::new(&anchored).map_err(|error| {
+        CallFailure::with_code(
+            format!("scroll_until pattern `{until}` does not compile: {error}"),
+            gpui_agent::error_code::BAD_REQUEST,
+            Some(DeliveryStatus::NotDelivered),
+        )
+    })?;
+    let started = Instant::now();
+    let first = snapshot_scan(client, container_target, &pattern)
+        .map_err(|failure| scroll_failure(failure, until, 0))?;
+    let success = |node: String, steps: u64, revision: Option<u64>| {
+        let mut response = Response::ok("scroll_until");
+        response.delivery_status = Some(DeliveryStatus::DeliveredVerified);
+        response.result = Some(serde_json::json!({
+            "found": true,
+            "node": node,
+            "steps": steps,
+            "revision": revision,
+        }));
+        response
+    };
+    if let Some(node) = first.node {
+        return Ok(success(node, 0, first.rev));
+    }
+
+    let scroll = Op::Scroll {
+        target: target.clone(),
+        x: *x,
+        y: *y,
+        dx: *dx,
+        dy: *dy,
+    };
+    let mut last_rev = first.rev;
+    let mut last_signature = first.signature;
+    let mut still_steps = 0_u64;
+    let mut scrolls_done = 0_u64;
+    for step_index in 1..=max_steps {
+        if started.elapsed() >= Duration::from_millis(MAX_SCROLL_UNTIL_ELAPSED_MS) {
+            return Err(CallFailure::with_code(
+                format!(
+                    "scroll_until `{until}` timed out after {} ms and {scrolls_done} scroll steps; last snapshot revision {}",
+                    MAX_SCROLL_UNTIL_ELAPSED_MS,
+                    last_rev.map_or_else(|| "none".into(), |rev| rev.to_string())
+                ),
+                gpui_agent::error_code::TIMEOUT,
+                Some(if scrolls_done == 0 {
+                    DeliveryStatus::NotDelivered
+                } else {
+                    DeliveryStatus::DeliveryUncertain
+                }),
+            ));
+        }
+        client
+            .call(&scroll)
+            .map_err(|failure| scroll_failure(failure, until, scrolls_done))?;
+        scrolls_done = step_index;
+        std::thread::sleep(Duration::from_millis(SCROLL_UNTIL_SETTLE_MS));
+        let scan = snapshot_scan(client, container_target, &pattern)
+            .map_err(|failure| scroll_failure(failure, until, scrolls_done))?;
+        last_rev = scan.rev;
+        if let Some(node) = scan.node {
+            return Ok(success(node, step_index, last_rev));
+        }
+        if scan.signature == last_signature {
+            still_steps += 1;
+        } else {
+            still_steps = 0;
+            last_signature = scan.signature;
+        }
+        if still_steps >= 2 {
+            return Err(CallFailure::with_code(
+                format!(
+                    "scroll_until `{until}` not_found, container did not move after {step_index} scroll steps; last snapshot revision {}",
+                    last_rev.map_or_else(|| "none".into(), |rev| rev.to_string())
+                ),
+                gpui_agent::error_code::SCROLL_UNTIL_NOT_FOUND,
+                Some(DeliveryStatus::DeliveredUnverified),
+            ));
+        }
+    }
+    Err(CallFailure::with_code(
+        format!(
+            "scroll_until `{until}` not found after {max_steps} scroll steps; last snapshot revision {}",
+            last_rev.map_or_else(|| "none".into(), |rev| rev.to_string())
+        ),
+        gpui_agent::error_code::SCROLL_UNTIL_NOT_FOUND,
+        Some(DeliveryStatus::DeliveredUnverified),
+    ))
+}
+
+#[expect(
+    clippy::items_after_statements,
+    reason = "the JSON walk is local to substitution"
+)]
+fn substitute_step_nodes(op: &Op, nodes: &BTreeMap<String, String>) -> Result<Op, CallFailure> {
+    if nodes.is_empty() {
+        return Ok(op.clone());
+    }
+    fn walk(value: &mut serde_json::Value, nodes: &BTreeMap<String, String>) {
+        match value {
+            serde_json::Value::String(text) => {
+                for (step, node) in nodes {
+                    *text = text.replace(&format!("${step}.node"), node);
+                    *text = text.replace(&format!("${{{step}}}.node"), node);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, nodes);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for item in map.values_mut() {
+                    walk(item, nodes);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut value = serde_json::to_value(op).map_err(|error| {
+        CallFailure::from_message(format!("step op does not serialize: {error}"))
+    })?;
+    walk(&mut value, nodes);
+    serde_json::from_value(value).map_err(|error| {
+        CallFailure::from_message(format!("step result reference broke the op: {error}"))
+    })
+}
+
+fn regex_escape_literal(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if matches!(
+            ch,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn substitute_step_nodes_in_until(input: &str, nodes: &BTreeMap<String, String>) -> String {
+    let mut out = input.to_string();
+    for (step, node) in nodes {
+        let escaped = regex_escape_literal(node);
+        out = out.replace(&format!("${step}.node"), &escaped);
+        out = out.replace(&format!("${{{step}}}.node"), &escaped);
+    }
+    out
+}
+
 fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, CallFailure> {
+    if let (Op::Scroll { .. }, Some(until)) = (&step.op, &step.until) {
+        return scroll_until_step(client, step, until);
+    }
     let (
         Some(delay),
         Op::Type {
@@ -787,7 +1156,8 @@ fn wave_can_pipeline(steps: &[&PlannedStep], screenshots: Option<&ScreenshotCapt
 }
 
 fn step_is_read_only(step: &PlannedStep) -> bool {
-    !step.effects.is_empty()
+    step.until.is_none()
+        && !step.effects.is_empty()
         && step
             .effects
             .iter()
@@ -825,10 +1195,36 @@ mod tests {
             needs: Vec::new(),
             screenshot: false,
             key_delay_ms: None,
+            until: None,
+            max_steps: None,
             effects: vec![Effect::Read],
             schema: Some("hello".into()),
             idempotent: true,
         }
+    }
+
+    #[test]
+    fn scroll_until_is_never_pipelined_even_when_its_schema_reads() {
+        let mut first = read_step("find-1");
+        first.op = Op::Scroll {
+            target: Some("list".into()),
+            x: None,
+            y: None,
+            dx: 0.0,
+            dy: 1.0,
+        };
+        first.until = Some("row".into());
+        let mut second = read_step("find-2");
+        second.op = Op::Scroll {
+            target: Some("list".into()),
+            x: None,
+            y: None,
+            dx: 0.0,
+            dy: 1.0,
+        };
+        second.until = Some("row".into());
+        let steps = [&first, &second];
+        assert!(!wave_can_pipeline(&steps, None));
     }
 
     fn write_step(id: &str) -> PlannedStep {
@@ -838,6 +1234,8 @@ mod tests {
             needs: Vec::new(),
             screenshot: false,
             key_delay_ms: None,
+            until: None,
+            max_steps: None,
             effects: vec![Effect::Write],
             schema: Some("click".into()),
             idempotent: false,
@@ -1008,6 +1406,8 @@ mod tests {
             needs: Vec::new(),
             screenshot: false,
             key_delay_ms: None,
+            until: None,
+            max_steps: None,
             effects: Vec::new(),
             schema: None,
             idempotent: false,

@@ -63,7 +63,7 @@ servers close on bad JSON the same way.
 | `key` | `target`, `key`, optional `delivery`, optional `expect_fingerprint` | `Enter`, `Backspace`, … (no modifiers; SECURITY I1) |
 | `keybinding` | `binding` (Action id), `scope` (`focused` \| `global`), optional `chord`, `confirm`, `activate` | Fire the GPUI **Action** the keymap would. Never OS HID. |
 | `keybindings` | | List `{id, chord, scope, dangerous}`. Alias `keybinding.list`. |
-| `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists`/`visible`/`in_viewport` | Check snapshot fields. `exists` is tree presence. `visible` is host-declared. `in_viewport` is geometry (see below). |
+| `assert` | `target`, optional `name`/`value`/`role`/`checked`/`exists`/`visible`/`in_viewport`/`state`/`states` | Check snapshot fields. `exists` is tree presence. `visible` is host-declared. `in_viewport` is geometry (see below). |
 | `invoke` | `name`, `args` | Named host command **defined by the app** |
 | `wait` | optional `timeout_ms` | `None`: immediate hello (even if `ready: false`). `Some(ms)`: poll `hello.ready` until true or `wait timed out` (sleep ≤ 10 ms between polls) |
 | `wait_until` | `timeout_ms`, same fields as `assert` | Poll `assert` until ok or `wait_until timed out: …`. **Not** a `wait` extension — `wait` stays ready/paint only. |
@@ -115,6 +115,7 @@ A failed response keeps its human-readable `error` and adds a stable
 | `not_found` / `duplicate_id` | Target id matches no node / several nodes |
 | `assert_failed` | An `assert` did not hold |
 | `timeout` | A `wait` / `wait_until` bound ran out |
+| `scroll_until_not_found` | A bounded recipe scroll ended without finding its node |
 | `mailbox_full` | The UI-thread mailbox is saturated |
 | `screenshot_unavailable`, `virtual_unavailable`, `scroll_unavailable`, `keybinding_unavailable`, `in_viewport_unavailable` | The host cannot do this here |
 | `host_error` | Anything else, including the app's own refusal |
@@ -561,3 +562,5 @@ The host picks its own listen port. On bind it writes a JSON record (address, pi
   the client. Additive only; servers that never heard of recipes still
   speak v1 NDJSON one request at a time. Caps and fail-closed invoke:
   [SECURITY.md](SECURITY.md#recipes).
+
+`assert_states` in `hello.features` means the host honours exact `UiNode.states` checks in `assert` and `wait_until`: `state` is one required exact string and every entry in `states` must be present. A client must not send those fields to a host that does not list the capability.

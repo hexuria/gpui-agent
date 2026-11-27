@@ -40,7 +40,7 @@ use recipe_cmd::RecipeCommand;
 /// (`todo.add`, `nav.go`, …) belong in the host (`invoke`) or in agent
 /// prompts — not as CLI subcommands.
 #[derive(Parser)]
-#[command(name = "gpui-agent", after_help = AFTER_HELP)]
+#[command(name = "gpui-agent-cli", version, after_help = AFTER_HELP)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "clap flag struct — flags are the interface"
@@ -955,6 +955,8 @@ fn run() -> Result<()> {
                 exists: Some(if absent { false } else { exists }),
                 visible,
                 in_viewport,
+                state: None,
+                states: Vec::new(),
             };
             print_resp(&call(client.call(&Op::WaitUntil { timeout_ms, spec }))?);
         }
@@ -1243,6 +1245,8 @@ fn run() -> Result<()> {
                 exists: Some(if absent { false } else { exists }),
                 visible,
                 in_viewport,
+                state: None,
+                states: Vec::new(),
             };
             print_resp(&call(client.call(&Op::Assert { spec }))?);
         }

@@ -178,3 +178,23 @@ fn hello_transport_failure_is_not_a_capability_refusal() {
         "{error}"
     );
 }
+
+#[test]
+fn failed_preflight_hello_keeps_the_transport_error_code() {
+    let recipe = Recipe::from_json(
+        r#"{"name":"aim","steps":[{"id":"aimed","op":"press","target":"button","within":{"x":1,"y":2}}]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &protocol_registry()).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let mut client =
+        gpui_agent::AgentClient::connect(addr).with_timeout(std::time::Duration::from_millis(100));
+    let error = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
+    assert_eq!(
+        gpui_agent::error_code_of(&error.to_string()),
+        gpui_agent::error_code::CONNECT_FAILED,
+        "{error}"
+    );
+}

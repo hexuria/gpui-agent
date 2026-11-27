@@ -21,6 +21,11 @@ const STEP_FIELDS: &[&str] = &["id", "needs", "screenshot", "key_delay_ms", "op"
 /// The longest pause [`RecipeStep::key_delay_ms`] may ask for between two keys.
 pub const MAX_KEY_DELAY_MS: u64 = 10_000;
 
+/// Default cap for a recipe-only `scroll_until` step.
+pub const DEFAULT_SCROLL_UNTIL_STEPS: u64 = 10;
+/// Hardest cap accepted for `scroll_until.max_steps`.
+pub const MAX_SCROLL_UNTIL_STEPS: u64 = 50;
+
 /// JSON recipe: a named DAG (or implicit sequence) of protocol ops.
 ///
 /// JSON is the canonical form; a line-based `.wants` file compiles to
@@ -55,7 +60,7 @@ fn recipe_v1() -> u32 {
 
 /// One recipe step: an id, optional `needs` dependencies, and the op.
 /// In code, start from [`RecipeStep::new`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct RecipeStep {
     /// Step id — the wave-schedule node name.
@@ -78,6 +83,19 @@ pub struct RecipeStep {
         deserialize_with = "key_delay"
     )]
     pub key_delay_ms: Option<u64>,
+    /// `scroll_until` only: the node id or visible text to find after scrolling.
+    /// Recipe-only control flow; the host is sent ordinary `scroll` and
+    /// `snapshot` requests, never a `scroll_until` op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// `scroll_until` only: maximum scroll requests after the first snapshot.
+    /// Absent means [`DEFAULT_SCROLL_UNTIL_STEPS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u64>,
+    /// Numeric fields written as `$param` in JSON, keyed by field path.
+    /// Internal binding metadata; never serialized.
+    #[serde(skip)]
+    pub numeric_params: BTreeMap<String, String>,
     /// The wire op, flattened into the step JSON.
     #[serde(flatten)]
     pub op: Op,
@@ -91,9 +109,177 @@ impl RecipeStep {
             needs: Vec::new(),
             screenshot: false,
             key_delay_ms: None,
+            until: None,
+            max_steps: None,
+            numeric_params: BTreeMap::new(),
             op,
         }
     }
+}
+
+impl Serialize for RecipeStep {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::Error as _;
+
+        let mut value = serde_json::to_value(&self.op).map_err(S::Error::custom)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| S::Error::custom("recipe op did not serialize to an object"))?;
+        object.insert("id".into(), Value::String(self.id.clone()));
+        if !self.needs.is_empty() {
+            object.insert(
+                "needs".into(),
+                serde_json::to_value(&self.needs).map_err(S::Error::custom)?,
+            );
+        }
+        if self.screenshot {
+            object.insert("screenshot".into(), Value::Bool(true));
+        }
+        if let Some(delay) = self.key_delay_ms {
+            object.insert("key_delay_ms".into(), Value::from(delay));
+        }
+        if let Some(until) = &self.until {
+            object.insert("until".into(), Value::String(until.clone()));
+            // `until` makes this recipe-level control flow, not an ordinary
+            // scroll. Keep the public JSON spelling round-trippable.
+            object.insert("op".into(), Value::String("scroll_until".into()));
+        }
+        if let Some(max_steps) = self.max_steps {
+            object.insert("max_steps".into(), Value::from(max_steps));
+        }
+        value.serialize(serializer)
+    }
+}
+
+fn exact_placeholder(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    if !input.starts_with('$') {
+        return None;
+    }
+    let (_, next) = parse_placeholder_bytes(bytes, 0)?;
+    (next == bytes.len()).then(|| input.to_string())
+}
+
+fn take_numeric_params(raw: &mut Value) -> BTreeMap<String, String> {
+    let mut found = BTreeMap::new();
+    let Some(object) = raw.as_object_mut() else {
+        return found;
+    };
+    for key in ["x", "y", "dx", "dy"] {
+        if let Some(value) = object.get_mut(key)
+            && let Some(placeholder) = value.as_str().and_then(exact_placeholder)
+        {
+            found.insert(key.to_string(), placeholder);
+            *value = Value::from(0.0);
+        }
+    }
+    for key in ["duration_ms", "key_delay_ms", "max_steps"] {
+        if let Some(value) = object.get_mut(key)
+            && let Some(placeholder) = value.as_str().and_then(exact_placeholder)
+        {
+            found.insert(key.to_string(), placeholder);
+            *value = Value::from(1);
+        }
+    }
+    if let Some(within) = object.get_mut("within").and_then(Value::as_object_mut) {
+        for key in ["x", "y"] {
+            if let Some(value) = within.get_mut(key)
+                && let Some(placeholder) = value.as_str().and_then(exact_placeholder)
+            {
+                found.insert(format!("within.{key}"), placeholder);
+                *value = Value::from(0.0);
+            }
+        }
+    }
+    found
+}
+
+fn set_numeric_op_value(op: &mut Op, path: &str, number: &Value) -> Result<(), String> {
+    let mut value = serde_json::to_value(&*op).map_err(|error| error.to_string())?;
+    if let Some((outer, inner)) = path.split_once('.') {
+        value
+            .get_mut(outer)
+            .and_then(Value::as_object_mut)
+            .and_then(|object| object.get_mut(inner))
+            .map(|slot| *slot = number.clone())
+            .ok_or_else(|| format!("numeric field `{path}` is absent"))?;
+    } else {
+        value
+            .as_object_mut()
+            .and_then(|object| object.get_mut(path))
+            .map(|slot| *slot = number.clone())
+            .ok_or_else(|| format!("numeric field `{path}` is absent"))?;
+    }
+    *op = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn bind_numeric_params(
+    step: &mut RecipeStep,
+    set: &BTreeMap<String, String>,
+) -> Result<(), RecipeError> {
+    for (path, placeholder) in step.numeric_params.clone() {
+        let mut text = placeholder.clone();
+        substitute_string_in_place(&mut text, set)
+            .map_err(|message| err(RecipeErrorCode::MissingParam, message).at_step(&step.id))?;
+        let integer = matches!(path.as_str(), "duration_ms" | "key_delay_ms" | "max_steps");
+        if integer {
+            let parsed = text.parse::<u64>().map_err(|_| {
+                err(
+                    RecipeErrorCode::InvalidParamValue,
+                    format!(
+                        "step `{}`: `{path}` param `{placeholder}` must be an unsigned integer, got `{text}`",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id)
+            })?;
+            match path.as_str() {
+                "duration_ms" => set_numeric_op_value(&mut step.op, &path, &Value::from(parsed))
+                    .map_err(|m| err(RecipeErrorCode::InvalidParamValue, m).at_step(&step.id))?,
+                "key_delay_ms" => step.key_delay_ms = Some(parsed),
+                "max_steps" => step.max_steps = Some(parsed),
+                _ => unreachable!(),
+            }
+        } else {
+            let parsed = text.parse::<f64>().map_err(|_| {
+                err(
+                    RecipeErrorCode::InvalidParamValue,
+                    format!(
+                        "step `{}`: `{path}` param `{placeholder}` must be a finite number, got `{text}`",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id)
+            })?;
+            if !parsed.is_finite() {
+                return Err(err(
+                    RecipeErrorCode::InvalidParamValue,
+                    format!(
+                        "step `{}`: `{path}` param `{placeholder}` must be finite, got `{text}`",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id));
+            }
+            if path.starts_with("within.") && parsed < 0.0 {
+                return Err(err(
+                    RecipeErrorCode::InvalidParamValue,
+                    format!(
+                        "step `{}`: `{path}` param `{placeholder}` must be non-negative, got `{text}`",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id));
+            }
+            set_numeric_op_value(&mut step.op, &path, &Value::from(parsed))
+                .map_err(|m| err(RecipeErrorCode::InvalidParamValue, m).at_step(&step.id))?;
+        }
+    }
+    Ok(())
 }
 
 impl Recipe {
@@ -132,6 +318,10 @@ impl Recipe {
     ///
     /// # Errors
     /// As [`Recipe::from_json`].
+    #[expect(
+        clippy::too_many_lines,
+        reason = "step normalization and unknown-field probing are one parse pipeline"
+    )]
     pub fn from_value(value: &Value) -> Result<Self, RecipeError> {
         if let Some(map) = value.as_object() {
             if let Some(key) = map.keys().find(|k| !RECIPE_FIELDS.contains(&k.as_str())) {
@@ -160,9 +350,85 @@ impl Recipe {
                 .at_step(id));
             }
         }
-        let recipe = Self::deserialize(value)
+        let mut normalized = value.clone();
+        let mut numeric_params = Vec::new();
+        if let Some(steps) = normalized.get_mut("steps").and_then(Value::as_array_mut) {
+            for raw in steps {
+                numeric_params.push(take_numeric_params(raw));
+                let original_op = raw.get("op").and_then(Value::as_str).unwrap_or("?");
+                let has_until_fields = raw.get("until").is_some() || raw.get("max_steps").is_some();
+                if original_op == "scroll_until" {
+                    let id = raw.get("id").and_then(Value::as_str).unwrap_or("?");
+                    let target_ok = raw
+                        .get("target")
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| !v.trim().is_empty());
+                    if !target_ok {
+                        return Err(err(
+                            RecipeErrorCode::Parse,
+                            format!("recipe json: step `{id}` scroll_until requires a container target string"),
+                        )
+                        .at_step(id));
+                    }
+                    let until_ok = raw
+                        .get("until")
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| !v.trim().is_empty());
+                    if !until_ok {
+                        return Err(err(
+                            RecipeErrorCode::Parse,
+                            format!("recipe json: step `{id}` scroll_until requires a non-empty until pattern string"),
+                        )
+                        .at_step(id));
+                    }
+                    if let Some(max_raw) = raw.get("max_steps")
+                        && !numeric_params.last().is_some_and(
+                            |params: &BTreeMap<String, String>| params.contains_key("max_steps"),
+                        )
+                    {
+                        let max_steps = max_raw.as_u64().ok_or_else(|| {
+                            err(
+                                RecipeErrorCode::Parse,
+                                format!(
+                                    "recipe json: step `{id}` max_steps must be an unsigned integer"
+                                ),
+                            )
+                            .at_step(id)
+                        })?;
+                        if !(1..=MAX_SCROLL_UNTIL_STEPS).contains(&max_steps) {
+                            return Err(err(
+                                RecipeErrorCode::Parse,
+                                format!(
+                                    "recipe json: step `{id}` max_steps must be 1 to {MAX_SCROLL_UNTIL_STEPS}, got {max_steps}"
+                                ),
+                            )
+                            .at_step(id));
+                        }
+                    }
+                    raw["op"] = Value::String("scroll".into());
+                } else if has_until_fields {
+                    let key = if raw.get("until").is_some() {
+                        "until"
+                    } else {
+                        "max_steps"
+                    };
+                    let id = raw.get("id").and_then(Value::as_str).unwrap_or("?");
+                    return Err(err(
+                        RecipeErrorCode::UnknownField,
+                        format!(
+                            "recipe json: step `{id}` has unknown field `{key}` for op `{original_op}`"
+                        ),
+                    )
+                    .at_step(id));
+                }
+            }
+        }
+        let mut recipe = Self::deserialize(&normalized)
             .map_err(|e| err(RecipeErrorCode::Parse, format!("recipe json: {e}")))?;
-        let raw_steps = value.get("steps").and_then(Value::as_array);
+        for (step, params) in recipe.steps.iter_mut().zip(numeric_params) {
+            step.numeric_params = params;
+        }
+        let raw_steps = normalized.get("steps").and_then(Value::as_array);
         for (step, raw) in recipe.steps.iter().zip(raw_steps.into_iter().flatten()) {
             if let Some(key) = unknown_step_field(raw, step) {
                 return Err(err(
@@ -401,6 +667,106 @@ pub fn parse_recipe_source(
     }
 }
 
+fn value_strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+    match value {
+        Value::String(text) => out.push(text),
+        Value::Array(items) => {
+            for item in items {
+                value_strings(item, out);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values() {
+                value_strings(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn without_step_node_refs(input: &str, step_ids: &BTreeSet<String>) -> String {
+    let mut out = input.to_string();
+    for id in step_ids {
+        out = out.replace(&format!("${id}.node"), "");
+        out = out.replace(&format!("${{{id}}}.node"), "");
+    }
+    out
+}
+
+fn collect_placeholders_in_text_without_node_refs(
+    input: &str,
+    step_ids: &BTreeSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    collect_placeholders(&without_step_node_refs(input, step_ids), out);
+}
+
+fn collect_placeholders_in_op_without_node_refs(
+    op: &Op,
+    step_ids: &BTreeSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    let Ok(value) = serde_json::to_value(op) else {
+        collect_placeholders_in_op(op, out);
+        return;
+    };
+    let mut strings = Vec::new();
+    value_strings(&value, &mut strings);
+    for text in strings {
+        collect_placeholders_in_text_without_node_refs(text, step_ids, out);
+    }
+}
+
+fn node_suffix_continues_ident(bytes: &[u8], after: usize) -> bool {
+    bytes
+        .get(after)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+
+fn step_node_refs_in_text(input: &str, step_ids: &BTreeSet<String>) -> BTreeSet<String> {
+    let bytes = input.as_bytes();
+    let mut out = BTreeSet::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$'
+            && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
+            && bytes[next..].starts_with(b".node")
+        {
+            let after = next + ".node".len();
+            let continues_ident = node_suffix_continues_ident(bytes, after);
+            if !continues_ident && (step_ids.is_empty() || step_ids.contains(name)) {
+                out.insert(name.to_string());
+            }
+            i = after;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+pub(crate) fn step_node_references(step: &RecipeStep) -> BTreeSet<String> {
+    let empty = BTreeSet::new();
+    let mut refs = step_node_refs_in_op(&step.op, &empty);
+    if let Some(until) = &step.until {
+        refs.extend(step_node_refs_in_text(until, &empty));
+    }
+    refs
+}
+
+fn step_node_refs_in_op(op: &Op, step_ids: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Ok(value) = serde_json::to_value(op) else {
+        return out;
+    };
+    let mut strings = Vec::new();
+    value_strings(&value, &mut strings);
+    for text in strings {
+        out.extend(step_node_refs_in_text(text, step_ids));
+    }
+    out
+}
+
 /// Line-based `.wants`: one protocol op per line, `#` comments.
 ///
 /// # Errors
@@ -426,11 +792,17 @@ pub fn parse_wants(text: &str, name: &str) -> Result<Recipe, RecipeError> {
         }
         let id = format!("s{}", steps.len() + 1);
         let step = parse_wants_step(tokens, id).map_err(at_line)?;
-        collect_placeholders_in_op(&step.op, &mut params);
         steps.push(step);
     }
     if steps.is_empty() {
         return Err(err(RecipeErrorCode::InvalidRecipe, "recipe has no steps"));
+    }
+    let step_ids: BTreeSet<String> = steps.iter().map(|step| step.id.clone()).collect();
+    for step in &steps {
+        collect_placeholders_in_op_without_node_refs(&step.op, &step_ids, &mut params);
+        if let Some(until) = &step.until {
+            collect_placeholders_in_text_without_node_refs(until, &step_ids, &mut params);
+        }
     }
     Ok(Recipe {
         json_schema: None,
@@ -492,6 +864,11 @@ pub fn apply_params(
         }
         substitute_op_in_place(&mut step.op, &bound)
             .map_err(|message| err(RecipeErrorCode::MissingParam, message).at_step(&step.id))?;
+        if let Some(until) = &mut step.until {
+            substitute_string_in_place_escaping_values(until, &bound)
+                .map_err(|message| err(RecipeErrorCode::MissingParam, message).at_step(&step.id))?;
+        }
+        bind_numeric_params(step, &bound)?;
     }
     Ok(out)
 }
@@ -583,6 +960,87 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
         }
     }
 
+    for step in &recipe.steps {
+        if step.until.is_some() || step.max_steps.is_some() {
+            let Op::Scroll { target, dx, dy, .. } = &step.op else {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}`: until/max_steps apply only to scroll_until",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+                continue;
+            };
+            let delta_is_unbound =
+                step.numeric_params.contains_key("dx") || step.numeric_params.contains_key("dy");
+            if *dx == 0.0 && *dy == 0.0 && !delta_is_unbound {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}`: scroll_until requires a non-zero dx or dy",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
+            if target.as_deref().map_or("", str::trim).is_empty() {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}`: scroll_until requires a container target",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
+            if step.until.as_deref().map_or("", str::trim).is_empty() {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!("step `{}`: scroll_until requires a node to find", step.id),
+                    )
+                    .at_step(&step.id),
+                );
+            } else if let Some(until) = &step.until
+                && let Err(error) = regex_lite::Regex::new(until)
+            {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}`: scroll_until pattern does not compile: {error}",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
+            if let Some(max_steps) = step.max_steps
+                && !(1..=MAX_SCROLL_UNTIL_STEPS).contains(&max_steps)
+            {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}`: max_steps must be 1 to {MAX_SCROLL_UNTIL_STEPS}, got {max_steps}",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
+        }
+    }
+
+    let all_ids: BTreeSet<String> = recipe.steps.iter().map(|step| step.id.clone()).collect();
     let mut ids = BTreeSet::new();
     for step in &recipe.steps {
         if step.id.trim().is_empty() {
@@ -632,8 +1090,73 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
             }
         }
 
+        let node_refs = {
+            let mut refs = step_node_refs_in_op(&step.op, &BTreeSet::new());
+            if let Some(until) = &step.until {
+                refs.extend(step_node_refs_in_text(until, &BTreeSet::new()));
+            }
+            refs
+        };
+        for referenced in &node_refs {
+            if params.contains(referenced.as_str()) && !all_ids.contains(referenced) {
+                continue;
+            }
+            if params.contains(referenced.as_str()) && all_ids.contains(referenced) {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{referenced}` cannot be both a step id and a param when `$...node` is used"
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
+            if referenced == &step.id {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!("step `{}` cannot refer to its own result node", step.id),
+                    )
+                    .at_step(&step.id),
+                );
+            } else if !all_ids.contains(referenced) {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}` uses ${referenced}.node but no step `{referenced}` exists",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            } else if recipe
+                .steps
+                .iter()
+                .find(|candidate| candidate.id == *referenced)
+                .is_some_and(|candidate| candidate.until.is_none())
+            {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}` uses ${referenced}.node but `{referenced}` is not a scroll_until step",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
+        }
         let mut found = BTreeSet::new();
-        collect_placeholders_in_op(&step.op, &mut found);
+        for placeholder in step.numeric_params.values() {
+            collect_placeholders(placeholder, &mut found);
+        }
+        collect_placeholders_in_op_without_node_refs(&step.op, &all_ids, &mut found);
+        if let Some(until) = &step.until {
+            collect_placeholders_in_text_without_node_refs(until, &all_ids, &mut found);
+        }
         for name in found {
             if recipe.param(&name).is_none() {
                 errors.push(
@@ -929,6 +1452,12 @@ fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
             if let Some(role) = &spec.role {
                 collect_placeholders(role, out);
             }
+            if let Some(state) = &spec.state {
+                collect_placeholders(state, out);
+            }
+            for state in &spec.states {
+                collect_placeholders(state, out);
+            }
         }
         Op::Click { target, .. } => collect_placeholders(target, out),
         Op::Type { target, text, .. } => {
@@ -998,6 +1527,14 @@ fn collect_placeholders(s: &str, out: &mut BTreeSet<String>) {
         if bytes[i] == b'$'
             && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
         {
+            if bytes[next..].starts_with(b".node") {
+                let after = next + ".node".len();
+                let continues_ident = node_suffix_continues_ident(bytes, after);
+                if !continues_ident {
+                    i = after;
+                    continue;
+                }
+            }
             out.insert(name.to_string());
             i = next;
             continue;
@@ -1082,6 +1619,12 @@ fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result
             if let Some(role) = &mut spec.role {
                 substitute_string_in_place(role, set)?;
             }
+            if let Some(state) = &mut spec.state {
+                substitute_string_in_place(state, set)?;
+            }
+            for state in &mut spec.states {
+                substitute_string_in_place(state, set)?;
+            }
             Ok(())
         }
         Op::Click { target, .. } => substitute_string_in_place(target, set),
@@ -1138,6 +1681,66 @@ fn substitute_value(value: &mut Value, set: &BTreeMap<String, String>) -> Result
     Ok(())
 }
 
+fn regex_escape_literal(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if matches!(
+            ch,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn substitute_string_in_place_escaping_values(
+    input: &mut String,
+    set: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if !input.as_bytes().contains(&b'$') {
+        return Ok(());
+    }
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'$') {
+            out.push('$');
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'$'
+            && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
+        {
+            if bytes[next..].starts_with(b".node")
+                && !node_suffix_continues_ident(bytes, next + ".node".len())
+            {
+                out.push('$');
+                out.push_str(name);
+                out.push_str(".node");
+                i = next + ".node".len();
+                continue;
+            }
+            let value = set
+                .get(name)
+                .ok_or_else(|| format!("missing --set {name}=…"))?;
+            out.push_str(&regex_escape_literal(value));
+            i = next;
+            continue;
+        }
+        let ch = input[i..]
+            .chars()
+            .next()
+            .expect("byte index is a char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    *input = out;
+    Ok(())
+}
+
 fn substitute_string_in_place(
     input: &mut String,
     set: &BTreeMap<String, String>,
@@ -1165,6 +1768,17 @@ fn substitute_string(input: &str, set: &BTreeMap<String, String>) -> Result<Stri
         if bytes[i] == b'$'
             && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
         {
+            if bytes[next..].starts_with(b".node")
+                && !node_suffix_continues_ident(bytes, next + ".node".len())
+            {
+                // Step results are bound by the runner, after that step has
+                // run; they are not recipe params.
+                out.push('$');
+                out.push_str(name);
+                out.push_str(".node");
+                i = next + ".node".len();
+                continue;
+            }
             let value = set
                 .get(name)
                 .ok_or_else(|| format!("missing --set {name}=…"))?;
@@ -1241,6 +1855,8 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         return Err("missing op".into());
     }
     let op_name = tokens[0].replace('-', "_");
+    let mut step_until = None;
+    let mut step_max_steps = None;
     let op = match op_name.as_str() {
         "wait" => Op::Wait { timeout_ms: None },
         "wait_until" => parse_wait_until_op(&tokens[1..])?,
@@ -1294,6 +1910,16 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
                 expect_fingerprint: None,
             }
         }
+        "scroll" => {
+            let (op, _, _) = parse_scroll_wants(&tokens[1..], false)?;
+            op
+        }
+        "scroll_until" => {
+            let (op, until, max_steps) = parse_scroll_wants(&tokens[1..], true)?;
+            step_until = until;
+            step_max_steps = max_steps;
+            op
+        }
         "press" => parse_press_wants(&tokens[1..], false)?,
         "long_press" => parse_press_wants(&tokens[1..], true)?,
         "keybindings" | "keybinding.list" => Op::Keybindings,
@@ -1341,6 +1967,9 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         needs: Vec::new(),
         screenshot,
         key_delay_ms,
+        until: step_until,
+        max_steps: step_max_steps,
+        numeric_params: BTreeMap::new(),
         op,
     })
 }
@@ -1381,6 +2010,100 @@ fn take_fingerprint(tokens: &mut Vec<String>) -> Result<Option<u64>, String> {
         return Err("--fp given twice".into());
     }
     Ok(Some(fingerprint))
+}
+
+fn parse_point_number(raw: &str, flag: &str) -> Result<f64, String> {
+    raw.parse()
+        .ok()
+        .filter(|value: &f64| value.is_finite())
+        .ok_or_else(|| format!("{flag} needs a finite number, got {raw}"))
+}
+
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag selects scroll or scroll_until in the shared parser"
+)]
+fn parse_scroll_wants(
+    tokens: &[String],
+    until_mode: bool,
+) -> Result<(Op, Option<String>, Option<u64>), String> {
+    let name = if until_mode { "scroll_until" } else { "scroll" };
+    let mut positional = Vec::new();
+    let mut dx = 0.0;
+    let mut dy = 0.0;
+    let mut horizontal_seen = false;
+    let mut vertical_seen = false;
+    let mut max_steps = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "--dx" | "--dy" => {
+                let flag = tokens[i].as_str();
+                i += 1;
+                let raw = tokens
+                    .get(i)
+                    .ok_or_else(|| format!("{flag} needs a number"))?;
+                let value = parse_point_number(raw, flag)?;
+                if flag == "--dx" {
+                    if horizontal_seen {
+                        return Err("--dx given twice".into());
+                    }
+                    horizontal_seen = true;
+                    dx = value;
+                } else {
+                    if vertical_seen {
+                        return Err("--dy given twice".into());
+                    }
+                    vertical_seen = true;
+                    dy = value;
+                }
+            }
+            "--max-steps" if until_mode => {
+                i += 1;
+                let raw = tokens
+                    .get(i)
+                    .ok_or_else(|| "--max-steps needs a count".to_string())?;
+                let parsed: u64 = raw
+                    .parse()
+                    .map_err(|_| format!("--max-steps needs an unsigned integer, got {raw}"))?;
+                if max_steps.is_some() {
+                    return Err("--max-steps given twice".into());
+                }
+                if !(1..=MAX_SCROLL_UNTIL_STEPS).contains(&parsed) {
+                    return Err(format!(
+                        "--max-steps must be 1 to {MAX_SCROLL_UNTIL_STEPS}, got {parsed}"
+                    ));
+                }
+                max_steps = Some(parsed);
+            }
+            other if other.starts_with('-') => return Err(format!("bad {name} token `{other}`")),
+            other => positional.push(other.to_string()),
+        }
+        i += 1;
+    }
+    let wanted = if until_mode { 2 } else { 1 };
+    if positional.len() != wanted {
+        return Err(if until_mode {
+            "scroll_until needs container and node".into()
+        } else {
+            "scroll needs a target".into()
+        });
+    }
+    Ok((
+        Op::Scroll {
+            target: Some(positional[0].clone()),
+            x: None,
+            y: None,
+            dx,
+            dy,
+        },
+        if until_mode {
+            Some(positional[1].clone())
+        } else {
+            None
+        },
+        max_steps,
+    ))
 }
 
 fn parse_within_pair(raw: &str) -> Result<PointOffset, String> {
@@ -1685,6 +2408,15 @@ fn apply_assert_kv(spec: &mut AssertSpec, key: &str, raw: &str) -> Result<(), St
         "exists" => spec.exists = Some(parse_bool(raw)?),
         "visible" => spec.visible = Some(parse_bool(raw)?),
         "in_viewport" | "in-viewport" => spec.in_viewport = Some(parse_bool(raw)?),
+        "state" => spec.state = Some(raw.into()),
+        "states" => {
+            spec.states = raw
+                .split(',')
+                .map(str::trim)
+                .filter(|state| !state.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
         "target" | "id" => spec.target = raw.into(),
         other => return Err(format!("unknown assert field `{other}`")),
     }
@@ -2772,7 +3504,14 @@ assert todo-item-1 name=$title checked=false
                 raw.insert(key.into(), sample);
             }
             let raw = Value::Object(raw);
-            let step = RecipeStep::deserialize(&raw)
+            let parse_raw = if op == "scroll_until" {
+                let mut normalized = raw.as_object().unwrap().clone();
+                normalized.insert("op".into(), json!("scroll"));
+                Value::Object(normalized)
+            } else {
+                raw.clone()
+            };
+            let step = RecipeStep::deserialize(&parse_raw)
                 .unwrap_or_else(|e| panic!("schema minimum for `{op}` does not parse: {e}"));
             assert_eq!(unknown_step_field(&raw, &step), None, "{op}");
             for key in variant["properties"].as_object().unwrap().keys() {
@@ -3063,7 +3802,13 @@ assert todo-item-1 name=$title checked=false
                 };
                 raw.insert(key.into(), sample);
             }
-            let step = RecipeStep::deserialize(&Value::Object(raw)).unwrap();
+            let mut raw = Value::Object(raw);
+            if op == "scroll_until" {
+                raw.as_object_mut()
+                    .unwrap()
+                    .insert("op".into(), json!("scroll"));
+            }
+            let step = RecipeStep::deserialize(&raw).unwrap();
             let written = serde_json::to_value(&step).unwrap();
             for (key, value) in written.as_object().unwrap() {
                 let property = &variant["properties"][key];

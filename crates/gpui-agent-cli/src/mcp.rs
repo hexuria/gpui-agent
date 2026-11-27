@@ -1108,6 +1108,8 @@ fn parse_assert_spec(args: &Value) -> Result<AssertSpec, String> {
         exists: args.get("exists").and_then(Value::as_bool),
         visible: args.get("visible").and_then(Value::as_bool),
         in_viewport: args.get("in_viewport").and_then(Value::as_bool),
+        state: None,
+        states: Vec::new(),
     })
 }
 

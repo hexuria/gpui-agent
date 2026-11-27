@@ -1050,6 +1050,13 @@ pub struct AssertSpec {
     /// host is headless — never invent geometry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_viewport: Option<bool>,
+    /// One exact `UiNode::states` entry that must be present. Sugar for a
+    /// one-item [`Self::states`] list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Exact `UiNode::states` entries that must all be present.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<String>,
 }
 
 /// One NDJSON line a host sends back for a [`Request`].
@@ -1477,6 +1484,15 @@ impl Op {
     /// The `hello.features` string that gates this op, for ops added after
     /// the first protocol 2 release. `None` for the original ops.
     pub fn feature(&self) -> Option<&'static str> {
+        let stateful = match self {
+            Self::Assert { spec } | Self::WaitUntil { spec, .. } => {
+                spec.state.is_some() || !spec.states.is_empty()
+            }
+            _ => false,
+        };
+        if stateful {
+            return Some(ASSERT_STATES_FEATURE);
+        }
         Some(match self {
             Self::Screenshot { inline: true, .. } => "screenshot_inline",
             Self::Press {

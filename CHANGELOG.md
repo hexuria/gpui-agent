@@ -2,17 +2,37 @@
 
 ## 0.5.0
 
-The recipe wire is unchanged for recipes that do not use `within`: they validate and run as before,
-with the same plan fingerprint. The Rust API is breaking because `Op::Press` and `Op::LongPress`
-have a new public field: struct literals need `within: None`, and exhaustive matches need `..`.
+The recipe wire is unchanged for recipes that use neither `within` nor the new recipe features: they
+validate and run as before, with the same plan fingerprint. The Rust API is breaking because
+`Op::Press` and `Op::LongPress` have a new public field in the combined release: struct literals need
+`within: None`, and exhaustive matches need `..`.
 
+- **Bounded scroll-until.** `.wants` gains `scroll <target> --dy <n> [--dx <n>]`, the JSON `scroll`
+  op it already had. JSON and `.wants` gain `scroll_until` (`scroll_until <container> <pattern>
+  --dy <n> [--dx <n>] [--max-steps <k>]`). The runner snapshots first, sends ordinary `scroll` and
+  `snapshot` requests, and searches only the container's visible descendants. A match must be the
+  whole stable id or whole visible text of the regex-lite pattern and, when geometry exists, intersect
+  the container's bounds. `max_steps` is 1 to 50 (default 10); zero deltas, repeated `.wants` flags,
+  a container that does not move after two scrolls, and a 60 second overall budget are refused or
+  stopped clearly. Success carries the matched node id; a dependent step can use `$<step>.node`.
+  There is no wire `scroll_until` op, so hosts need no new capability. `$<step>.node` references imply their dependency and may be used in a later `until`; they never pipeline. Not-found uses `scroll_until_not_found`.
 - **Aim inside a press target.** `press` and `long_press` may carry optional `within: {"x", "y"}`
   (`.wants`: `--within <x>,<y>`), a finite, non-negative point in the target's own frame in logical
   points from its top-left. Absent means centre as before. The client gates the field on the new
   `press_within` `hello.features` capability. Before the first wave a recipe run reads the features
-  once and refuses the whole run, listing every step whose non-legacy feature is missing; nothing
-  after `hello` reaches the host. `AgentClient::as_written()` deliberately skips all local refusals,
-  including that preflight, and would send `within` to an older host exactly as written.
+  once and refuses the whole run, listing every step whose missing feature has no safe legacy spelling;
+  nothing after `hello` reaches the host. `AgentClient::as_written()` deliberately skips all local
+  refusals, including that preflight, and would send `within` to an older host exactly as written.
+- **Numeric params.** JSON numeric recipe fields `x`, `y`, `within.x`, `within.y`, `dx`, `dy`,
+  `duration_ms`, `key_delay_ms`, and `max_steps` may be exactly `$param` (JSON only; `.wants` numeric flags remain literal numbers); the value is bound before
+  the field's numeric validation and is still checked as finite, integral where required, and in range.
+- **State assertions.** `assert` and `wait_until` are gated by the host `assert_states` capability when `state` or `states` is set and accept optional `state` (one exact state string) and
+  `states` (a list whose entries must all be present), matched against `UiNode.states`; `.wants` accepts
+  `state="exact state"` and `states="one,two"`. Omitting them leaves validation and fingerprints unchanged.
+  This adds public `AssertSpec` fields, so direct struct literals without `..` need them.
+- **Read-back pinning.** No behavior change: `Client::act` documents and tests that a target gone after
+  a click or press is a verified change (`after.exists == false`), not a failure.
+
 
 ## 0.4.1
 
