@@ -717,7 +717,13 @@ fn collect_placeholders_in_op_without_node_refs(
     }
 }
 
-fn step_node_refs_in_text(input: &str, _step_ids: &BTreeSet<String>) -> BTreeSet<String> {
+fn node_suffix_continues_ident(bytes: &[u8], after: usize) -> bool {
+    bytes
+        .get(after)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+
+fn step_node_refs_in_text(input: &str, step_ids: &BTreeSet<String>) -> BTreeSet<String> {
     let bytes = input.as_bytes();
     let mut out = BTreeSet::new();
     let mut i = 0;
@@ -726,8 +732,12 @@ fn step_node_refs_in_text(input: &str, _step_ids: &BTreeSet<String>) -> BTreeSet
             && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
             && bytes[next..].starts_with(b".node")
         {
-            out.insert(name.to_string());
-            i = next + ".node".len();
+            let after = next + ".node".len();
+            let continues_ident = node_suffix_continues_ident(bytes, after);
+            if !continues_ident && (step_ids.is_empty() || step_ids.contains(name)) {
+                out.insert(name.to_string());
+            }
+            i = after;
             continue;
         }
         i += 1;
@@ -1081,13 +1091,27 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
         }
 
         let node_refs = {
-            let mut refs = step_node_refs_in_op(&step.op, &all_ids);
+            let mut refs = step_node_refs_in_op(&step.op, &BTreeSet::new());
             if let Some(until) = &step.until {
-                refs.extend(step_node_refs_in_text(until, &all_ids));
+                refs.extend(step_node_refs_in_text(until, &BTreeSet::new()));
             }
             refs
         };
         for referenced in &node_refs {
+            if params.contains(referenced.as_str()) && !all_ids.contains(referenced) {
+                continue;
+            }
+            if params.contains(referenced.as_str()) && all_ids.contains(referenced) {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{referenced}` cannot be both a step id and a param when `$...node` is used"
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
             if referenced == &step.id {
                 errors.push(
                     err(
@@ -1428,6 +1452,12 @@ fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
             if let Some(role) = &spec.role {
                 collect_placeholders(role, out);
             }
+            if let Some(state) = &spec.state {
+                collect_placeholders(state, out);
+            }
+            for state in &spec.states {
+                collect_placeholders(state, out);
+            }
         }
         Op::Click { target, .. } => collect_placeholders(target, out),
         Op::Type { target, text, .. } => {
@@ -1498,8 +1528,12 @@ fn collect_placeholders(s: &str, out: &mut BTreeSet<String>) {
             && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
         {
             if bytes[next..].starts_with(b".node") {
-                i = next + ".node".len();
-                continue;
+                let after = next + ".node".len();
+                let continues_ident = node_suffix_continues_ident(bytes, after);
+                if !continues_ident {
+                    i = after;
+                    continue;
+                }
             }
             out.insert(name.to_string());
             i = next;
@@ -1584,6 +1618,12 @@ fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result
             }
             if let Some(role) = &mut spec.role {
                 substitute_string_in_place(role, set)?;
+            }
+            if let Some(state) = &mut spec.state {
+                substitute_string_in_place(state, set)?;
+            }
+            for state in &mut spec.states {
+                substitute_string_in_place(state, set)?;
             }
             Ok(())
         }
@@ -1674,7 +1714,9 @@ fn substitute_string_in_place_escaping_values(
         if bytes[i] == b'$'
             && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
         {
-            if bytes[next..].starts_with(b".node") {
+            if bytes[next..].starts_with(b".node")
+                && !node_suffix_continues_ident(bytes, next + ".node".len())
+            {
                 out.push('$');
                 out.push_str(name);
                 out.push_str(".node");
@@ -1726,7 +1768,9 @@ fn substitute_string(input: &str, set: &BTreeMap<String, String>) -> Result<Stri
         if bytes[i] == b'$'
             && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
         {
-            if bytes[next..].starts_with(b".node") {
+            if bytes[next..].starts_with(b".node")
+                && !node_suffix_continues_ident(bytes, next + ".node".len())
+            {
                 // Step results are bound by the runner, after that step has
                 // run; they are not recipe params.
                 out.push('$');

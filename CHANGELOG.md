@@ -26,7 +26,7 @@ validate and run as before, with the same plan fingerprint. The Rust API is brea
 - **Numeric params.** JSON numeric recipe fields `x`, `y`, `within.x`, `within.y`, `dx`, `dy`,
   `duration_ms`, `key_delay_ms`, and `max_steps` may be exactly `$param` (JSON only; `.wants` numeric flags remain literal numbers); the value is bound before
   the field's numeric validation and is still checked as finite, integral where required, and in range.
-- **State assertions.** `assert` and `wait_until` are gated by the host `assert_states` capability and accept optional `state` (one exact state string) and
+- **State assertions.** `assert` and `wait_until` are gated by the host `assert_states` capability when `state` or `states` is set and accept optional `state` (one exact state string) and
   `states` (a list whose entries must all be present), matched against `UiNode.states`; `.wants` accepts
   `state="exact state"` and `states="one,two"`. Omitting them leaves validation and fingerprints unchanged.
   This adds public `AssertSpec` fields, so direct struct literals without `..` need them.

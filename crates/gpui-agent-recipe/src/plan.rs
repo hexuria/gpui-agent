@@ -106,10 +106,34 @@ pub fn compile_plan(
     registry: &Registry,
 ) -> Result<Plan, RecipeError> {
     validate_recipe(recipe, registry)?;
+    let implicit = recipe.steps.iter().all(|step| step.needs.is_empty());
+    let positions: BTreeMap<&str, usize> = recipe
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| (step.id.as_str(), index))
+        .collect();
     let mut bound = apply_params(recipe, set)?;
-    for step in &mut bound.steps {
+    for (step_index, step) in bound.steps.iter_mut().enumerate() {
         for referenced in step_node_references(step) {
-            if referenced != step.id && !step.needs.iter().any(|need| need == &referenced) {
+            if referenced == step.id {
+                continue;
+            }
+            if implicit
+                && positions
+                    .get(referenced.as_str())
+                    .is_some_and(|referenced_index| *referenced_index > step_index)
+            {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}` uses ${referenced}.node from a later step; implicit recipes run in file order",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id));
+            }
+            if !implicit && !step.needs.iter().any(|need| need == &referenced) {
                 step.needs.push(referenced);
             }
         }
@@ -205,7 +229,6 @@ pub fn compile_plan(
     let name = bound.name.as_str();
     let app = bound.app.clone();
     let steps = bound.steps.as_slice();
-    let implicit = steps.iter().all(|step| step.needs.is_empty());
     let (ordered, waves) =
         schedule(steps).map_err(|message| err(RecipeErrorCode::Cycle, message))?;
     let mut planned = Vec::with_capacity(ordered.len());

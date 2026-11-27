@@ -213,3 +213,34 @@ fn built_in_dispatcher_really_matches_states() {
         assert_eq!(result.is_ok(), should_pass, "{state}: {result:?}");
     }
 }
+
+#[test]
+fn state_and_states_params_are_substituted_for_assert_and_wait_until() {
+    let recipe = Recipe::from_json(
+        r#"{"name":"s","params":[{"name":"st"},{"name":"oth"}],"steps":[{"id":"a","op":"assert","target":"field","state":"$st"},{"id":"w","op":"wait_until","target":"field","states":["$st","pre-$oth"],"timeout_ms":100}]}"#,
+    )
+    .unwrap();
+    let set = BTreeMap::from([
+        ("st".to_string(), "masked".to_string()),
+        ("oth".to_string(), "system".to_string()),
+    ]);
+    let plan = compile_plan(&recipe, &set, &todo_registry()).unwrap();
+    let Op::Assert { spec } = &plan.steps[0].op else {
+        panic!("not assert")
+    };
+    assert_eq!(spec.state.as_deref(), Some("masked"));
+    let Op::WaitUntil { spec, .. } = &plan.steps[1].op else {
+        panic!("not wait")
+    };
+    assert_eq!(spec.states, ["masked", "pre-system"]);
+}
+
+#[test]
+fn unbound_state_param_is_refused() {
+    let recipe = Recipe::from_json(
+        r#"{"name":"s","params":[{"name":"st"}],"steps":[{"id":"a","op":"assert","target":"field","state":"$st"}]}"#,
+    )
+    .unwrap();
+    let error = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap_err();
+    assert!(error.to_string().contains("st"), "{error}");
+}

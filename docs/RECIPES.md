@@ -274,7 +274,7 @@ and repeats for at most 60 seconds overall. The host never receives a
 parse). `dx` and `dy` mean the same as in `scroll`; both zero is refused, and a
 repeated `.wants` `--dx`, `--dy` or `--max-steps` flag is refused. If the
 container's bounds and subtree do not change for two consecutive scrolls, the
-step stops early with `not_found, container did not move`. At the cap it fails
+step stops early with `not_found, container did not move`. These failures use error code `scroll_until_not_found`. At the cap it fails
 with how many scroll steps ran and the last snapshot's revision. A failure after
 scrolling started keeps that count and is `delivery_uncertain`; success carries
 `delivered_verified` and `result.node`, the matched stable id. A later step that
