@@ -717,14 +717,31 @@ fn collect_placeholders_in_op_without_node_refs(
     }
 }
 
-fn step_node_refs_in_text(input: &str, step_ids: &BTreeSet<String>) -> BTreeSet<String> {
+fn step_node_refs_in_text(input: &str, _step_ids: &BTreeSet<String>) -> BTreeSet<String> {
+    let bytes = input.as_bytes();
     let mut out = BTreeSet::new();
-    for id in step_ids {
-        if input.contains(&format!("${id}.node")) || input.contains(&format!("${{{id}}}.node")) {
-            out.insert(id.clone());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$'
+            && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
+            && bytes[next..].starts_with(b".node")
+        {
+            out.insert(name.to_string());
+            i = next + ".node".len();
+            continue;
         }
+        i += 1;
     }
     out
+}
+
+pub(crate) fn step_node_references(step: &RecipeStep) -> BTreeSet<String> {
+    let empty = BTreeSet::new();
+    let mut refs = step_node_refs_in_op(&step.op, &empty);
+    if let Some(until) = &step.until {
+        refs.extend(step_node_refs_in_text(until, &empty));
+    }
+    refs
 }
 
 fn step_node_refs_in_op(op: &Op, step_ids: &BTreeSet<String>) -> BTreeSet<String> {
@@ -738,21 +755,6 @@ fn step_node_refs_in_op(op: &Op, step_ids: &BTreeSet<String>) -> BTreeSet<String
         out.extend(step_node_refs_in_text(text, step_ids));
     }
     out
-}
-
-fn step_depends_on(recipe: &Recipe, step_id: &str, wanted: &str) -> bool {
-    fn visit(recipe: &Recipe, current: &str, wanted: &str, seen: &mut BTreeSet<String>) -> bool {
-        if !seen.insert(current.to_string()) {
-            return false;
-        }
-        let Some(step) = recipe.steps.iter().find(|step| step.id == current) else {
-            return false;
-        };
-        step.needs
-            .iter()
-            .any(|need| need == wanted || visit(recipe, need, wanted, seen))
-    }
-    visit(recipe, step_id, wanted, &mut BTreeSet::new())
 }
 
 /// Line-based `.wants`: one protocol op per line, `#` comments.
@@ -963,7 +965,9 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
                 );
                 continue;
             };
-            if *dx == 0.0 && *dy == 0.0 {
+            let delta_is_unbound =
+                step.numeric_params.contains_key("dx") || step.numeric_params.contains_key("dy");
+            if *dx == 0.0 && *dy == 0.0 && !delta_is_unbound {
                 errors.push(
                     err(
                         Code::InvalidStep,
@@ -1092,12 +1096,28 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
                     )
                     .at_step(&step.id),
                 );
-            } else if !step_depends_on(recipe, &step.id, referenced) {
+            } else if !all_ids.contains(referenced) {
                 errors.push(
                     err(
                         Code::InvalidStep,
                         format!(
-                            "step `{}` uses ${referenced}.node but does not depend on `{referenced}`",
+                            "step `{}` uses ${referenced}.node but no step `{referenced}` exists",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            } else if recipe
+                .steps
+                .iter()
+                .find(|candidate| candidate.id == *referenced)
+                .is_some_and(|candidate| candidate.until.is_none())
+            {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}` uses ${referenced}.node but `{referenced}` is not a scroll_until step",
                             step.id
                         ),
                     )
@@ -1477,6 +1497,10 @@ fn collect_placeholders(s: &str, out: &mut BTreeSet<String>) {
         if bytes[i] == b'$'
             && let Some((name, next)) = parse_placeholder_bytes(bytes, i)
         {
+            if bytes[next..].starts_with(b".node") {
+                i = next + ".node".len();
+                continue;
+            }
             out.insert(name.to_string());
             i = next;
             continue;

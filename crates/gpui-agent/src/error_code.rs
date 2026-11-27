@@ -28,6 +28,8 @@ pub const DUPLICATE_ID: &str = "duplicate_id";
 pub const ASSERT_FAILED: &str = "assert_failed";
 /// A `wait`/`wait_until` deadline elapsed.
 pub const TIMEOUT: &str = "timeout";
+/// A bounded recipe scroll ended without finding its node.
+pub const SCROLL_UNTIL_NOT_FOUND: &str = "scroll_until_not_found";
 /// The UI-thread mailbox is not draining.
 pub const MAILBOX_FULL: &str = "mailbox_full";
 /// The host cannot capture a screenshot here.
@@ -60,6 +62,7 @@ pub const ALL: &[&str] = &[
     DUPLICATE_ID,
     ASSERT_FAILED,
     TIMEOUT,
+    SCROLL_UNTIL_NOT_FOUND,
     MAILBOX_FULL,
     SCREENSHOT_UNAVAILABLE,
     VIRTUAL_UNAVAILABLE,
@@ -147,6 +150,9 @@ pub fn hint_for(code: &str) -> Option<&'static str> {
         DUPLICATE_ID => "the host gave several nodes this id; target a unique id",
         ASSERT_FAILED => "take a new snapshot to see the current state",
         TIMEOUT => "raise the timeout or wait for the UI to settle, then retry",
+        SCROLL_UNTIL_NOT_FOUND => {
+            "check the container and node pattern, or raise max_steps when the list can still move"
+        }
         MAILBOX_FULL => "the UI thread is busy; wait and retry",
         SCREENSHOT_UNAVAILABLE | SCROLL_UNAVAILABLE => {
             "this host cannot capture here; use a snapshot instead"

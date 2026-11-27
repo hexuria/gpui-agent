@@ -1421,6 +1421,15 @@ impl Op {
     /// The `hello.features` string that gates this op, for ops added after
     /// the first protocol 2 release. `None` for the original ops.
     pub fn feature(&self) -> Option<&'static str> {
+        let stateful = match self {
+            Self::Assert { spec } | Self::WaitUntil { spec, .. } => {
+                spec.state.is_some() || !spec.states.is_empty()
+            }
+            _ => false,
+        };
+        if stateful {
+            return Some("assert_states");
+        }
         Some(match self {
             Self::Screenshot { inline: true, .. } => "screenshot_inline",
             Self::Press { .. } => "press",

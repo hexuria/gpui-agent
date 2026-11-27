@@ -40,7 +40,7 @@ use recipe_cmd::RecipeCommand;
 /// (`todo.add`, `nav.go`, …) belong in the host (`invoke`) or in agent
 /// prompts — not as CLI subcommands.
 #[derive(Parser)]
-#[command(name = "gpui-agent", after_help = AFTER_HELP)]
+#[command(name = "gpui-agent-cli", version, after_help = AFTER_HELP)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "clap flag struct — flags are the interface"

@@ -5,7 +5,8 @@ use serde::Serialize;
 
 use crate::error::{RecipeError, RecipeErrorCode, err};
 use crate::recipe::{
-    Recipe, RecipeStep, apply_params, check_invoke_args, coerce_invoke_args, validate_recipe,
+    Recipe, RecipeStep, apply_params, check_invoke_args, coerce_invoke_args, step_node_references,
+    validate_recipe,
 };
 use crate::registry::Registry;
 use crate::schema::{Effect, SchemaKind};
@@ -95,6 +96,10 @@ pub struct OrderCheck {
 /// declared params; [`RecipeErrorCode::InvalidParamValue`] /
 /// [`RecipeErrorCode::InvalidArgs`] when a bound invoke arg does not fit
 /// its schema type.
+#[expect(
+    clippy::too_many_lines,
+    reason = "binding, validation, scheduling and fingerprinting are one compile pipeline"
+)]
 pub fn compile_plan(
     recipe: &Recipe,
     set: &BTreeMap<String, String>,
@@ -102,6 +107,13 @@ pub fn compile_plan(
 ) -> Result<Plan, RecipeError> {
     validate_recipe(recipe, registry)?;
     let mut bound = apply_params(recipe, set)?;
+    for step in &mut bound.steps {
+        for referenced in step_node_references(step) {
+            if referenced != step.id && !step.needs.iter().any(|need| need == &referenced) {
+                step.needs.push(referenced);
+            }
+        }
+    }
     for (step, unbound) in bound.steps.iter_mut().zip(&recipe.steps) {
         let (Op::Invoke { name, args }, Op::Invoke { args: raw, .. }) = (&mut step.op, &unbound.op)
         else {
@@ -115,14 +127,64 @@ pub fn compile_plan(
         check_invoke_args(schema, args, true)
             .map_err(|m| err(RecipeErrorCode::InvalidArgs, m).at_step(&step.id))?;
     }
-    // Validate the bound values without re-checking param usage: binding
-    // consumes the placeholders by design.
-    let mut bound_values = bound.clone();
-    bound_values.params.clear();
-    for step in &mut bound_values.steps {
-        step.numeric_params.clear();
+    // The unbound recipe was already validated. Check only the rules whose
+    // answer can change when a numeric or regex parameter is bound; do not
+    // re-read literal `$` text or bound values as placeholders.
+    for step in &bound.steps {
+        if let Some(delay) = step.key_delay_ms
+            && !(1..=crate::recipe::MAX_KEY_DELAY_MS).contains(&delay)
+        {
+            return Err(err(
+                RecipeErrorCode::InvalidStep,
+                format!(
+                    "step `{}`: key_delay_ms must be 1 to {}, got {delay}",
+                    step.id,
+                    crate::recipe::MAX_KEY_DELAY_MS
+                ),
+            )
+            .at_step(&step.id));
+        }
+        if step.until.is_some() || step.max_steps.is_some() {
+            let Op::Scroll { dx, dy, .. } = &step.op else {
+                continue;
+            };
+            if *dx == 0.0 && *dy == 0.0 {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}`: scroll_until requires a non-zero dx or dy",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id));
+            }
+            if let Some(max_steps) = step.max_steps
+                && !(1..=crate::recipe::MAX_SCROLL_UNTIL_STEPS).contains(&max_steps)
+            {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}`: max_steps must be 1 to {}, got {max_steps}",
+                        step.id,
+                        crate::recipe::MAX_SCROLL_UNTIL_STEPS
+                    ),
+                )
+                .at_step(&step.id));
+            }
+            if let Some(until) = &step.until
+                && let Err(error) = regex_lite::Regex::new(until)
+            {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}`: scroll_until pattern does not compile: {error}",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id));
+            }
+        }
     }
-    validate_recipe(&bound_values, registry)?;
     for step in &bound.steps {
         if let (Some(delay), Op::Type { text, .. }) = (step.key_delay_ms, &step.op) {
             let total = crate::run::paced_type_ms(text, delay);

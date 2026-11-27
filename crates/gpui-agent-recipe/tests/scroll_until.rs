@@ -174,6 +174,7 @@ struct GeometryHost {
     outside_target: bool,
     hidden_target: bool,
     container_named_target: bool,
+    zero_target_bounds: bool,
 }
 
 impl GeometryHost {
@@ -209,7 +210,11 @@ impl AgentHost for GeometryHost {
         if let Some(y) = self.target_y {
             let scrolls = u16::try_from(self.scrolls).unwrap_or(u16::MAX);
             let y = y - (f32::from(scrolls) * 100.0);
-            list.children.push(Self::bounded("row-target", y));
+            let mut row = Self::bounded("row-target", y);
+            if self.zero_target_bounds {
+                row.bounds = Bounds::default();
+            }
+            list.children.push(row);
         }
         if self.hidden_target {
             let mut parent = UiNode::new("hidden-parent", "group", "Hidden");
@@ -407,4 +412,156 @@ fn param_values_in_until_are_regex_literals() {
     set.insert("row".into(), "Fee (1)".into());
     let plan = compile_plan(&recipe, &set, &todo_registry()).unwrap();
     assert_eq!(plan.steps[0].until.as_deref(), Some("Fee \\(1\\)"));
+}
+
+struct PipelineNodeHost {
+    scrolls: usize,
+}
+
+impl AgentHost for PipelineNodeHost {
+    fn hello(&self) -> HelloInfo {
+        ScrollHost::default().hello()
+    }
+    fn snapshot(&self) -> UiTree {
+        let mut list = UiNode::new("list", "scroll", "List");
+        if self.scrolls > 0 {
+            list.children
+                .push(UiNode::new("row-target", "listitem", "Target"));
+        }
+        UiTree {
+            app: "pipeline-node".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            nodes: vec![list],
+            rev: Some(u64::try_from(self.scrolls).unwrap_or(u64::MAX)),
+        }
+    }
+    fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+        if matches!(op, Op::Scroll { .. }) {
+            self.scrolls += 1;
+        }
+        Ok(DispatchResult::empty())
+    }
+}
+
+#[test]
+fn node_references_are_substituted_in_pipelined_read_waves() {
+    let host = TestHost::spawn(PipelineNodeHost { scrolls: 0 }, None).unwrap();
+    let recipe = Recipe::from_json(
+        r#"{"name":"pipe-node","steps":[
+            {"id":"find","op":"scroll_until","target":"list","until":"row-target","dy":120,"max_steps":2},
+            {"id":"check","op":"assert","target":"$find.node","needs":["find"]},
+            {"id":"wait","op":"wait_until","target":"$find.node","timeout_ms":50,"needs":["find"]}
+        ]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let mut client = host.client();
+    let receipt = run_plan(&mut client, &plan, &RunOptions::new()).expect("pipelined run");
+    assert!(receipt.ok, "{receipt:?}");
+}
+
+#[test]
+fn zero_sized_child_bounds_do_not_count_inside_a_geometric_container() {
+    let host = geometry(GeometryHost {
+        target_y: Some(0.0),
+        zero_target_bounds: true,
+        ..GeometryHost::default()
+    });
+    let Err(RunError::Step { error, .. }) = run_geometry(&host) else {
+        panic!("zero-sized target must not be found");
+    };
+    assert!(error.contains("not_found"), "{error}");
+}
+
+#[test]
+fn scroll_until_not_found_has_its_own_error_code() {
+    let host = host(None);
+    let Err(RunError::Step { error_code, .. }) = run(&host, &json_recipe(1)) else {
+        panic!("must not find");
+    };
+    assert_eq!(error_code, "scroll_until_not_found");
+}
+
+#[test]
+fn node_reference_rules_are_checked_at_compile() {
+    for (json, wanted) in [
+        (
+            r#"{"name":"x","steps":[{"id":"find","op":"scroll_until","target":"list","until":"row","dy":1},{"id":"use","op":"press","target":"$missing.node"}]}"#,
+            "missing",
+        ),
+        (
+            r#"{"name":"x","steps":[{"id":"plain","op":"snapshot"},{"id":"use","op":"press","target":"$plain.node"}]}"#,
+            "scroll_until",
+        ),
+    ] {
+        let recipe = Recipe::from_json(json).unwrap();
+        let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap_err();
+        assert!(err.to_string().contains(wanted), "{err}");
+    }
+}
+
+#[test]
+fn wants_node_reference_implies_the_dependency() {
+    let recipe = parse_wants(
+        "scroll_until list row-target --dy 1\nscroll_until other $s1.node --dy 1",
+        "x",
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let second = plan.steps.iter().find(|step| step.id == "s2").unwrap();
+    assert!(second.needs.iter().any(|need| need == "s1"));
+}
+
+struct UntilReferenceHost {
+    scrolls: usize,
+}
+
+impl AgentHost for UntilReferenceHost {
+    fn hello(&self) -> HelloInfo {
+        ScrollHost::default().hello()
+    }
+    fn snapshot(&self) -> UiTree {
+        let mut list = UiNode::new("list", "scroll", "List");
+        if self.scrolls > 0 {
+            list.children
+                .push(UiNode::new("row-target", "listitem", "Target"));
+        }
+        let mut other = UiNode::new("other", "scroll", "Other");
+        other
+            .children
+            .push(UiNode::new("row-target", "listitem", "Target"));
+        UiTree {
+            app: "until-reference".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            nodes: vec![list, other],
+            rev: Some(u64::try_from(self.scrolls).unwrap_or(u64::MAX)),
+        }
+    }
+    fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+        if matches!(op, Op::Scroll { .. }) {
+            self.scrolls += 1;
+        }
+        Ok(DispatchResult::empty())
+    }
+}
+
+#[test]
+fn node_references_inside_until_are_substituted_before_matching() {
+    let host = TestHost::spawn(UntilReferenceHost { scrolls: 0 }, None).unwrap();
+    let state = host.host();
+    let recipe = Recipe::from_json(
+        r#"{"name":"until-ref","steps":[
+            {"id":"find","op":"scroll_until","target":"list","until":"row-target","dy":120,"max_steps":2},
+            {"id":"reuse","op":"scroll_until","target":"other","until":"$find.node","dy":120,"max_steps":1}
+        ]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let mut client = host.client();
+    let receipt = run_plan(&mut client, &plan, &RunOptions::new()).expect("until reference");
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(receipt.steps[1].result.as_ref().unwrap()["steps"], 0);
+    assert_eq!(state.lock().unwrap().scrolls, 1);
 }

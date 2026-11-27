@@ -192,7 +192,24 @@ pub fn run_plan(
             })
             .collect();
         if wave_can_pipeline(&wave_steps, screenshots) {
-            let ops: Vec<&Op> = wave_steps.iter().map(|step| &step.op).collect();
+            let mut effective_ops = Vec::with_capacity(wave_steps.len());
+            for step in &wave_steps {
+                match substitute_step_nodes(&step.op, &result_nodes) {
+                    Ok(op) => effective_ops.push(op),
+                    Err(failure) => {
+                        receipt.ok = false;
+                        receipt.elapsed_ms =
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        return Err(RunError::Step {
+                            id: step.id.clone(),
+                            error: failure.error,
+                            error_code: failure.error_code,
+                            receipt: Box::new(receipt),
+                        });
+                    }
+                }
+            }
+            let ops: Vec<&Op> = effective_ops.iter().collect();
             let step_started = Instant::now();
             match client.rpc_pipeline(&ops) {
                 Ok(resps) => {
@@ -283,6 +300,9 @@ pub fn run_plan(
                     });
                 }
             };
+            if let Some(until) = &mut effective_step.until {
+                *until = substitute_step_nodes_in_until(until, &result_nodes);
+            }
             match send_step(client, &effective_step) {
                 Ok(resp) => {
                     receipt.session_reused = client.has_session();
@@ -417,10 +437,13 @@ fn find_container<'a>(node: &'a UiNode, target: &str) -> Option<&'a UiNode> {
 }
 
 fn bounds_inside_container(node: &UiNode, container: &UiNode) -> bool {
-    if !container.bounds.has_area() || !node.bounds.has_area() {
-        // Hosts that cannot measure geometry send zero bounds; visibility is
-        // the only honest signal there.
+    if !container.bounds.has_area() {
+        // Hosts that cannot measure geometry send zero container bounds;
+        // visibility is the only honest signal there.
         return true;
+    }
+    if !node.bounds.has_area() {
+        return false;
     }
     node.bounds.intersects(container.bounds)
 }
@@ -640,7 +663,7 @@ fn scroll_until_step(
                     "scroll_until `{until}` not_found, container did not move after {step_index} scroll steps; last snapshot revision {}",
                     last_rev.map_or_else(|| "none".into(), |rev| rev.to_string())
                 ),
-                gpui_agent::error_code::TIMEOUT,
+                gpui_agent::error_code::SCROLL_UNTIL_NOT_FOUND,
                 Some(DeliveryStatus::DeliveredUnverified),
             ));
         }
@@ -650,7 +673,7 @@ fn scroll_until_step(
             "scroll_until `{until}` not found after {max_steps} scroll steps; last snapshot revision {}",
             last_rev.map_or_else(|| "none".into(), |rev| rev.to_string())
         ),
-        gpui_agent::error_code::TIMEOUT,
+        gpui_agent::error_code::SCROLL_UNTIL_NOT_FOUND,
         Some(DeliveryStatus::DeliveredUnverified),
     ))
 }
@@ -691,6 +714,30 @@ fn substitute_step_nodes(op: &Op, nodes: &BTreeMap<String, String>) -> Result<Op
     serde_json::from_value(value).map_err(|error| {
         CallFailure::from_message(format!("step result reference broke the op: {error}"))
     })
+}
+
+fn regex_escape_literal(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if matches!(
+            ch,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn substitute_step_nodes_in_until(input: &str, nodes: &BTreeMap<String, String>) -> String {
+    let mut out = input.to_string();
+    for (step, node) in nodes {
+        let escaped = regex_escape_literal(node);
+        out = out.replace(&format!("${step}.node"), &escaped);
+        out = out.replace(&format!("${{{step}}}.node"), &escaped);
+    }
+    out
 }
 
 fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, CallFailure> {
@@ -1073,7 +1120,8 @@ fn wave_can_pipeline(steps: &[&PlannedStep], screenshots: Option<&ScreenshotCapt
 }
 
 fn step_is_read_only(step: &PlannedStep) -> bool {
-    !step.effects.is_empty()
+    step.until.is_none()
+        && !step.effects.is_empty()
         && step
             .effects
             .iter()
@@ -1117,6 +1165,30 @@ mod tests {
             schema: Some("hello".into()),
             idempotent: true,
         }
+    }
+
+    #[test]
+    fn scroll_until_is_never_pipelined_even_when_its_schema_reads() {
+        let mut first = read_step("find-1");
+        first.op = Op::Scroll {
+            target: Some("list".into()),
+            x: None,
+            y: None,
+            dx: 0.0,
+            dy: 1.0,
+        };
+        first.until = Some("row".into());
+        let mut second = read_step("find-2");
+        second.op = Op::Scroll {
+            target: Some("list".into()),
+            x: None,
+            y: None,
+            dx: 0.0,
+            dy: 1.0,
+        };
+        second.until = Some("row".into());
+        let steps = [&first, &second];
+        assert!(!wave_can_pipeline(&steps, None));
     }
 
     fn write_step(id: &str) -> PlannedStep {

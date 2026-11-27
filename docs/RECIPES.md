@@ -122,8 +122,9 @@ is `.wants`, unless the text starts with `{`. Path `-` reads stdin.
   one placeholder (`"x": "$x"`) is bound as a number before that field is
   validated. Numeric fields that take this form are `x`, `y`, `within.x`,
   `within.y`, `dx`, `dy`, `duration_ms`, `key_delay_ms`, and `max_steps`.
-  The bound value must still be finite, the right kind of number, and in
-  the field's range. A value that does not convert or is out of range fails
+  This numeric-placeholder form is JSON only: `.wants` numeric flags take
+  literal numbers. The bound value must still be finite, the right kind of
+  number, and in the field's range. A value that does not convert or is out of range fails
   with `recipe_invalid_param_value` or `recipe_invalid_step`.
 - Step `id` and `needs` are graph identity and are never substituted.
 
@@ -277,8 +278,11 @@ step stops early with `not_found, container did not move`. At the cap it fails
 with how many scroll steps ran and the last snapshot's revision. A failure after
 scrolling started keeps that count and is `delivery_uncertain`; success carries
 `delivered_verified` and `result.node`, the matched stable id. A later step that
-depends on the scroll step may use `$<step>.node` as a target or text value;
-it is filled just before that later step runs.
+depends on the scroll step may use `$<step>.node` as a target, text value, or
+`until` pattern; it is filled just before that later step runs. The reference
+implies a dependency on the named step, so `.wants` can use it even though
+`.wants` cannot spell `needs`. The named step must exist and be a
+`scroll_until` step.
 
 ### Scheduling
 
