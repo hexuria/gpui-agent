@@ -257,6 +257,10 @@ fn press_within_is_refused_without_the_capability_and_sent_with_it() {
     let error = client.gated(within_press()).unwrap_err();
     assert!(is_unsupported_op(&error), "{error}");
     assert!(error.contains("press_within"), "{error}");
+    assert!(
+        error.contains(&format!("wire protocol {PROTOCOL_VERSION}")),
+        "{error}"
+    );
     server.join().unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
