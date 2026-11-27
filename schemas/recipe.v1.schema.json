@@ -1066,6 +1066,46 @@
               ],
               "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
+            },
+            "within": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "x": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                      "description": "A $param bound before validation."
+                    }
+                  ]
+                },
+                "y": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                      "description": "A $param bound before validation."
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false,
+              "description": "Aim inside target, in points from its top-left. Requires host feature press_within."
             }
           },
           "required": [
@@ -1583,6 +1623,46 @@
                   "description": "A $param bound before validation."
                 }
               ]
+            },
+            "within": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "x": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                      "description": "A $param bound before validation."
+                    }
+                  ]
+                },
+                "y": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                      "description": "A $param bound before validation."
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false,
+              "description": "Aim inside target, in points from its top-left. Requires host feature press_within."
             }
           },
           "required": [

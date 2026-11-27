@@ -19,6 +19,14 @@ pub enum RunError {
     /// The recipe declares shutdown/exit effects and `yes` was not set.
     #[error("recipe has shutdown/exit effects; pass --yes to run it")]
     NeedsYes,
+    /// A capability every copy of the run needs is absent. Nothing after
+    /// `hello` reached the host.
+    #[error("unsupported_op: recipe steps before the first wave: {0}")]
+    Unsupported(String),
+    /// `hello.features` could not be read; nothing after the failed hello
+    /// attempt reached the host.
+    #[error("{0}")]
+    PreflightHello(String),
     /// A step's request failed; carries the receipt so far.
     #[error("step `{id}` failed: {error}")]
     Step {
@@ -154,6 +162,34 @@ pub fn run_plan(
     let screenshots = options.screenshots.as_ref();
     if plan.requires_yes && !options.yes {
         return Err(RunError::NeedsYes);
+    }
+
+    let needs_preflight = plan.steps.iter().any(|step| step.op.feature().is_some());
+    if needs_preflight && !client.is_as_written() {
+        let features = client.features().map_err(RunError::PreflightHello)?;
+        let mut missing = Vec::new();
+        for step in &plan.steps {
+            let Some(feature) = step.op.feature() else {
+                continue;
+            };
+            if features.iter().any(|listed| listed == feature) {
+                continue;
+            }
+            // Capability-less 0.1 hosts receive the legacy invoke spelling
+            // where one exists. A host using this dispatcher advertises
+            // `screenshot_inline`; there a missing feature is a refusal, not
+            // a legacy rewrite. Field capabilities such as `press_within`
+            // deliberately have no safe fallback.
+            if step.op.legacy_invoke().is_some()
+                && !features.iter().any(|listed| listed == "screenshot_inline")
+            {
+                continue;
+            }
+            missing.push(format!("step `{}` needs `{feature}`", step.id));
+        }
+        if !missing.is_empty() {
+            return Err(RunError::Unsupported(missing.join("; ")));
+        }
     }
 
     let mut shot_transport = ShotTransport::HostFile;

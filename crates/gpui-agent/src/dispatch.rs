@@ -518,6 +518,7 @@ fn hello_response(host: &dyn AgentHost, id: &str, expected_token: Option<&str>) 
         "expect_fingerprint",
         "secret_redaction",
         "screenshot_inline",
+        crate::protocol::ASSERT_STATES_FEATURE,
     ] {
         if !hello.features.iter().any(|f| f == feature) {
             hello.features.push(feature.to_string());

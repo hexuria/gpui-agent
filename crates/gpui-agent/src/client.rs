@@ -28,6 +28,7 @@ pub struct AgentClient {
     next_id: u64,
     session: Option<LiveSession>,
     features: Option<Vec<String>>,
+    hello_protocol: Option<u32>,
     refresh_features_on_reconnect: bool,
     as_written: bool,
 }
@@ -402,6 +403,7 @@ impl AgentClient {
             next_id: 1,
             session: None,
             features: None,
+            hello_protocol: None,
             refresh_features_on_reconnect: false,
             as_written: false,
         }
@@ -426,6 +428,12 @@ impl AgentClient {
     pub fn as_written(mut self) -> Self {
         self.as_written = true;
         self
+    }
+
+    /// True when capability-gated ops are sent as written, without local
+    /// refusal or legacy `invoke` rewriting.
+    pub fn is_as_written(&self) -> bool {
+        self.as_written
     }
 
     /// Set the connect/request timeout.
@@ -1116,6 +1124,7 @@ impl AgentClient {
         }
         self.session = None;
         self.features = None;
+        self.hello_protocol = None;
     }
 
     fn drop_idle_session(&mut self) {
@@ -1137,6 +1146,7 @@ impl AgentClient {
                 .expect_ok(Op::Hello)?
                 .hello
                 .ok_or("hello has no info")?;
+            self.hello_protocol = Some(hello.protocol);
             self.features = Some(hello.features);
             self.refresh_features_on_reconnect = false;
         }
@@ -1357,12 +1367,26 @@ impl AgentClient {
             if !hello.ok {
                 return Err(hello.error.unwrap_or_else(|| "request failed".into()));
             }
-            self.features = Some(hello.hello.ok_or("hello has no info")?.features);
+            let info = hello.hello.ok_or("hello has no info")?;
+            self.hello_protocol = Some(info.protocol);
+            self.features = Some(info.features);
             self.refresh_features_on_reconnect = false;
         }
+        let host_protocol = self.hello_protocol;
         let features = self.features.as_deref().unwrap_or_default();
         if features.iter().any(|f| f == feature) {
             return Ok(None);
+        }
+        // `within` is a field capability, not an op: a 0.4.1 host would
+        // ignore it and press the centre, so name the boundary explicitly.
+        if feature == "press_within" {
+            let protocol = host_protocol.map_or_else(
+                || "an unreported wire protocol".to_string(),
+                |version| format!("wire protocol {version}"),
+            );
+            return Err(format!(
+                "unsupported_op: this host speaks {protocol} and does not list `press_within` in hello.features; `within` requires gpui-agent 0.5.0 or another host advertising it (a 0.4.1 host would ignore `within` and press the centre)"
+            ));
         }
         // A host on this dispatcher (it lists `screenshot_inline`) that
         // omits a feature means it: only a 0.1 host gets the old spelling.

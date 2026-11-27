@@ -142,3 +142,74 @@ fn state_assertions_are_preflighted_against_assert_states_capability() {
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(seen.lock().expect("seen").as_slice(), ["hello", "assert"]);
 }
+
+#[test]
+fn stateful_assert_ops_report_the_assert_states_feature() {
+    let recipe = Recipe::from_json(
+        r#"{"name":"s","steps":[{"id":"a","op":"assert","target":"field","state":"masked"},{"id":"w","op":"wait_until","target":"field","states":["system"],"timeout_ms":100}]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    for step in &plan.steps {
+        assert_eq!(
+            step.op.feature(),
+            Some(gpui_agent::protocol::ASSERT_STATES_FEATURE)
+        );
+    }
+}
+
+#[test]
+fn built_in_dispatcher_really_matches_states() {
+    use gpui_agent::dispatch::DispatchResult;
+    use gpui_agent::host::AgentHost;
+    use gpui_agent::protocol::{HelloAuth, HelloInfo, PROTOCOL_VERSION, PlatformKind};
+    use gpui_agent::testing::TestHost;
+    use gpui_agent::tree::{UiNode, UiTree};
+    use gpui_agent_recipe::{RunOptions, run_plan};
+
+    struct StateHost;
+    impl AgentHost for StateHost {
+        fn hello(&self) -> HelloInfo {
+            HelloInfo {
+                protocol: PROTOCOL_VERSION,
+                app: "states".into(),
+                platform: PlatformKind::Headless,
+                os: "test".into(),
+                ready: true,
+                deliveries: Vec::new(),
+                auth: HelloAuth::None,
+                bundle_id: None,
+                executable: None,
+                features: Vec::new(),
+                framework: None,
+                device: None,
+            }
+        }
+        fn snapshot(&self) -> UiTree {
+            let mut node = UiNode::button("field", "Amount");
+            node.states.push("masked".into());
+            UiTree {
+                app: "states".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                nodes: vec![node],
+                rev: None,
+            }
+        }
+        fn dispatch(&mut self, _op: &Op) -> Result<DispatchResult, String> {
+            Ok(DispatchResult::empty())
+        }
+    }
+
+    for (state, should_pass) in [("masked", true), ("system", false)] {
+        let recipe = Recipe::from_json(&format!(
+            r#"{{"name":"states","steps":[{{"id":"check","op":"assert","target":"field","state":"{state}"}}]}}"#
+        ))
+        .unwrap();
+        let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+        let host = TestHost::spawn(StateHost, None).unwrap();
+        let mut client = host.client();
+        let result = run_plan(&mut client, &plan, &RunOptions::new());
+        assert_eq!(result.is_ok(), should_pass, "{state}: {result:?}");
+    }
+}
