@@ -183,16 +183,19 @@ request per character, `key_delay_ms` apart, as a person types.
 - **The target is focused once.** The first key goes to the step's
   target. Before every later key the client reads a snapshot, and the key
   goes to:
-  - the target, while it has the focus;
-  - an editable node beside it (another child of the target's parent)
-    that the focus moved to: the next cell of a code box whose focus
-    moves on with each digit;
+  - the node the key before went to, while it has the focus;
+  - the next text box after that node among its parent's children, when
+    the focus moved on to it: the next cell of a code box whose focus
+    moves on with each digit. Never a box before it or further on, never
+    when the parent is a window, a page, a dialog or the tree's root (a
+    screen of fields), and never after a `\n` or a `\t` key;
   - the target, while the focus has not moved from where it was before
     the first key (a host whose `type` does not focus its target), or no
     node has ever reported it.
-  Anywhere else (an autocomplete or a dialog took it, a line break moved
-  it to another form, it left the code box) the step stops as a partial
-  delivery: `the focus left <target> for <node>`. So a host that focuses
+  Anywhere else (an autocomplete or a dialog took it, a full box moved it
+  to the next field of a screen, a line break or a tab moved it, it left
+  the code box) the step stops as a partial delivery: `the focus left
+  <target> for <node>`. So a host that focuses
   only an unfocused `type` target presses the box once, and its caret
   stays after the typed text. NSH's strict hosts do (and an NSH code box
   is one text field over its cells); a host that presses its target on

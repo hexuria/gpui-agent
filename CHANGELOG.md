@@ -7,9 +7,11 @@ Recipes, additive: a 0.4.0 recipe validates and runs as before, with the same pl
 - **Paced typing.** A `type` step may carry `key_delay_ms` (`.wants`: `--key-delay-ms <n>`). The client then
   types its text one character per ordinary `type` request, that many milliseconds apart, as a person types. No
   wire change: 0.4.0 hosts take it. See [docs/RECIPES.md](docs/RECIPES.md#paced-typing).
-  - The target is focused once. Later keys go to the target, or to the editable node beside it the focus moved to
-    (a code box's next cell), so a filled box keeps its caret after the typed text and a code box gets one digit
-    per cell. Focus that goes anywhere else stops the step (`delivery_uncertain`, "the focus left ... for ...").
+  - The target is focused once. Later keys go to the box the key before went to, or to the next text box after it
+    in the same group when the focus moved on to it (a code box's next cell), so a filled box keeps its caret after
+    the typed text and a code box gets one digit per cell. Focus that goes anywhere else stops the step
+    (`delivery_uncertain`, "the focus left ... for ..."): to a field directly on a window, page or dialog, after a
+    `\n` or `\t` key, or back or past the next box.
   - A virtual step checks every character has a keystroke before the first key.
   - A refusal after the first key is reported as `delivery_uncertain`, with how many keys reached the app.
   - `key_delay_ms` is 1 to 10000 (refused at parse otherwise, and on any op but `type`), and one step's pauses
