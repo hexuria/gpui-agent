@@ -688,6 +688,19 @@ pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
                 ));
             }
         }
+        let mut required_states = Vec::new();
+        if let Some(state) = spec.state.as_deref() {
+            required_states.push(state);
+        }
+        required_states.extend(spec.states.iter().map(String::as_str));
+        for expected in required_states {
+            if !node.states.iter().any(|state| state == expected) {
+                return Err(format!(
+                    "node `{}` state: expected {expected:?}, got {:?}",
+                    spec.target, node.states
+                ));
+            }
+        }
         if let Some(expected) = spec.in_viewport {
             let actual = node_in_viewport(tree, node)?;
             if actual != expected {
@@ -1425,6 +1438,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("visible"), "{err}");
+    }
+
+    #[test]
+    fn assert_states_require_every_listed_state() {
+        let mut node = UiNode::button("field", "Amount");
+        node.states = vec!["selection: 0-9".into(), "masked".into()];
+        let tree = UiTree {
+            app: "test".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            nodes: vec![node],
+            rev: None,
+        };
+        let present = AssertSpec {
+            target: "field".into(),
+            state: Some("masked".into()),
+            states: vec!["selection: 0-9".into()],
+            ..Default::default()
+        };
+        assert_tree(&tree, &present).expect("both present");
+        let missing = AssertSpec {
+            target: "field".into(),
+            states: vec!["selection: 0-9".into(), "system".into()],
+            ..Default::default()
+        };
+        let err = assert_tree(&tree, &missing).unwrap_err();
+        assert!(err.contains("state"), "{err}");
+        assert!(err.contains("system"), "{err}");
     }
 
     #[test]

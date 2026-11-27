@@ -949,6 +949,8 @@ fn run() -> Result<()> {
                 exists: Some(if absent { false } else { exists }),
                 visible,
                 in_viewport,
+                state: None,
+                states: Vec::new(),
             };
             print_resp(&call(client.call(&Op::WaitUntil { timeout_ms, spec }))?);
         }
@@ -1231,6 +1233,8 @@ fn run() -> Result<()> {
                 exists: Some(if absent { false } else { exists }),
                 visible,
                 in_viewport,
+                state: None,
+                states: Vec::new(),
             };
             print_resp(&call(client.call(&Op::Assert { spec }))?);
         }

@@ -364,10 +364,19 @@
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
             },
             "key_delay_ms": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10000,
-              "description": "Type the text one character per request, this many milliseconds apart, as a person types (1 to 10000; the pauses together at most 120000)."
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000,
+                  "description": "Type the text one character per request, this many milliseconds apart, as a person types (1 to 10000; the pauses together at most 120000)."
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
+              ]
             }
           },
           "required": [
@@ -664,6 +673,20 @@
                 "boolean",
                 "null"
               ]
+            },
+            "state": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Exact UiNode.states entry that must be present."
+            },
+            "states": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Exact UiNode.states entries; all must be present."
             }
           },
           "required": [
@@ -819,6 +842,20 @@
                 "boolean",
                 "null"
               ]
+            },
+            "state": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Exact UiNode.states entry that must be present."
+            },
+            "states": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Exact UiNode.states entries; all must be present."
             }
           },
           "required": [
@@ -993,15 +1030,33 @@
               ]
             },
             "x": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "y": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "expect_fingerprint": {
@@ -1050,22 +1105,58 @@
               ]
             },
             "x": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "y": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "dx": {
-              "type": "number"
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
+              ]
             },
             "dy": {
-              "type": "number"
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
+              ]
             }
           },
           "required": [
@@ -1104,22 +1195,60 @@
               "description": "Container to scroll."
             },
             "x": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "y": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "dx": {
-              "type": "number"
+              "anyOf": [
+                {
+                  "type": "number",
+                  "description": "Horizontal scroll delta. dx and dy may not both be zero for scroll_until; validation enforces this after defaults are applied."
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
+              ]
             },
             "dy": {
-              "type": "number"
+              "anyOf": [
+                {
+                  "type": "number",
+                  "description": "Vertical scroll delta. dx and dy may not both be zero for scroll_until; validation enforces this after defaults are applied."
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
+              ]
             },
             "until": {
               "type": "string",
@@ -1127,10 +1256,19 @@
               "description": "regex-lite pattern matched against a visible node's id or visible text after each snapshot."
             },
             "max_steps": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 50,
-              "description": "Maximum scroll requests after the initial snapshot. Defaults to 10."
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 50,
+                  "description": "Maximum scroll requests after the initial snapshot. Defaults to 10."
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
+              ]
             }
           },
           "required": [
@@ -1172,15 +1310,33 @@
               ]
             },
             "x": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "y": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             }
           },
@@ -1233,27 +1389,63 @@
               ]
             },
             "x": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "y": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "dx": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "dy": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             }
           },
@@ -1347,23 +1539,50 @@
               ]
             },
             "x": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "y": {
-              "type": [
-                "number",
-                "null"
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
               ]
             },
             "duration_ms": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "minimum": 0
+              "anyOf": [
+                {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\$([A-Za-z_][A-Za-z0-9_]*|\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+                  "description": "A $param bound before validation."
+                }
+              ]
             }
           },
           "required": [

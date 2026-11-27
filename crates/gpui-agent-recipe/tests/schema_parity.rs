@@ -75,6 +75,9 @@ fn smallest_step(variant: &Value) -> Map<String, Value> {
         };
         step.insert(key.into(), sample);
     }
+    if op == "scroll_until" {
+        step.insert("dy".into(), json!(1));
+    }
     step
 }
 

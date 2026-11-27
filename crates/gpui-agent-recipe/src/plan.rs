@@ -115,6 +115,14 @@ pub fn compile_plan(
         check_invoke_args(schema, args, true)
             .map_err(|m| err(RecipeErrorCode::InvalidArgs, m).at_step(&step.id))?;
     }
+    // Validate the bound values without re-checking param usage: binding
+    // consumes the placeholders by design.
+    let mut bound_values = bound.clone();
+    bound_values.params.clear();
+    for step in &mut bound_values.steps {
+        step.numeric_params.clear();
+    }
+    validate_recipe(&bound_values, registry)?;
     for step in &bound.steps {
         if let (Some(delay), Op::Type { text, .. }) = (step.key_delay_ms, &step.op) {
             let total = crate::run::paced_type_ms(text, delay);

@@ -115,11 +115,16 @@ is `.wants`, unless the text starts with `{`. Path `-` reads stdin.
   (`recipe_missing_param`) and reject values for names the recipe does
   not declare (`recipe_unknown_param`). Repeating `--set` for one name is
   an error.
-- Values are substituted as text. One exception: an `invoke` arg written
+- Values are substituted as text. Two exceptions: an `invoke` arg written
   as exactly one placeholder (`"id": "$id"`) whose schema type is
   `number`, `integer`, or `bool` is converted to that type, so
-  `--set id=1` sends `1`, not `"1"`. A value that does not convert fails
-  with `recipe_invalid_param_value`.
+  `--set id=1` sends `1`, not `"1"`; and a numeric field written as exactly
+  one placeholder (`"x": "$x"`) is bound as a number before that field is
+  validated. Numeric fields that take this form are `x`, `y`, `within.x`,
+  `within.y`, `dx`, `dy`, `duration_ms`, `key_delay_ms`, and `max_steps`.
+  The bound value must still be finite, the right kind of number, and in
+  the field's range. A value that does not convert or is out of range fails
+  with `recipe_invalid_param_value` or `recipe_invalid_step`.
 - Step `id` and `needs` are graph identity and are never substituted.
 
 ### Typed params
@@ -251,14 +256,29 @@ request per character, `key_delay_ms` apart, as a person types.
 scroll_until list row-42 --dy 120 --max-steps 8
 ```
 
-The client snapshots before the first scroll. If a visible node's stable id or
-visible text already matches `until` (a regex-lite pattern), the step succeeds
-with zero scrolls. Otherwise it sends one ordinary `scroll`, snapshots again,
-and repeats. The host never receives a `scroll_until` op, so this runs against
-any host that already lists the ordinary `scroll` feature. `max_steps` is 1 to
-50 (default 10; larger values are refused at parse). At the cap the step fails
-with how many scroll steps ran and the last snapshot's revision. `target` is the
-container to scroll and is required; `dx` and `dy` mean the same as in `scroll`.
+The client snapshots before the first scroll. It searches only the target
+container's visible descendants, skipping hidden subtrees; the container itself
+and matching nodes elsewhere in the tree do not count. `until` is a regex-lite
+pattern anchored to the whole stable id or whole visible text (`row-1` does not
+match `row-10`; use `row-.*` for a prefix). When the host provides bounds for
+both container and node, the node must intersect the container's bounds; when
+geometry is unavailable the host's `visible` flag is the fallback. Parameter
+values substituted into `until` are regex-escaped literals.
+
+If a match is already present the step succeeds with zero scrolls. Otherwise it
+sends one ordinary `scroll`, waits 50 ms for the app to settle, snapshots again,
+and repeats for at most 60 seconds overall. The host never receives a
+`scroll_until` op, so this runs against any host that already lists ordinary
+`scroll`. `max_steps` is 1 to 50 (default 10; larger values are refused at
+parse). `dx` and `dy` mean the same as in `scroll`; both zero is refused, and a
+repeated `.wants` `--dx`, `--dy` or `--max-steps` flag is refused. If the
+container's bounds and subtree do not change for two consecutive scrolls, the
+step stops early with `not_found, container did not move`. At the cap it fails
+with how many scroll steps ran and the last snapshot's revision. A failure after
+scrolling started keeps that count and is `delivery_uncertain`; success carries
+`delivered_verified` and `result.node`, the matched stable id. A later step that
+depends on the scroll step may use `$<step>.node` as a target or text value;
+it is filled just before that later step runs.
 
 ### Scheduling
 
@@ -334,7 +354,9 @@ assert todo-item-1 checked=true
 - `keybinding --id … --scope focused|global`, with `--confirm` for quit
   and `--activate` for focused only. `keybindings` lists the catalog.
 - `assert <target>` takes `name=` / `value=` / `role=` / `checked=` /
-  `--absent` / `--visible` / `--in-viewport`.
+  `state="exact state"` / `states="one,two"` / `--absent` / `--visible` /
+  `--in-viewport`. `state` and every `states` entry must exactly match an
+  entry in the node's `states` list.
 - `wait_until --timeout-ms N` takes the same fields as `assert`.
 - `--screenshot` on a line marks the step.
 - An unknown op, a missing argument, or a bad assert field is

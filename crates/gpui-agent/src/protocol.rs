@@ -994,6 +994,13 @@ pub struct AssertSpec {
     /// host is headless — never invent geometry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_viewport: Option<bool>,
+    /// One exact `UiNode::states` entry that must be present. Sugar for a
+    /// one-item [`Self::states`] list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Exact `UiNode::states` entries that must all be present.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<String>,
 }
 
 /// One NDJSON line a host sends back for a [`Request`].

@@ -12,7 +12,7 @@ use gpui_agent::protocol::{
     DeliveryMode, HelloAuth, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind,
 };
 use gpui_agent::testing::TestHost;
-use gpui_agent::tree::{UiNode, UiTree};
+use gpui_agent::tree::{Bounds, UiNode, UiTree};
 use gpui_agent_recipe::{
     Recipe, RecipeErrorCode, RunError, RunOptions, compile_plan, parse_wants, run_plan,
     todo_registry,
@@ -160,4 +160,251 @@ fn wants_scroll_maps_to_the_json_scroll_op() {
         }
         other => panic!("unexpected {other:?}"),
     }
+}
+
+#[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each fixture switch is independent"
+)]
+struct GeometryHost {
+    scrolls: usize,
+    target_y: Option<f32>,
+    row10: bool,
+    outside_target: bool,
+    hidden_target: bool,
+    container_named_target: bool,
+}
+
+impl GeometryHost {
+    fn bounded(id: &str, y: f32) -> UiNode {
+        UiNode::new(id, "listitem", id).with_bounds(Bounds {
+            x: 0.0,
+            y,
+            w: 100.0,
+            h: 20.0,
+        })
+    }
+}
+
+impl AgentHost for GeometryHost {
+    fn hello(&self) -> HelloInfo {
+        ScrollHost::default().hello()
+    }
+
+    fn snapshot(&self) -> UiTree {
+        let mut list = UiNode::new("list", "scroll", "List").with_bounds(Bounds {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        });
+        if self.container_named_target {
+            list.name = "row-target".into();
+        }
+        list.children.push(Self::bounded("row-0", 0.0));
+        if self.row10 {
+            list.children.push(Self::bounded("row-10", 10.0));
+        }
+        if let Some(y) = self.target_y {
+            let scrolls = u16::try_from(self.scrolls).unwrap_or(u16::MAX);
+            let y = y - (f32::from(scrolls) * 100.0);
+            list.children.push(Self::bounded("row-target", y));
+        }
+        if self.hidden_target {
+            let mut parent = UiNode::new("hidden-parent", "group", "Hidden");
+            parent.visible = false;
+            parent.children.push(Self::bounded("row-target", 10.0));
+            list.children.push(parent);
+        }
+        let mut roots = vec![list];
+        if self.outside_target {
+            roots.push(Self::bounded("row-target", 10.0));
+        }
+        UiTree {
+            app: "geometry".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            nodes: roots,
+            rev: Some(u64::try_from(self.scrolls).unwrap_or(u64::MAX)),
+        }
+    }
+
+    fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+        if matches!(op, Op::Scroll { .. }) {
+            self.scrolls += 1;
+        }
+        Ok(DispatchResult::empty())
+    }
+}
+
+fn geometry(host: GeometryHost) -> TestHost<GeometryHost> {
+    TestHost::spawn(host, None).unwrap()
+}
+
+fn run_geometry(host: &TestHost<GeometryHost>) -> Result<gpui_agent_recipe::Receipt, RunError> {
+    let plan = compile_plan(&json_recipe(2), &BTreeMap::new(), &todo_registry()).unwrap();
+    let mut client = host.client();
+    run_plan(&mut client, &plan, &RunOptions::new())
+}
+
+#[test]
+fn offscreen_descendant_does_not_match_until_inside_container_bounds() {
+    let host = geometry(GeometryHost {
+        target_y: Some(150.0),
+        ..GeometryHost::default()
+    });
+    let receipt = run_geometry(&host).expect("run");
+    assert_eq!(receipt.steps[0].result.as_ref().unwrap()["steps"], 1);
+    assert_eq!(host.host().lock().unwrap().scrolls, 1);
+}
+
+#[test]
+fn matching_requires_a_descendant_inside_the_container() {
+    for host in [
+        geometry(GeometryHost {
+            outside_target: true,
+            ..GeometryHost::default()
+        }),
+        geometry(GeometryHost {
+            hidden_target: true,
+            ..GeometryHost::default()
+        }),
+        geometry(GeometryHost {
+            container_named_target: true,
+            ..GeometryHost::default()
+        }),
+    ] {
+        assert!(
+            run_geometry(&host).is_err(),
+            "a match outside the visible descendants passed"
+        );
+    }
+}
+
+#[test]
+fn matching_is_anchored_row1_does_not_match_row10() {
+    let host = geometry(GeometryHost {
+        row10: true,
+        ..GeometryHost::default()
+    });
+    let recipe = Recipe::from_json(
+        r#"{"name":"scroll","steps":[{"id":"s1","op":"scroll_until","target":"list","until":"row-1","dy":120,"max_steps":1}]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let mut client = host.client();
+    assert!(
+        run_plan(&mut client, &plan, &RunOptions::new()).is_err(),
+        "row-10 must not satisfy row-1"
+    );
+}
+
+#[test]
+fn serialized_scroll_until_round_trips() {
+    let recipe = json_recipe(7);
+    let written = serde_json::to_string(&recipe).unwrap();
+    assert!(written.contains("\"op\":\"scroll_until\""), "{written}");
+    let back = Recipe::from_json(&written).unwrap();
+    assert_eq!(back.steps[0].until.as_deref(), Some("row-target"));
+}
+
+#[test]
+fn container_that_does_not_move_stops_after_two_scrolls() {
+    let host = host(None);
+    let Err(RunError::Step { error, .. }) = run(&host, &json_recipe(5)) else {
+        panic!("must stop");
+    };
+    assert!(error.contains("container did not move"), "{error}");
+    assert!(error.contains("after 2 scroll steps"), "{error}");
+    assert_eq!(host.host().lock().unwrap().scrolls, 2);
+}
+
+#[test]
+fn zero_scroll_delta_is_refused_before_running() {
+    let recipe = Recipe::from_json(
+        r#"{"name":"zero","steps":[{"id":"s1","op":"scroll_until","target":"list","until":"row-target"}]}"#,
+    )
+    .unwrap();
+    let err = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap_err();
+    assert!(err.to_string().contains("non-zero dx or dy"), "{err}");
+}
+
+#[test]
+fn repeated_scroll_flags_are_refused() {
+    for text in [
+        "scroll_until list row --dy 1 --dy 2",
+        "scroll_until list row --dy 1 --dx 2 --dx 3",
+        "scroll_until list row --dy 1 --max-steps 2 --max-steps 3",
+    ] {
+        assert!(parse_wants(text, "x").is_err(), "{text}");
+    }
+}
+
+#[test]
+fn success_reports_node_and_a_later_step_can_use_it() {
+    #[derive(Default)]
+    struct PressingScrollHost {
+        scrolls: usize,
+        pressed: Vec<String>,
+    }
+    impl AgentHost for PressingScrollHost {
+        fn hello(&self) -> HelloInfo {
+            let mut hello = ScrollHost::default().hello();
+            hello.features.push("press".into());
+            hello
+        }
+        fn snapshot(&self) -> UiTree {
+            let mut list = UiNode::new("list", "scroll", "List");
+            if self.scrolls > 0 {
+                list.children
+                    .push(UiNode::new("row-target", "listitem", "Target"));
+            }
+            UiTree {
+                app: "press-scroll".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                nodes: vec![list],
+                rev: Some(u64::try_from(self.scrolls).unwrap_or(u64::MAX)),
+            }
+        }
+        fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+            match op {
+                Op::Scroll { .. } => self.scrolls += 1,
+                Op::Press { target, .. } => self.pressed.push(target.clone().unwrap_or_default()),
+                _ => {}
+            }
+            Ok(DispatchResult::empty())
+        }
+    }
+    let host = TestHost::spawn(PressingScrollHost::default(), None).unwrap();
+    let state = host.host();
+    let recipe = Recipe::from_json(
+        r#"{"name":"use-node","steps":[
+            {"id":"find","op":"scroll_until","target":"list","until":"row-target","dy":120,"max_steps":3},
+            {"id":"press","op":"press","target":"$find.node","needs":["find"]}
+        ]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let mut client = host.client();
+    let receipt = run_plan(&mut client, &plan, &RunOptions::new()).expect("run");
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(
+        receipt.steps[0].result.as_ref().unwrap()["node"],
+        "row-target"
+    );
+    assert_eq!(state.lock().unwrap().pressed, vec!["row-target"]);
+}
+
+#[test]
+fn param_values_in_until_are_regex_literals() {
+    let recipe = Recipe::from_json(
+        r#"{"name":"escape","params":["row"],"steps":[{"id":"s1","op":"scroll_until","target":"list","until":"$row","dy":1,"max_steps":1}]}"#,
+    )
+    .unwrap();
+    let mut set = BTreeMap::new();
+    set.insert("row".into(), "Fee (1)".into());
+    let plan = compile_plan(&recipe, &set, &todo_registry()).unwrap();
+    assert_eq!(plan.steps[0].until.as_deref(), Some("Fee \\(1\\)"));
 }
