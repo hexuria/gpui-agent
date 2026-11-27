@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op};
+use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op, PointOffset};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -1294,6 +1294,8 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
                 expect_fingerprint: None,
             }
         }
+        "press" => parse_press_wants(&tokens[1..], false)?,
+        "long_press" => parse_press_wants(&tokens[1..], true)?,
         "keybindings" | "keybinding.list" => Op::Keybindings,
         "keybinding" => parse_keybinding_wants(&tokens[1..])?,
         "assert" => Op::Assert {
@@ -1379,6 +1381,77 @@ fn take_fingerprint(tokens: &mut Vec<String>) -> Result<Option<u64>, String> {
         return Err("--fp given twice".into());
     }
     Ok(Some(fingerprint))
+}
+
+fn parse_within_pair(raw: &str) -> Result<PointOffset, String> {
+    let (x, y) = raw
+        .split_once(',')
+        .ok_or_else(|| format!("--within wants X,Y, got {raw}"))?;
+    Ok(PointOffset {
+        x: x.parse().map_err(|_| format!("bad --within x `{x}`"))?,
+        y: y.parse().map_err(|_| format!("bad --within y `{y}`"))?,
+    })
+}
+
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag selects press or long_press in the shared parser"
+)]
+fn parse_press_wants(tokens: &[String], long: bool) -> Result<Op, String> {
+    let name = if long { "long_press" } else { "press" };
+    let mut target = None;
+    let mut within = None;
+    let mut duration_ms = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "--within" => {
+                i += 1;
+                let raw = tokens
+                    .get(i)
+                    .ok_or_else(|| "--within needs X,Y".to_string())?;
+                if within.is_some() {
+                    return Err("--within given twice".into());
+                }
+                within = Some(parse_within_pair(raw)?);
+            }
+            "--duration-ms" if long => {
+                i += 1;
+                let raw = tokens
+                    .get(i)
+                    .ok_or_else(|| "--duration-ms needs milliseconds".to_string())?;
+                duration_ms =
+                    Some(raw.parse().map_err(|_| {
+                        format!("--duration-ms needs an unsigned integer, got {raw}")
+                    })?);
+            }
+            other if other.starts_with('-') => return Err(format!("bad {name} token `{other}`")),
+            other if target.is_none() => target = Some(other.to_string()),
+            other => return Err(format!("bad {name} token `{other}`")),
+        }
+        i += 1;
+    }
+    let target = Some(target.ok_or_else(|| format!("{name} needs a target"))?);
+    if long {
+        Ok(Op::LongPress {
+            target,
+            x: None,
+            y: None,
+            within,
+            duration_ms,
+        })
+    } else {
+        if duration_ms.is_some() {
+            return Err("--duration-ms applies to long_press".into());
+        }
+        Ok(Op::Press {
+            target,
+            x: None,
+            y: None,
+            within,
+            expect_fingerprint: None,
+        })
+    }
 }
 
 fn parse_keybinding_wants(tokens: &[String]) -> Result<Op, String> {
@@ -2278,6 +2351,60 @@ assert todo-item-1 name=$title checked=false
             Op::SetValue { value, .. } => assert_eq!(value, r#"Say "hi""#),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn wants_press_and_long_press_within() {
+        let recipe = parse_wants(
+            "press todo-add --within 12,8\nlong_press todo-row --within 1.5,2 --duration-ms 700",
+            "p",
+        )
+        .unwrap();
+        match &recipe.steps[0].op {
+            Op::Press { target, within, .. } => {
+                assert_eq!(target.as_deref(), Some("todo-add"));
+                assert_eq!(*within, Some(PointOffset { x: 12.0, y: 8.0 }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match &recipe.steps[1].op {
+            Op::LongPress {
+                target,
+                within,
+                duration_ms,
+                ..
+            } => {
+                assert_eq!(target.as_deref(), Some("todo-row"));
+                assert_eq!(*within, Some(PointOffset { x: 1.5, y: 2.0 }));
+                assert_eq!(*duration_ms, Some(700));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_press_within_parse_and_absent_field_fingerprint() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"fp","steps":[{"id":"s1","op":"press","target":"todo-add","within":{"x":12,"y":8}}]}"#,
+        )
+        .unwrap();
+        match &recipe.steps[0].op {
+            Op::Press { within, .. } => {
+                assert_eq!(*within, Some(PointOffset { x: 12.0, y: 8.0 }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let recipe_without_within = parse_wants("press todo-add", "fp").unwrap();
+        let plan = crate::compile_plan(
+            &recipe_without_within,
+            &BTreeMap::new(),
+            &crate::todo_registry(),
+        )
+        .unwrap();
+        assert_eq!(plan.fingerprint, "fnv1a64:c0042e8e7539715f");
+        let wire = serde_json::to_value(&plan.steps[0].op).unwrap();
+        assert!(wire.get("within").is_none(), "{wire}");
     }
 
     #[test]

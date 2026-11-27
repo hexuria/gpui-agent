@@ -1363,6 +1363,12 @@ impl AgentClient {
         if features.iter().any(|f| f == feature) {
             return Ok(None);
         }
+        // `within` is a field capability, not an op: a 0.4.1 host would
+        // ignore it and press the centre, so name the boundary explicitly.
+        if feature == "press_within" {
+            return Err("unsupported_op: this host does not list `press_within` in hello.features;                  `within` requires gpui-agent 0.4.2 or another host advertising it                  (a 0.4.1 host would ignore `within` and press the centre)"
+                .into());
+        }
         // A host on this dispatcher (it lists `screenshot_inline`) that
         // omits a feature means it: only a 0.1 host gets the old spelling.
         if features.iter().any(|f| f == "screenshot_inline") {

@@ -1011,6 +1011,26 @@
               ],
               "minimum": 0,
               "description": "Node fingerprint from a snapshot; the step fails if the node changed."
+            },
+            "within": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false,
+              "description": "Aim inside target, in points from its top-left. Requires host feature press_within."
             }
           },
           "required": [
@@ -1297,6 +1317,26 @@
                 "null"
               ],
               "minimum": 0
+            },
+            "within": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false,
+              "description": "Aim inside target, in points from its top-left. Requires host feature press_within."
             }
           },
           "required": [

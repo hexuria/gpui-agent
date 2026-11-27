@@ -1714,6 +1714,7 @@ mod gated_op_tests {
                     target: None,
                     x: None,
                     y: None,
+                    within: None,
                     expect_fingerprint: None,
                 },
             ),
@@ -1763,6 +1764,7 @@ mod gated_op_tests {
                 target: Some("no-such-node".into()),
                 x: None,
                 y: None,
+                within: None,
                 expect_fingerprint: None,
             },
         ] {

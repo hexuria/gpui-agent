@@ -239,6 +239,9 @@ enum Command {
         x: Option<f64>,
         #[arg(long)]
         y: Option<f64>,
+        /// Aim inside the target's frame, as `x,y` points from its top-left.
+        #[arg(long, value_name = "X,Y", requires = "target")]
+        within: Option<String>,
         /// Refuse with `stale_target`, without pressing, unless the target's
         /// fingerprint (`snapshot --fingerprints`) is still this value.
         #[arg(long, value_name = "FINGERPRINT", requires = "target")]
@@ -295,6 +298,9 @@ enum Command {
         x: Option<f64>,
         #[arg(long)]
         y: Option<f64>,
+        /// Aim inside the target's frame, as `x,y` points from its top-left.
+        #[arg(long, value_name = "X,Y", requires = "target")]
+        within: Option<String>,
         #[arg(long)]
         duration_ms: Option<u64>,
     },
@@ -1006,14 +1012,17 @@ fn run() -> Result<()> {
             target,
             x,
             y,
+            within,
             expect_fingerprint,
         } => {
+            let within = parse_within(within)?;
             let expect_fingerprint = guard(target.as_deref(), expect_fingerprint)?;
             let resp = call(client.act(
                 &Op::Press {
                     target,
                     x,
                     y,
+                    within,
                     expect_fingerprint,
                 },
                 read_back,
@@ -1076,13 +1085,16 @@ fn run() -> Result<()> {
             target,
             x,
             y,
+            within,
             duration_ms,
         } => {
+            let within = parse_within(within)?;
             let resp = call(client.act(
                 &Op::LongPress {
                     target,
                     x,
                     y,
+                    within,
                     duration_ms,
                 },
                 read_back,
@@ -1427,6 +1439,19 @@ pub(crate) struct WithCompact<'a> {
     #[serde(flatten)]
     pub resp: &'a gpui_agent::Response,
     pub compact: &'a str,
+}
+
+fn parse_within(raw: Option<String>) -> anyhow::Result<Option<gpui_agent::protocol::PointOffset>> {
+    raw.map(|raw| {
+        let (x, y) = raw
+            .split_once(',')
+            .ok_or_else(|| anyhow!("--within wants X,Y, got {raw}"))?;
+        Ok(gpui_agent::protocol::PointOffset {
+            x: x.parse().map_err(|_| anyhow!("bad --within x `{x}`"))?,
+            y: y.parse().map_err(|_| anyhow!("bad --within y `{y}`"))?,
+        })
+    })
+    .transpose()
 }
 
 fn print_resp(resp: &gpui_agent::Response) {

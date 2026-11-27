@@ -81,6 +81,7 @@ fn press() -> Op {
         target: Some("button".into()),
         x: None,
         y: None,
+        within: None,
         expect_fingerprint: None,
     }
 }
@@ -218,6 +219,67 @@ fn gated_call_refreshes_cached_rejections_after_the_host_restarts() {
     assert!(client.gated(screenshot).unwrap().ok);
     closed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert!(client.gated(press()).unwrap().ok);
+    server.join().unwrap();
+}
+
+#[test]
+fn press_within_is_refused_without_the_capability_and_sent_with_it() {
+    use gpui_agent::protocol::PointOffset;
+
+    let within_press = || Op::Press {
+        target: Some("button".into()),
+        x: None,
+        y: None,
+        within: Some(PointOffset { x: 12.0, y: 8.0 }),
+        expect_fingerprint: None,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let mut writer = accept_with_timeout(&listener);
+        writer
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        let mut reader = BufReader::new(writer.try_clone().unwrap());
+        let request = read_request(&mut reader);
+        assert_eq!(request["op"], "hello");
+        respond(&mut writer, &request, Some(hello(&["press"])));
+        let mut line = String::new();
+        let error = reader.read_line(&mut line).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ));
+    });
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+    let error = client.gated(within_press()).unwrap_err();
+    assert!(is_unsupported_op(&error), "{error}");
+    assert!(error.contains("press_within"), "{error}");
+    server.join().unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let mut writer = accept_with_timeout(&listener);
+        let mut reader = BufReader::new(writer.try_clone().unwrap());
+        let request = read_request(&mut reader);
+        assert_eq!(request["op"], "hello");
+        respond(
+            &mut writer,
+            &request,
+            Some(hello(&["press", "press_within"])),
+        );
+        let request = read_request(&mut reader);
+        assert_eq!(request["op"], "press");
+        assert_eq!(request["within"]["x"], 12.0);
+        assert_eq!(request["within"]["y"], 8.0);
+        respond(&mut writer, &request, None);
+    });
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+    assert!(client.gated(within_press()).unwrap().ok);
     server.join().unwrap();
 }
 

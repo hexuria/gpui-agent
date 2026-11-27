@@ -184,6 +184,7 @@ fn added_ops_keep_their_wire_names_and_omit_unset_fields() {
             target: Some("save".into()),
             x: None,
             y: None,
+            within: None,
             expect_fingerprint: None,
         }),
         r#"{"v":2,"id":"1","op":"press","target":"save"}"#

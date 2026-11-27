@@ -249,6 +249,7 @@ fn stale_press_blocks_dispatch_with_the_click_target_changed_error() {
         target: Some("add".into()),
         x: None,
         y: None,
+        within: None,
         expect_fingerprint: None,
     }
     .with_fingerprint(fp);

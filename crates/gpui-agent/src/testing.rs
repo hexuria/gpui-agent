@@ -190,6 +190,7 @@ mod tests {
                 target: Some("save".into()),
                 x: None,
                 y: None,
+                within: None,
                 expect_fingerprint: Some(42),
             },
         ] {

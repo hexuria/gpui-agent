@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2
+
+Recipes, additive: a 0.4.1 recipe validates and runs as before, with the same plan fingerprint.
+
+- **Aim inside a press target.** `press` and `long_press` may carry optional `within: {"x", "y"}`
+  (`.wants`: `--within <x>,<y>`), a point in the target's own frame in logical points from its
+  top-left. Absent means centre as before. The client gates the field on the new `press_within`
+  `hello.features` capability and refuses to send it to a host that does not advertise it, because
+  a 0.4.1 host would ignore the field and press the centre.
+
 ## 0.4.1
 
 Recipes, additive: a 0.4.0 recipe validates and runs as before, with the same plan fingerprint.

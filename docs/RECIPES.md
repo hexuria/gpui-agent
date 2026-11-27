@@ -297,6 +297,15 @@ assert todo-item-1 checked=true
 - `click` / `type` / `set-value` / `key` accept `--fp <n>` (JSON:
   `expect_fingerprint`): the step is refused with `stale_target` unless
   the target's fingerprint is still `n`.
+- `press <target>` and `long_press <target> [--duration-ms <n>]` accept
+  `--within <x>,<y>` (JSON: `within: {"x": x, "y": y}`): aim that many
+  logical points from the target's top-left instead of its centre. `x` and
+  `y` are finite numbers. This is a field capability, not a new wire op: the
+  client sends it only to a host listing `press_within` in `hello.features`;
+  against any other host it refuses before sending, because a 0.4.1 host
+  would ignore the field and press the centre. The target-independent `x` /
+  `y` point fields remain ignored when `target` is set and are not reused
+  for this aim.
 - `type` accepts `--key-delay-ms <n>` (JSON: `key_delay_ms`): the text
   is [paced](#paced-typing), `n` milliseconds between two keys.
 - `keybinding --id … --scope focused|global`, with `--confirm` for quit
