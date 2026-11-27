@@ -28,6 +28,12 @@ pub struct PlannedStep {
     /// pacing changes how the text is delivered, not what the plan does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_delay_ms: Option<u64>,
+    /// Recipe-only `scroll_until` node pattern; the wire op stays `scroll`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Recipe-only `scroll_until` cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u64>,
     /// Effects the op declares (Read/Write/Exit/…).
     pub effects: Vec<Effect>,
     /// Registry schema the op resolved to.
@@ -155,6 +161,8 @@ pub fn compile_plan(
             needs,
             screenshot: step.screenshot,
             key_delay_ms: step.key_delay_ms,
+            until: step.until.clone(),
+            max_steps: step.max_steps,
             effects: step_effects,
             schema: schema_name,
             idempotent,
@@ -327,11 +335,18 @@ pub(crate) fn schedule(steps: &[RecipeStep]) -> Result<(Vec<usize>, Vec<Vec<Stri
 fn fingerprint_plan(name: &str, steps: &[PlannedStep]) -> String {
     let payload = serde_json::json!({
         "name": name,
-        "steps": steps.iter().map(|s| serde_json::json!({
-            "id": s.id,
-            "op": s.op,
-            "needs": s.needs,
-        })).collect::<Vec<_>>(),
+        "steps": steps.iter().map(|s| {
+            let mut step = serde_json::json!({
+                "id": s.id,
+                "op": s.op,
+                "needs": s.needs,
+            });
+            if let Some(until) = &s.until {
+                step["until"] = serde_json::json!(until);
+                step["max_steps"] = serde_json::json!(s.max_steps.unwrap_or(crate::recipe::DEFAULT_SCROLL_UNTIL_STEPS));
+            }
+            step
+        }).collect::<Vec<_>>(),
     });
     let mut canonical = String::new();
     write_canonical(&payload, &mut canonical);

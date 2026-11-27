@@ -21,6 +21,11 @@ const STEP_FIELDS: &[&str] = &["id", "needs", "screenshot", "key_delay_ms", "op"
 /// The longest pause [`RecipeStep::key_delay_ms`] may ask for between two keys.
 pub const MAX_KEY_DELAY_MS: u64 = 10_000;
 
+/// Default cap for a recipe-only `scroll_until` step.
+pub const DEFAULT_SCROLL_UNTIL_STEPS: u64 = 10;
+/// Hardest cap accepted for `scroll_until.max_steps`.
+pub const MAX_SCROLL_UNTIL_STEPS: u64 = 50;
+
 /// JSON recipe: a named DAG (or implicit sequence) of protocol ops.
 ///
 /// JSON is the canonical form; a line-based `.wants` file compiles to
@@ -78,6 +83,15 @@ pub struct RecipeStep {
         deserialize_with = "key_delay"
     )]
     pub key_delay_ms: Option<u64>,
+    /// `scroll_until` only: the node id or visible text to find after scrolling.
+    /// Recipe-only control flow; the host is sent ordinary `scroll` and
+    /// `snapshot` requests, never a `scroll_until` op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// `scroll_until` only: maximum scroll requests after the first snapshot.
+    /// Absent means [`DEFAULT_SCROLL_UNTIL_STEPS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u64>,
     /// The wire op, flattened into the step JSON.
     #[serde(flatten)]
     pub op: Op,
@@ -91,6 +105,8 @@ impl RecipeStep {
             needs: Vec::new(),
             screenshot: false,
             key_delay_ms: None,
+            until: None,
+            max_steps: None,
             op,
         }
     }
@@ -132,6 +148,10 @@ impl Recipe {
     ///
     /// # Errors
     /// As [`Recipe::from_json`].
+    #[expect(
+        clippy::too_many_lines,
+        reason = "step normalization and unknown-field probing are one parse pipeline"
+    )]
     pub fn from_value(value: &Value) -> Result<Self, RecipeError> {
         if let Some(map) = value.as_object() {
             if let Some(key) = map.keys().find(|k| !RECIPE_FIELDS.contains(&k.as_str())) {
@@ -160,9 +180,76 @@ impl Recipe {
                 .at_step(id));
             }
         }
-        let recipe = Self::deserialize(value)
+        let mut normalized = value.clone();
+        if let Some(steps) = normalized.get_mut("steps").and_then(Value::as_array_mut) {
+            for raw in steps {
+                let original_op = raw.get("op").and_then(Value::as_str).unwrap_or("?");
+                let has_until_fields = raw.get("until").is_some() || raw.get("max_steps").is_some();
+                if original_op == "scroll_until" {
+                    let id = raw.get("id").and_then(Value::as_str).unwrap_or("?");
+                    let target_ok = raw
+                        .get("target")
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| !v.trim().is_empty());
+                    if !target_ok {
+                        return Err(err(
+                            RecipeErrorCode::Parse,
+                            format!("recipe json: step `{id}` scroll_until requires a container target string"),
+                        )
+                        .at_step(id));
+                    }
+                    let until_ok = raw
+                        .get("until")
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| !v.trim().is_empty());
+                    if !until_ok {
+                        return Err(err(
+                            RecipeErrorCode::Parse,
+                            format!("recipe json: step `{id}` scroll_until requires a non-empty until pattern string"),
+                        )
+                        .at_step(id));
+                    }
+                    if let Some(max_raw) = raw.get("max_steps") {
+                        let max_steps = max_raw.as_u64().ok_or_else(|| {
+                            err(
+                                RecipeErrorCode::Parse,
+                                format!(
+                                    "recipe json: step `{id}` max_steps must be an unsigned integer"
+                                ),
+                            )
+                            .at_step(id)
+                        })?;
+                        if !(1..=MAX_SCROLL_UNTIL_STEPS).contains(&max_steps) {
+                            return Err(err(
+                                RecipeErrorCode::Parse,
+                                format!(
+                                    "recipe json: step `{id}` max_steps must be 1 to {MAX_SCROLL_UNTIL_STEPS}, got {max_steps}"
+                                ),
+                            )
+                            .at_step(id));
+                        }
+                    }
+                    raw["op"] = Value::String("scroll".into());
+                } else if has_until_fields {
+                    let key = if raw.get("until").is_some() {
+                        "until"
+                    } else {
+                        "max_steps"
+                    };
+                    let id = raw.get("id").and_then(Value::as_str).unwrap_or("?");
+                    return Err(err(
+                        RecipeErrorCode::UnknownField,
+                        format!(
+                            "recipe json: step `{id}` has unknown field `{key}` for op `{original_op}`"
+                        ),
+                    )
+                    .at_step(id));
+                }
+            }
+        }
+        let recipe = Self::deserialize(&normalized)
             .map_err(|e| err(RecipeErrorCode::Parse, format!("recipe json: {e}")))?;
-        let raw_steps = value.get("steps").and_then(Value::as_array);
+        let raw_steps = normalized.get("steps").and_then(Value::as_array);
         for (step, raw) in recipe.steps.iter().zip(raw_steps.into_iter().flatten()) {
             if let Some(key) = unknown_step_field(raw, step) {
                 return Err(err(
@@ -492,6 +579,10 @@ pub fn apply_params(
         }
         substitute_op_in_place(&mut step.op, &bound)
             .map_err(|message| err(RecipeErrorCode::MissingParam, message).at_step(&step.id))?;
+        if let Some(until) = &mut step.until {
+            substitute_string_in_place(until, &bound)
+                .map_err(|message| err(RecipeErrorCode::MissingParam, message).at_step(&step.id))?;
+        }
     }
     Ok(out)
 }
@@ -583,6 +674,72 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
         }
     }
 
+    for step in &recipe.steps {
+        if step.until.is_some() || step.max_steps.is_some() {
+            let Op::Scroll { target, .. } = &step.op else {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}`: until/max_steps apply only to scroll_until",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+                continue;
+            };
+            if target.as_deref().map_or("", str::trim).is_empty() {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}`: scroll_until requires a container target",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
+            if step.until.as_deref().map_or("", str::trim).is_empty() {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!("step `{}`: scroll_until requires a node to find", step.id),
+                    )
+                    .at_step(&step.id),
+                );
+            } else if let Some(until) = &step.until
+                && let Err(error) = regex_lite::Regex::new(until)
+            {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}`: scroll_until pattern does not compile: {error}",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
+            if let Some(max_steps) = step.max_steps
+                && !(1..=MAX_SCROLL_UNTIL_STEPS).contains(&max_steps)
+            {
+                errors.push(
+                    err(
+                        Code::InvalidStep,
+                        format!(
+                            "step `{}`: max_steps must be 1 to {MAX_SCROLL_UNTIL_STEPS}, got {max_steps}",
+                            step.id
+                        ),
+                    )
+                    .at_step(&step.id),
+                );
+            }
+        }
+    }
+
     let mut ids = BTreeSet::new();
     for step in &recipe.steps {
         if step.id.trim().is_empty() {
@@ -634,6 +791,9 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
 
         let mut found = BTreeSet::new();
         collect_placeholders_in_op(&step.op, &mut found);
+        if let Some(until) = &step.until {
+            collect_placeholders(until, &mut found);
+        }
         for name in found {
             if recipe.param(&name).is_none() {
                 errors.push(
@@ -1241,6 +1401,8 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         return Err("missing op".into());
     }
     let op_name = tokens[0].replace('-', "_");
+    let mut step_until = None;
+    let mut step_max_steps = None;
     let op = match op_name.as_str() {
         "wait" => Op::Wait { timeout_ms: None },
         "wait_until" => parse_wait_until_op(&tokens[1..])?,
@@ -1294,6 +1456,16 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
                 expect_fingerprint: None,
             }
         }
+        "scroll" => {
+            let (op, _, _) = parse_scroll_wants(&tokens[1..], false)?;
+            op
+        }
+        "scroll_until" => {
+            let (op, until, max_steps) = parse_scroll_wants(&tokens[1..], true)?;
+            step_until = until;
+            step_max_steps = max_steps;
+            op
+        }
         "keybindings" | "keybinding.list" => Op::Keybindings,
         "keybinding" => parse_keybinding_wants(&tokens[1..])?,
         "assert" => Op::Assert {
@@ -1339,6 +1511,8 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         needs: Vec::new(),
         screenshot,
         key_delay_ms,
+        until: step_until,
+        max_steps: step_max_steps,
         op,
     })
 }
@@ -1379,6 +1553,87 @@ fn take_fingerprint(tokens: &mut Vec<String>) -> Result<Option<u64>, String> {
         return Err("--fp given twice".into());
     }
     Ok(Some(fingerprint))
+}
+
+fn parse_point_number(raw: &str, flag: &str) -> Result<f64, String> {
+    raw.parse()
+        .ok()
+        .filter(|value: &f64| value.is_finite())
+        .ok_or_else(|| format!("{flag} needs a finite number, got {raw}"))
+}
+
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag selects scroll or scroll_until in the shared parser"
+)]
+fn parse_scroll_wants(
+    tokens: &[String],
+    until_mode: bool,
+) -> Result<(Op, Option<String>, Option<u64>), String> {
+    let name = if until_mode { "scroll_until" } else { "scroll" };
+    let mut positional = Vec::new();
+    let mut dx = 0.0;
+    let mut dy = 0.0;
+    let mut max_steps = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "--dx" | "--dy" => {
+                let flag = tokens[i].as_str();
+                i += 1;
+                let raw = tokens
+                    .get(i)
+                    .ok_or_else(|| format!("{flag} needs a number"))?;
+                let value = parse_point_number(raw, flag)?;
+                if flag == "--dx" {
+                    dx = value;
+                } else {
+                    dy = value;
+                }
+            }
+            "--max-steps" if until_mode => {
+                i += 1;
+                let raw = tokens
+                    .get(i)
+                    .ok_or_else(|| "--max-steps needs a count".to_string())?;
+                let parsed: u64 = raw
+                    .parse()
+                    .map_err(|_| format!("--max-steps needs an unsigned integer, got {raw}"))?;
+                if !(1..=MAX_SCROLL_UNTIL_STEPS).contains(&parsed) {
+                    return Err(format!(
+                        "--max-steps must be 1 to {MAX_SCROLL_UNTIL_STEPS}, got {parsed}"
+                    ));
+                }
+                max_steps = Some(parsed);
+            }
+            other if other.starts_with('-') => return Err(format!("bad {name} token `{other}`")),
+            other => positional.push(other.to_string()),
+        }
+        i += 1;
+    }
+    let wanted = if until_mode { 2 } else { 1 };
+    if positional.len() != wanted {
+        return Err(if until_mode {
+            "scroll_until needs container and node".into()
+        } else {
+            "scroll needs a target".into()
+        });
+    }
+    Ok((
+        Op::Scroll {
+            target: Some(positional[0].clone()),
+            x: None,
+            y: None,
+            dx,
+            dy,
+        },
+        if until_mode {
+            Some(positional[1].clone())
+        } else {
+            None
+        },
+        max_steps,
+    ))
 }
 
 fn parse_keybinding_wants(tokens: &[String]) -> Result<Op, String> {
@@ -2629,7 +2884,14 @@ assert todo-item-1 name=$title checked=false
                 raw.insert(key.into(), sample);
             }
             let raw = Value::Object(raw);
-            let step = RecipeStep::deserialize(&raw)
+            let parse_raw = if op == "scroll_until" {
+                let mut normalized = raw.as_object().unwrap().clone();
+                normalized.insert("op".into(), json!("scroll"));
+                Value::Object(normalized)
+            } else {
+                raw.clone()
+            };
+            let step = RecipeStep::deserialize(&parse_raw)
                 .unwrap_or_else(|e| panic!("schema minimum for `{op}` does not parse: {e}"));
             assert_eq!(unknown_step_field(&raw, &step), None, "{op}");
             for key in variant["properties"].as_object().unwrap().keys() {
@@ -2920,7 +3182,13 @@ assert todo-item-1 name=$title checked=false
                 };
                 raw.insert(key.into(), sample);
             }
-            let step = RecipeStep::deserialize(&Value::Object(raw)).unwrap();
+            let mut raw = Value::Object(raw);
+            if op == "scroll_until" {
+                raw.as_object_mut()
+                    .unwrap()
+                    .insert("op".into(), json!("scroll"));
+            }
+            let step = RecipeStep::deserialize(&raw).unwrap();
             let written = serde_json::to_value(&step).unwrap();
             for (key, value) in written.as_object().unwrap() {
                 let property = &variant["properties"][key];

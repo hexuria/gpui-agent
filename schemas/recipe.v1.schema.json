@@ -1075,6 +1075,73 @@
           "additionalProperties": false
         },
         {
+          "title": "scroll_until",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Unique step id. Never contains $params."
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Ids of steps that must finish first."
+            },
+            "screenshot": {
+              "type": "boolean",
+              "description": "Capture an app-surface PNG after this step when the run has a screenshot dir."
+            },
+            "op": {
+              "const": "scroll_until"
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Container to scroll."
+            },
+            "x": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "y": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "dx": {
+              "type": "number"
+            },
+            "dy": {
+              "type": "number"
+            },
+            "until": {
+              "type": "string",
+              "minLength": 1,
+              "description": "regex-lite pattern matched against a visible node's id or visible text after each snapshot."
+            },
+            "max_steps": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "description": "Maximum scroll requests after the initial snapshot. Defaults to 10."
+            }
+          },
+          "required": [
+            "id",
+            "op",
+            "target",
+            "until"
+          ],
+          "additionalProperties": false
+        },
+        {
           "title": "hover",
           "type": "object",
           "properties": {

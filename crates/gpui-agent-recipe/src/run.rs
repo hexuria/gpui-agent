@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{DeliveryMode, Op, Response};
-use gpui_agent::{CallFailure, DeliveryStatus, error_code_of};
+use gpui_agent::{CallFailure, DeliveryStatus, UiTree, error_code_of};
 use thiserror::Error;
 
 use crate::plan::{Plan, PlannedStep};
@@ -374,7 +374,101 @@ pub(crate) fn paced_type_ms(text: &str, delay: u64) -> u64 {
 ///   the whole text on top of what was typed.
 /// - Only the first key carries the step's fingerprint gate: each key
 ///   changes the node's value, and so its fingerprint.
+fn visible_until(tree: &UiTree, pattern: &regex_lite::Regex) -> bool {
+    let mut found = false;
+    tree.visit(&mut |node| {
+        found |= node.visible && (pattern.is_match(&node.id) || pattern.is_match(&node.name));
+    });
+    found
+}
+
+fn snapshot_has_until(
+    client: &mut AgentClient,
+    pattern: &regex_lite::Regex,
+) -> Result<(bool, Option<u64>), CallFailure> {
+    let response = client.call(&Op::snapshot())?;
+    let tree = response
+        .tree
+        .as_ref()
+        .ok_or_else(|| CallFailure::from_message("scroll_until snapshot carried no tree"))?;
+    Ok((visible_until(tree, pattern), response.rev.or(tree.rev)))
+}
+
+/// Run a recipe-only bounded scroll loop. The host receives only ordinary
+/// `scroll` and `snapshot` requests; `scroll_until` itself is never wire-visible.
+fn scroll_until_step(
+    client: &mut AgentClient,
+    step: &PlannedStep,
+    until: &str,
+) -> Result<Response, CallFailure> {
+    let Op::Scroll {
+        target,
+        x,
+        y,
+        dx,
+        dy,
+    } = &step.op
+    else {
+        return Err(CallFailure::from_message(
+            "scroll_until requires a scroll op",
+        ));
+    };
+    let max_steps = step
+        .max_steps
+        .unwrap_or(crate::recipe::DEFAULT_SCROLL_UNTIL_STEPS);
+    let pattern = regex_lite::Regex::new(until).map_err(|error| {
+        CallFailure::with_code(
+            format!("scroll_until pattern `{until}` does not compile: {error}"),
+            gpui_agent::error_code::BAD_REQUEST,
+            Some(DeliveryStatus::NotDelivered),
+        )
+    })?;
+    let (found, mut last_rev) = snapshot_has_until(client, &pattern)?;
+    if found {
+        let mut response = Response::ok("scroll_until");
+        response.result = Some(serde_json::json!({
+            "found": true,
+            "steps": 0,
+            "revision": last_rev,
+        }));
+        return Ok(response);
+    }
+
+    let scroll = Op::Scroll {
+        target: target.clone(),
+        x: *x,
+        y: *y,
+        dx: *dx,
+        dy: *dy,
+    };
+    for step_index in 1..=max_steps {
+        client.call(&scroll)?;
+        let (found, rev) = snapshot_has_until(client, &pattern)?;
+        last_rev = rev;
+        if found {
+            let mut response = Response::ok("scroll_until");
+            response.result = Some(serde_json::json!({
+                "found": true,
+                "steps": step_index,
+                "revision": last_rev,
+            }));
+            return Ok(response);
+        }
+    }
+    Err(CallFailure::with_code(
+        format!(
+            "scroll_until `{until}` not found after {max_steps} scroll steps; last snapshot revision {}",
+            last_rev.map_or_else(|| "none".into(), |rev| rev.to_string())
+        ),
+        gpui_agent::error_code::TIMEOUT,
+        Some(DeliveryStatus::DeliveredUnverified),
+    ))
+}
+
 fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, CallFailure> {
+    if let (Op::Scroll { .. }, Some(until)) = (&step.op, &step.until) {
+        return scroll_until_step(client, step, until);
+    }
     let (
         Some(delay),
         Op::Type {
@@ -789,6 +883,8 @@ mod tests {
             needs: Vec::new(),
             screenshot: false,
             key_delay_ms: None,
+            until: None,
+            max_steps: None,
             effects: vec![Effect::Read],
             schema: Some("hello".into()),
             idempotent: true,
@@ -802,6 +898,8 @@ mod tests {
             needs: Vec::new(),
             screenshot: false,
             key_delay_ms: None,
+            until: None,
+            max_steps: None,
             effects: vec![Effect::Write],
             schema: Some("click".into()),
             idempotent: false,
@@ -972,6 +1070,8 @@ mod tests {
             needs: Vec::new(),
             screenshot: false,
             key_delay_ms: None,
+            until: None,
+            max_steps: None,
             effects: Vec::new(),
             schema: None,
             idempotent: false,

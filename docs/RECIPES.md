@@ -231,6 +231,35 @@ request per character, `key_delay_ms` apart, as a person types.
 - A 0.4.0 client refuses the field (`recipe_unknown_field`): a recipe that
   paces needs gpui-agent-cli 0.4.1 or later.
 
+### Scrolling and bounded `scroll_until`
+
+`scroll` moves a scrollable target by a delta in logical points:
+
+```json
+{"op":"scroll","target":"list","dy":120}
+```
+
+`.wants` spelling: `scroll list --dy 120` (plus `--dx <n>` when needed).
+
+`scroll_until` is a recipe-level bounded loop, not a wire op:
+
+```json
+{"op":"scroll_until","target":"list","until":"row-42","dy":120,"max_steps":8}
+```
+
+```text
+scroll_until list row-42 --dy 120 --max-steps 8
+```
+
+The client snapshots before the first scroll. If a visible node's stable id or
+visible text already matches `until` (a regex-lite pattern), the step succeeds
+with zero scrolls. Otherwise it sends one ordinary `scroll`, snapshots again,
+and repeats. The host never receives a `scroll_until` op, so this runs against
+any host that already lists the ordinary `scroll` feature. `max_steps` is 1 to
+50 (default 10; larger values are refused at parse). At the cap the step fails
+with how many scroll steps ran and the last snapshot's revision. `target` is the
+container to scroll and is required; `dx` and `dy` mean the same as in `scroll`.
+
 ### Scheduling
 
 - If **no** step has `needs`, the steps run in file order, one per wave.
@@ -299,6 +328,9 @@ assert todo-item-1 checked=true
   the target's fingerprint is still `n`.
 - `type` accepts `--key-delay-ms <n>` (JSON: `key_delay_ms`): the text
   is [paced](#paced-typing), `n` milliseconds between two keys.
+- `scroll <target> --dy <n> [--dx <n>]` is the JSON `scroll` op;
+  `scroll_until <container> <pattern> --dy <n> [--max-steps <k>]` is the
+  bounded loop in [Scrolling](#scrolling-and-bounded-scroll_until).
 - `keybinding --id … --scope focused|global`, with `--confirm` for quit
   and `--activate` for focused only. `keybindings` lists the catalog.
 - `assert <target>` takes `name=` / `value=` / `role=` / `checked=` /

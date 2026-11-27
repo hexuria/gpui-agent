@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.2
+
+Recipes, additive: a 0.4.1 recipe validates and runs as before, with the same plan fingerprint.
+
+- **Bounded scroll-until.** `.wants` gains `scroll <target> --dy <n> [--dx <n>]`, the JSON `scroll`
+  op it already had. JSON and `.wants` gain `scroll_until` (`scroll_until <container> <pattern>
+  --dy <n> [--dx <n>] [--max-steps <k>]`). The recipe runner snapshots first, sends ordinary
+  `scroll` and `snapshot` requests, and stops when a visible node id or visible text matches the
+  regex-lite pattern. `max_steps` is 1 to 50 (default 10); reaching it fails with the step count and
+  last snapshot revision. There is no wire `scroll_until` op, so 0.4.x hosts need no new capability.
+
 ## 0.4.1
 
 Recipes, additive: a 0.4.0 recipe validates and runs as before, with the same plan fingerprint.
