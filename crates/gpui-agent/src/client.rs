@@ -1384,7 +1384,7 @@ impl AgentClient {
                 |version| format!("wire protocol {version}"),
             );
             return Err(format!(
-                "unsupported_op: this host speaks {protocol} and does not list `press_within` in hello.features; `within` requires gpui-agent 0.4.2 or another host advertising it (a 0.4.1 host would ignore `within` and press the centre)"
+                "unsupported_op: this host speaks {protocol} and does not list `press_within` in hello.features; `within` requires gpui-agent 0.5.0 or another host advertising it (a 0.4.1 host would ignore `within` and press the centre)"
             ));
         }
         // A host on this dispatcher (it lists `screenshot_inline`) that

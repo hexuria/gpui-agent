@@ -553,3 +553,42 @@ fn gated_call_reconnects_when_the_peer_closed_between_calls() {
     assert!(client.gated(press()).unwrap().ok);
     server.join().unwrap();
 }
+
+#[test]
+fn dispatcher_hello_advertises_assert_states() {
+    struct Empty;
+    impl gpui_agent::host::AgentHost for Empty {
+        fn hello(&self) -> HelloInfo {
+            HelloInfo {
+                protocol: PROTOCOL_VERSION,
+                app: "empty".into(),
+                platform: PlatformKind::Headless,
+                os: gpui_agent::protocol::host_os(),
+                ready: true,
+                deliveries: Vec::new(),
+                auth: HelloAuth::None,
+                bundle_id: None,
+                executable: None,
+                features: Vec::new(),
+                framework: None,
+                device: None,
+            }
+        }
+        fn snapshot(&self) -> gpui_agent::tree::UiTree {
+            gpui_agent::tree::UiTree {
+                app: "empty".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                nodes: Vec::new(),
+                rev: None,
+            }
+        }
+        fn dispatch(&mut self, _op: &Op) -> Result<gpui_agent::dispatch::DispatchResult, String> {
+            Ok(gpui_agent::dispatch::DispatchResult::empty())
+        }
+    }
+    let host = gpui_agent::testing::TestHost::spawn(Empty, None).unwrap();
+    let mut client = host.client();
+    let features = client.features().expect("features");
+    assert!(features.iter().any(|feature| feature == "assert_states"));
+}

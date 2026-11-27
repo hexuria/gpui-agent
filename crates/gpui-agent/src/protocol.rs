@@ -974,6 +974,9 @@ mod integers {
 /// (`unsupported_op: <feature>`). Stable: match the prefix, not the wording.
 pub const UNSUPPORTED_OP: &str = "unsupported_op";
 
+/// `hello.features` capability for exact `UiNode.states` assertions.
+pub const ASSERT_STATES_FEATURE: &str = "assert_states";
+
 /// The `unsupported_op: <feature>` error a host returns for an op it
 /// does not implement.
 pub fn unsupported_op(feature: &str) -> String {

@@ -52,6 +52,22 @@ impl AgentHost for PressHost {
     }
 }
 
+#[derive(Default)]
+struct NoPressHost(PressHost);
+impl AgentHost for NoPressHost {
+    fn hello(&self) -> HelloInfo {
+        let mut hello = PressHost::default().hello();
+        hello.features.clear();
+        hello
+    }
+    fn snapshot(&self) -> UiTree {
+        PressHost::default().snapshot()
+    }
+    fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+        self.0.dispatch(op)
+    }
+}
+
 #[test]
 fn missing_press_within_is_preflighted_before_any_recipe_op() {
     let recipe = Recipe::from_json(
@@ -108,5 +124,57 @@ fn press_with_and_without_within_uses_the_base_op_schema() {
             vec!["root".to_string()],
             vec!["aimed".to_string(), "plain".to_string()]
         ]
+    );
+}
+
+#[test]
+fn capability_preflight_is_an_unsupported_op_error() {
+    let recipe = Recipe::from_json(
+        r#"{"name":"aim","steps":[{"id":"aimed","op":"press","target":"button","within":{"x":1,"y":2}}]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &protocol_registry()).unwrap();
+    let host = TestHost::spawn(PressHost::default(), None).unwrap();
+    let mut client = host.client();
+    let error = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
+    assert!(error.to_string().starts_with("unsupported_op:"), "{error}");
+}
+
+#[test]
+fn modern_host_missing_a_legacy_fallback_op_is_preflighted() {
+    let recipe = Recipe::from_json(
+        r#"{"name":"plain","steps":[{"id":"plain","op":"press","target":"button"}]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &protocol_registry()).unwrap();
+    let host = TestHost::spawn(NoPressHost(PressHost::default()), None).unwrap();
+    let state = host.host();
+    let mut client = host.client();
+    let error = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
+    assert!(
+        error.to_string().contains("before the first wave"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("plain"), "{error}");
+    assert_eq!(state.lock().unwrap().0.dispatched, 0);
+}
+
+#[test]
+fn hello_transport_failure_is_not_a_capability_refusal() {
+    let recipe = Recipe::from_json(
+        r#"{"name":"aim","steps":[{"id":"aimed","op":"press","target":"button","within":{"x":1,"y":2}}]}"#,
+    )
+    .unwrap();
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &protocol_registry()).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let mut client =
+        gpui_agent::AgentClient::connect(addr).with_timeout(std::time::Duration::from_millis(100));
+    let error = run_plan(&mut client, &plan, &RunOptions::new()).unwrap_err();
+    assert!(!error.to_string().starts_with("unsupported_op:"), "{error}");
+    assert!(
+        !error.to_string().contains("unsupported recipe steps"),
+        "{error}"
     );
 }

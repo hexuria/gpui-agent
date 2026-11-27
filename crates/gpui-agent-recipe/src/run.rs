@@ -19,8 +19,12 @@ pub enum RunError {
     NeedsYes,
     /// A capability every copy of the run needs is absent. Nothing after
     /// `hello` reached the host.
-    #[error("unsupported recipe steps before the first wave: {0}")]
+    #[error("unsupported_op: recipe steps before the first wave: {0}")]
     Unsupported(String),
+    /// `hello.features` could not be read; nothing after the failed hello
+    /// attempt reached the host.
+    #[error("could not read hello.features before the first wave: {0}")]
+    PreflightHello(String),
     /// A step's request failed; carries the receipt so far.
     #[error("step `{id}` failed: {error}")]
     Step {
@@ -158,14 +162,9 @@ pub fn run_plan(
         return Err(RunError::NeedsYes);
     }
 
-    let needs_preflight = plan
-        .steps
-        .iter()
-        .any(|step| step.op.feature().is_some() && step.op.legacy_invoke().is_none());
+    let needs_preflight = plan.steps.iter().any(|step| step.op.feature().is_some());
     if needs_preflight && !client.is_as_written() {
-        let features = client.features().map_err(|error| {
-            RunError::Unsupported(format!("could not read hello.features: {error}"))
-        })?;
+        let features = client.features().map_err(RunError::PreflightHello)?;
         let mut missing = Vec::new();
         for step in &plan.steps {
             let Some(feature) = step.op.feature() else {
@@ -175,9 +174,13 @@ pub fn run_plan(
                 continue;
             }
             // Capability-less 0.1 hosts receive the legacy invoke spelling
-            // where one exists. Field capabilities such as `press_within`
+            // where one exists. A host using this dispatcher advertises
+            // `screenshot_inline`; there a missing feature is a refusal, not
+            // a legacy rewrite. Field capabilities such as `press_within`
             // deliberately have no safe fallback.
-            if step.op.legacy_invoke().is_some() {
+            if step.op.legacy_invoke().is_some()
+                && !features.iter().any(|listed| listed == "screenshot_inline")
+            {
                 continue;
             }
             missing.push(format!("step `{}` needs `{feature}`", step.id));
