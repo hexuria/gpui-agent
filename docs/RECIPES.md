@@ -85,6 +85,7 @@ Each step:
 | `op` | Yes | A protocol op name, snake_case (`set_value`, `wait_until`, …) |
 | `needs` | No | Ids of other steps; no duplicates, no self, no `$param`, no cycle |
 | `screenshot` | No | `true` marks the step for `--screenshot-flagged` |
+| `key_delay_ms` | No | `type` only: [pace](#paced-typing) the text, this many milliseconds (1 to 10000) between two keys, 120000 ms of pauses at most |
 | op fields | Per op | The same fields the op takes on the wire ([PROTOCOL.md](PROTOCOL.md)) |
 
 **Unknown fields are errors**, at the top level and in a step. A step may
@@ -171,6 +172,65 @@ A `params` entry is a bare name (a required string) or an object:
   built from `params`, for callers that collect or check the values
   before running.
 
+### Paced typing
+
+A `type` step sends its text as one request. With `key_delay_ms` the
+client sends it one character at a time instead: one ordinary `type`
+request per character, `key_delay_ms` apart, as a person types.
+
+- **Nothing new on the wire.** The host sees ordinary `type` requests, so a
+  paced step runs against any host that takes `type`.
+- **The target is focused once.** The first key goes to the step's
+  target. Before every later key the client reads a snapshot, and the key
+  goes to:
+  - the node the key before went to, while it has the focus;
+  - the next text box after that node among its parent's children, when
+    the focus moved on to it: the next cell of a code box whose focus
+    moves on with each digit. Never a box before it or further on, never
+    when the parent is a window, a page, a dialog or the tree's root (a
+    screen of fields), and never after a `\n` or a `\t` key;
+  - the target, while the focus has not moved from where it was before
+    the first key (a host whose `type` does not focus its target), or no
+    node has ever reported it.
+  Anywhere else (an autocomplete or a dialog took it, a full box moved it
+  to the next field of a screen, a line break or a tab moved it, it left
+  the code box) the step stops as a partial delivery: `the focus left
+  <target> for <node>`. So a host that focuses
+  only an unfocused `type` target presses the box once, and its caret
+  stays after the typed text. NSH's strict hosts do (and an NSH code box
+  is one text field over its cells); a host that presses its target on
+  every `type` moves the caret on every key.
+- **No fingerprint on the later keys.** Between the snapshot and the key
+  the focus could still move (an app's own timer); the later keys carry
+  no `expect_fingerprint`, since the value a controlled input echoes back
+  may change in that window. Each snapshot is a whole tree (a diff
+  against `since` would be cheaper on a large form).
+- **All or nothing before the first key.** A `virtual` step whose text has
+  a character with no keystroke (only ASCII, space, `\n` and `\t` have one)
+  fails before any key is sent, as one virtual `type` does.
+- **A refusal part way is a partial delivery.** The step stops at the
+  first key the host refuses. After the first key the error says how many
+  keys reached the app (`paced type stopped at key 3 of 4: the first 2
+  reached the app ...`) and the status is `delivery_uncertain`: snapshot
+  before retrying, the box already holds those keys. Its receipt `result`
+  is the last key's.
+- **The pace is a floor.** Each key waits for the reply and a snapshot
+  before the next; a slow host makes the pace slower, never faster.
+- **Bounded.** `key_delay_ms` is 1 to 10000 (anything else is refused when
+  the file is read, `recipe_parse`; on any op but `type`,
+  `recipe_unknown_field`), and the pauses of one step together at most
+  120000 ms (`MAX_PACED_TYPE_MS`; `plan` / `run` refuse a longer one with
+  `recipe_invalid_step` before anything is sent).
+- **A key is a Unicode scalar value, not a grapheme:** a combining mark or
+  a joined emoji goes as its parts (`\r\n` stays one key). Type such text
+  without pacing.
+- Only the first key carries the step's `expect_fingerprint`: each key
+  changes the node's value, and with it the fingerprint.
+- `key_delay_ms` is not part of the plan [fingerprint](#plan): it changes
+  how the text is delivered, not what the plan does.
+- A 0.4.0 client refuses the field (`recipe_unknown_field`): a recipe that
+  paces needs gpui-agent-cli 0.4.1 or later.
+
 ### Scheduling
 
 - If **no** step has `needs`, the steps run in file order, one per wave.
@@ -237,6 +297,8 @@ assert todo-item-1 checked=true
 - `click` / `type` / `set-value` / `key` accept `--fp <n>` (JSON:
   `expect_fingerprint`): the step is refused with `stale_target` unless
   the target's fingerprint is still `n`.
+- `type` accepts `--key-delay-ms <n>` (JSON: `key_delay_ms`): the text
+  is [paced](#paced-typing), `n` milliseconds between two keys.
 - `keybinding --id … --scope focused|global`, with `--confirm` for quit
   and `--activate` for focused only. `keybindings` lists the catalog.
 - `assert <target>` takes `name=` / `value=` / `role=` / `checked=` /
@@ -311,7 +373,7 @@ Printed by `recipe plan`; `Plan` in Rust.
 | --- | --- |
 | `v` | Plan format version, `1` |
 | `name`, `app` | From the recipe |
-| `steps[]` | In execution order: `id`, bound `op`, `needs`, `effects` (`read` / `write` / `exit`), `schema`, `idempotent`, `screenshot` |
+| `steps[]` | In execution order: `id`, bound `op`, `needs`, `effects` (`read` / `write` / `exit`), `schema`, `idempotent`, `screenshot`, `key_delay_ms` (when set) |
 | `waves[]` | Step ids per wave |
 | `requires_yes` | The plan has an exit effect |
 | `fingerprint` | Identity of the bound plan |

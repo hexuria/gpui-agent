@@ -23,6 +23,11 @@ pub struct PlannedStep {
     /// Capture a PNG after this step when `--screenshot-dir` / `--screenshot-flagged`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub screenshot: bool,
+    /// A paced `type`: the pause between two keys
+    /// ([`crate::RecipeStep::key_delay_ms`]). Not part of the fingerprint:
+    /// pacing changes how the text is delivered, not what the plan does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_delay_ms: Option<u64>,
     /// Effects the op declares (Read/Write/Exit/…).
     pub effects: Vec<Effect>,
     /// Registry schema the op resolved to.
@@ -104,6 +109,23 @@ pub fn compile_plan(
         check_invoke_args(schema, args, true)
             .map_err(|m| err(RecipeErrorCode::InvalidArgs, m).at_step(&step.id))?;
     }
+    for step in &bound.steps {
+        if let (Some(delay), Op::Type { text, .. }) = (step.key_delay_ms, &step.op) {
+            let total = crate::run::paced_type_ms(text, delay);
+            if total > crate::run::MAX_PACED_TYPE_MS {
+                return Err(err(
+                    RecipeErrorCode::InvalidStep,
+                    format!(
+                        "step `{}`: typing its text {delay} ms a key pauses {total} ms; a paced type \
+                         may pause {} ms at most",
+                        step.id,
+                        crate::run::MAX_PACED_TYPE_MS
+                    ),
+                )
+                .at_step(&step.id));
+            }
+        }
+    }
     let name = bound.name.as_str();
     let app = bound.app.clone();
     let steps = bound.steps.as_slice();
@@ -132,6 +154,7 @@ pub fn compile_plan(
             op: step.op.clone(),
             needs,
             screenshot: step.screenshot,
+            key_delay_ms: step.key_delay_ms,
             effects: step_effects,
             schema: schema_name,
             idempotent,

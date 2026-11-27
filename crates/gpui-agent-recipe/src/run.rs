@@ -1,9 +1,9 @@
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_agent::client::AgentClient;
-use gpui_agent::error_code_of;
-use gpui_agent::protocol::Op;
+use gpui_agent::protocol::{DeliveryMode, Op, Response};
+use gpui_agent::{CallFailure, DeliveryStatus, error_code_of};
 use thiserror::Error;
 
 use crate::plan::{Plan, PlannedStep};
@@ -265,7 +265,7 @@ pub fn run_plan(
         for step in wave_steps {
             let step_started = Instant::now();
             shot_index += 1;
-            match client.call_response(&step.op) {
+            match send_step(client, step) {
                 Ok(resp) => {
                     receipt.session_reused = client.has_session();
                     let ok = resp.ok;
@@ -337,6 +337,338 @@ pub fn run_plan(
     receipt.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     receipt.session_reused = client.has_session();
     Ok(receipt)
+}
+
+/// The longest a paced `type` may take, its pauses together
+/// (`key_delay_ms` times the keys after the first): two minutes.
+/// [`crate::compile_plan`] refuses a longer one before anything is sent.
+pub const MAX_PACED_TYPE_MS: u64 = 120_000;
+
+/// The pauses of a paced `type` of `text` at `delay` ms, together.
+pub(crate) fn paced_type_ms(text: &str, delay: u64) -> u64 {
+    let pauses = u64::try_from(paced_keys(text).len().saturating_sub(1)).unwrap_or(u64::MAX);
+    pauses.saturating_mul(delay)
+}
+
+/// Sends one sequential step: its op as one request, or a paced `type`
+/// ([`PlannedStep::key_delay_ms`]) as one `type` request per character,
+/// `key_delay_ms` apart, as a person types.
+///
+/// - **All or nothing before the first key:** a virtual step whose text
+///   has a character with no keystroke (`text_keystrokes`) fails before
+///   any key is sent, as one virtual `type` does.
+/// - **The focus is the target's once:** the first key goes to the step's
+///   target, which the host focuses. A later key goes to the box the key
+///   before went to, or to the next text box after it that the focus moved
+///   on to (the next cell of a code box), read from a snapshot before the
+///   key: a host that focuses only an unfocused `type` target never presses
+///   the box again, so the caret stays after the typed text
+///   ([`next_key_target`]). Focus that goes anywhere else stops the step as
+///   a partial delivery.
+/// - Between that snapshot and the key the focus could still move (an
+///   app's own timer): the key is not gated on a fingerprint, since the
+///   value a controlled input echoes back may change in that window.
+/// - **A key the host refuses stops the step.** After the first key that
+///   is a partial delivery: the error says how many keys reached the app
+///   and the status is `delivery_uncertain`, so a caller does not retry
+///   the whole text on top of what was typed.
+/// - Only the first key carries the step's fingerprint gate: each key
+///   changes the node's value, and so its fingerprint.
+fn send_step(client: &mut AgentClient, step: &PlannedStep) -> Result<Response, CallFailure> {
+    let (
+        Some(delay),
+        Op::Type {
+            target,
+            text,
+            delivery,
+            expect_fingerprint,
+        },
+    ) = (step.key_delay_ms, &step.op)
+    else {
+        return client.call_response(&step.op);
+    };
+    let keys = paced_keys(text);
+    if keys.len() < 2 {
+        return client.call_response(&step.op);
+    }
+    if *delivery == DeliveryMode::Virtual
+        && let Err(error) = gpui_agent::text_keystrokes(text)
+    {
+        let code = error_code_of(&error);
+        return Err(CallFailure::with_code(
+            error,
+            code,
+            Some(DeliveryStatus::NotDelivered),
+        ));
+    }
+    let total = keys.len();
+    // Who had the focus before the first key: a host whose `type` does not
+    // move the focus leaves it there, and the keys still go to the target.
+    let before = focus_before(client)?;
+    let mut aim = Aim {
+        target,
+        before: before.as_deref(),
+        to: target.clone(),
+        focus: Focus::NotYet,
+    };
+    let mut after = After::Text;
+    let mut last = None;
+    let mut due = Instant::now();
+    for (index, key) in keys.into_iter().enumerate() {
+        if index > 0 {
+            follow(client, &mut aim, after, index, total)?;
+            let now = Instant::now();
+            if due > now {
+                std::thread::sleep(due - now);
+            }
+        }
+        due = Instant::now() + Duration::from_millis(delay);
+        after = After::key(&key);
+        let op = Op::Type {
+            target: aim.to.clone(),
+            text: key,
+            delivery: *delivery,
+            expect_fingerprint: if index == 0 {
+                *expect_fingerprint
+            } else {
+                None
+            },
+        };
+        match client.call_response(&op) {
+            Ok(resp) if resp.ok => last = Some(resp),
+            Ok(mut resp) => {
+                if index > 0 {
+                    let error = resp.error.take().unwrap_or_else(|| "request failed".into());
+                    resp.error = Some(partial(index, total, &error));
+                    resp.delivery_status = Some(DeliveryStatus::DeliveryUncertain);
+                }
+                return Ok(resp);
+            }
+            Err(mut failure) => {
+                if index > 0 {
+                    failure.error = partial(index, total, &failure.error);
+                    failure.delivery_status = Some(DeliveryStatus::DeliveryUncertain);
+                }
+                return Err(failure);
+            }
+        }
+    }
+    Ok(last.expect("a paced step sends at least two keys"))
+}
+
+/// The error of a paced `type` that stopped at key `index` of `total`.
+fn partial(index: usize, total: usize, error: &str) -> String {
+    format!(
+        "paced type stopped at key {} of {total}: the first {index} reached the app \
+         (snapshot before retrying): {error}",
+        index + 1
+    )
+}
+
+/// Whether the keys of a paced `type` have been on the target's focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    /// The focus has not been on the target or the box after it yet.
+    NotYet,
+    /// It has: a key now follows it.
+    Followed,
+}
+
+/// Where the keys of a paced `type` aimed at `target` go.
+#[derive(Debug)]
+struct Aim<'a> {
+    target: &'a str,
+    /// Who had the focus before the first key.
+    before: Option<&'a str>,
+    /// The node the key before went to.
+    to: String,
+    focus: Focus,
+}
+
+/// The key before, as far as the focus goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum After {
+    /// A character: the focus may move on to the next cell of a code box.
+    Text,
+    /// A line break, which may submit a form: the focus must stay.
+    LineBreak,
+    /// A tab, which moves to the next field: the focus must stay.
+    Tab,
+}
+
+impl After {
+    fn key(key: &str) -> Self {
+        match key {
+            "\n" | "\r" | "\r\n" => Self::LineBreak,
+            "\t" => Self::Tab,
+            _ => Self::Text,
+        }
+    }
+}
+
+/// Who has the focus before a paced `type`'s first key.
+fn focus_before(client: &mut AgentClient) -> Result<Option<String>, CallFailure> {
+    match client.snapshot() {
+        Ok(resp) => Ok(resp.tree.as_ref().and_then(|tree| focused_in(&tree.nodes))),
+        Err(error) => {
+            let code = error_code_of(&error);
+            Err(CallFailure::with_code(
+                format!("paced type: no snapshot before the first key: {error}"),
+                code,
+                Some(DeliveryStatus::NotDelivered),
+            ))
+        }
+    }
+}
+
+/// Aims key `index` of `total` ([`next_key_target`]), from a snapshot; a
+/// partial delivery when there is none or the focus left.
+fn follow(
+    client: &mut AgentClient,
+    aim: &mut Aim<'_>,
+    after: After,
+    index: usize,
+    total: usize,
+) -> Result<(), CallFailure> {
+    let tree = match client.snapshot() {
+        Ok(resp) => resp.tree.unwrap_or_else(empty_tree),
+        Err(error) => {
+            let code = error_code_of(&error);
+            return Err(CallFailure::with_code(
+                partial(
+                    index,
+                    total,
+                    &format!("no snapshot to follow the focus: {error}"),
+                ),
+                code,
+                Some(DeliveryStatus::DeliveryUncertain),
+            ));
+        }
+    };
+    match next_key_target(&tree.nodes, aim, after) {
+        Ok((next, now)) => {
+            aim.to = next;
+            if now == Focus::Followed {
+                aim.focus = Focus::Followed;
+            }
+            Ok(())
+        }
+        Err(why) => Err(CallFailure::with_code(
+            partial(index, total, &why),
+            gpui_agent::error_code::HOST_ERROR,
+            Some(DeliveryStatus::DeliveryUncertain),
+        )),
+    }
+}
+
+/// Where the next key of a paced `type` goes, from the tree after the key
+/// before it (`after`): `(id, Followed when it follows the focus)`.
+///
+/// - The node the key before went to (`aim.to`) has the focus: that node.
+/// - The focus moved on to the next cell after `aim.to` ([`next_cell`]),
+///   after a key that was not a line break or a tab: that cell (the next
+///   cell of a code box).
+/// - The focus has not moved since before the first key, and never went
+///   to the target or the cell after it (a host whose `type` does not move
+///   the focus): the target.
+/// - No node has the focus and it never was on the target or the cell
+///   after it (a host that reports no focus): the target.
+/// - Anything else (an autocomplete or a dialog took the focus, a full box
+///   moved it to the next field of a screen, a line break or a tab moved
+///   it, it went back or past the next cell): `Err`, naming where the
+///   focus went.
+fn next_key_target(
+    nodes: &[gpui_agent::UiNode],
+    aim: &Aim<'_>,
+    after: After,
+) -> Result<(String, Focus), String> {
+    let focused = focused_in(nodes);
+    let not_yet = aim.focus == Focus::NotYet;
+    let target = aim.target;
+    match focused {
+        Some(id) if id == aim.to => Ok((id, Focus::Followed)),
+        Some(id) if not_yet && aim.before == Some(id.as_str()) => {
+            Ok((aim.to.clone(), Focus::NotYet))
+        }
+        Some(id)
+            if after == After::Text && next_cell(nodes, &aim.to).is_some_and(|next| next == id) =>
+        {
+            Ok((id, Focus::Followed))
+        }
+        None if not_yet => Ok((aim.to.clone(), Focus::NotYet)),
+        Some(id) => Err(format!(
+            "the focus left `{target}` for `{id}`{}",
+            match after {
+                After::Text => "",
+                After::LineBreak => " after a line break",
+                After::Tab => " after a tab",
+            }
+        )),
+        None => Err(format!("the focus left `{target}` and no node has it")),
+    }
+}
+
+/// The next cell after `to`: the first enabled text box after it among its
+/// parent's children, in document order. None when `to` is at the root of
+/// the tree or directly in a window, a page or a dialog: a screen whose
+/// fields sit side by side is not a code box.
+fn next_cell(nodes: &[gpui_agent::UiNode], to: &str) -> Option<String> {
+    fn parent_of<'a>(nodes: &'a [gpui_agent::UiNode], to: &str) -> Option<&'a gpui_agent::UiNode> {
+        nodes.iter().find_map(|node| {
+            if node.children.iter().any(|child| child.id == to) {
+                Some(node)
+            } else {
+                parent_of(&node.children, to)
+            }
+        })
+    }
+    use gpui_agent::tree::role;
+    let parent = parent_of(nodes, to)?;
+    if matches!(
+        parent.role.as_str(),
+        role::WINDOW | role::PAGE | role::DIALOG | "screen" | "root"
+    ) {
+        return None;
+    }
+    parent
+        .children
+        .iter()
+        .skip_while(|child| child.id != to)
+        .skip(1)
+        .find(|child| child.enabled && matches!(child.role.as_str(), role::TEXTBOX | "textfield"))
+        .map(|child| child.id.clone())
+}
+
+/// A tree with no nodes (a snapshot reply without one).
+fn empty_tree() -> gpui_agent::UiTree {
+    gpui_agent::UiTree {
+        app: String::new(),
+        platform: gpui_agent::PlatformKind::Headless,
+        ready: false,
+        nodes: Vec::new(),
+        rev: None,
+    }
+}
+
+/// The innermost focused node of `nodes`, depth first.
+fn focused_in(nodes: &[gpui_agent::UiNode]) -> Option<String> {
+    nodes.iter().find_map(|node| {
+        focused_in(&node.children).or_else(|| node.focused.then(|| node.id.clone()))
+    })
+}
+
+/// The keys a paced `type` of `text` sends: one per character (Unicode
+/// scalar value, not grapheme: a combining mark or a joined emoji goes as
+/// its parts). A line break written `\r\n` stays one key.
+pub(crate) fn paced_keys(text: &str) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for ch in text.chars() {
+        match keys.last_mut() {
+            Some(last) if last == "\r" && ch == '\n' => last.push(ch),
+            _ => keys.push(ch.to_string()),
+        }
+    }
+    keys
 }
 
 /// How a step PNG reaches `--screenshot-dir`.
@@ -456,6 +788,7 @@ mod tests {
             op: Op::Hello,
             needs: Vec::new(),
             screenshot: false,
+            key_delay_ms: None,
             effects: vec![Effect::Read],
             schema: Some("hello".into()),
             idempotent: true,
@@ -468,10 +801,164 @@ mod tests {
             op: Op::click("todo-add"),
             needs: Vec::new(),
             screenshot: false,
+            key_delay_ms: None,
             effects: vec![Effect::Write],
             schema: Some("click".into()),
             idempotent: false,
         }
+    }
+
+    fn boxes(focused: Option<&str>) -> Vec<gpui_agent::UiNode> {
+        let input = |id: &str| {
+            let mut node = gpui_agent::UiNode::textbox(id, id);
+            node.focused = focused == Some(id);
+            node
+        };
+        let mut code = gpui_agent::UiNode::new("code", "group", "Code");
+        code.children = vec![input("cell-0"), input("cell-1"), input("cell-2")];
+        let mut form = gpui_agent::UiNode::new("form", "group", "Form");
+        form.children = vec![input("amount"), code];
+        // A screen of fields side by side, directly in its window.
+        let mut window = gpui_agent::UiNode::window("window", "Window");
+        window.children = vec![input("name"), input("tin")];
+        vec![form, input("elsewhere"), window]
+    }
+
+    /// Where the next key goes: `focused` in [`boxes`], after keys aimed
+    /// at `target` whose last went to `to`.
+    fn next(
+        focused: Option<&str>,
+        (target, to): (&str, &str),
+        before: Option<&str>,
+        focus: Focus,
+        after: After,
+    ) -> Result<(String, bool), String> {
+        let aim = Aim {
+            target,
+            before,
+            to: to.into(),
+            focus,
+        };
+        next_key_target(&boxes(focused), &aim, after).map(|(id, now)| (id, now == Focus::Followed))
+    }
+
+    #[test]
+    fn the_next_key_follows_the_focus_only_inside_the_targets_group() {
+        use After::Text;
+        use Focus::{Followed, NotYet};
+        assert_eq!(
+            next(Some("cell-1"), ("cell-0", "cell-0"), None, NotYet, Text),
+            Ok(("cell-1".into(), true))
+        );
+        assert_eq!(
+            next(Some("cell-2"), ("cell-0", "cell-1"), None, Followed, Text),
+            Ok(("cell-2".into(), true)),
+            "on from the cell the key before went to"
+        );
+        assert_eq!(
+            next(Some("amount"), ("amount", "amount"), None, NotYet, Text),
+            Ok(("amount".into(), true))
+        );
+        // A host whose type does not move the focus: the keys stay on the target.
+        assert_eq!(
+            next(
+                Some("elsewhere"),
+                ("amount", "amount"),
+                Some("elsewhere"),
+                NotYet,
+                Text
+            ),
+            Ok(("amount".into(), false))
+        );
+        assert_eq!(
+            next(None, ("amount", "amount"), None, NotYet, Text),
+            Ok(("amount".into(), false))
+        );
+        // Anywhere else, or gone after the focus was on the target.
+        assert!(
+            next(Some("elsewhere"), ("amount", "amount"), None, NotYet, Text)
+                .unwrap_err()
+                .contains("`elsewhere`")
+        );
+        assert!(
+            next(Some("cell-0"), ("amount", "amount"), None, Followed, Text).is_err(),
+            "not the cell after amount"
+        );
+        assert!(
+            next(None, ("cell-0", "cell-0"), None, Followed, Text)
+                .unwrap_err()
+                .contains("no node has it")
+        );
+    }
+
+    #[test]
+    fn the_focus_is_followed_only_to_the_next_cell_after_the_last_key() {
+        use After::{LineBreak, Tab, Text};
+        use Focus::{Followed, NotYet};
+        // Past the next cell, or back to one already typed into.
+        assert!(next(Some("cell-2"), ("cell-0", "cell-0"), None, Followed, Text).is_err());
+        assert!(next(Some("cell-0"), ("cell-0", "cell-1"), None, Followed, Text).is_err());
+        // G2: a host whose type does not move the focus, which sat on a
+        // sibling: the keys do not follow that sibling's own move.
+        assert!(
+            next(
+                Some("cell-2"),
+                ("cell-0", "cell-0"),
+                Some("cell-1"),
+                NotYet,
+                Text
+            )
+            .unwrap_err()
+            .contains("for `cell-2`")
+        );
+        // Fields side by side directly in a window are not a code box.
+        assert!(
+            next(Some("tin"), ("name", "name"), None, Followed, Text)
+                .unwrap_err()
+                .contains("the focus left `name` for `tin`")
+        );
+        // A line break or a tab that moved the focus stops the keys, even
+        // to the next cell; one that left it in the box does not.
+        assert!(
+            next(
+                Some("cell-1"),
+                ("cell-0", "cell-0"),
+                None,
+                Followed,
+                LineBreak
+            )
+            .unwrap_err()
+            .contains("after a line break")
+        );
+        assert!(
+            next(Some("cell-1"), ("cell-0", "cell-0"), None, Followed, Tab)
+                .unwrap_err()
+                .contains("after a tab")
+        );
+        assert_eq!(
+            next(
+                Some("amount"),
+                ("amount", "amount"),
+                None,
+                Followed,
+                LineBreak
+            ),
+            Ok(("amount".into(), true))
+        );
+        assert_eq!(After::key("\r\n"), LineBreak);
+        assert_eq!(After::key("\t"), Tab);
+        assert_eq!(After::key("1"), Text);
+    }
+
+    #[test]
+    fn paced_keys_are_one_per_character() {
+        assert_eq!(
+            paced_keys("1,234.56"),
+            ["1", ",", "2", "3", "4", ".", "5", "6"]
+        );
+        assert_eq!(paced_keys("ñé"), ["ñ", "é"]);
+        assert_eq!(paced_keys("a\r\nb"), ["a", "\r\n", "b"]);
+        assert_eq!(paced_keys(""), Vec::<String>::new());
     }
 
     #[test]
@@ -484,6 +971,7 @@ mod tests {
             op: Op::Hello,
             needs: Vec::new(),
             screenshot: false,
+            key_delay_ms: None,
             effects: Vec::new(),
             schema: None,
             idempotent: false,

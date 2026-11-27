@@ -16,7 +16,10 @@ pub const RECIPE_FORMAT_VERSION: u32 = 1;
 pub const MAX_RECIPE_STEPS: usize = 256;
 
 const RECIPE_FIELDS: &[&str] = &["$schema", "v", "name", "app", "params", "steps"];
-const STEP_FIELDS: &[&str] = &["id", "needs", "screenshot", "op"];
+const STEP_FIELDS: &[&str] = &["id", "needs", "screenshot", "key_delay_ms", "op"];
+
+/// The longest pause [`RecipeStep::key_delay_ms`] may ask for between two keys.
+pub const MAX_KEY_DELAY_MS: u64 = 10_000;
 
 /// JSON recipe: a named DAG (or implicit sequence) of protocol ops.
 ///
@@ -64,6 +67,17 @@ pub struct RecipeStep {
     /// After this step, write a PNG when `recipe run --screenshot-dir` is set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub screenshot: bool,
+    /// On a `type` step only: send the text one character at a time, one
+    /// `type` request per character, waiting this many milliseconds between
+    /// two of them, as a person types. Without it the text goes as one
+    /// request. The client paces the keys; the host sees ordinary `type`
+    /// requests, so any host that takes `type` takes a paced step.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "key_delay"
+    )]
+    pub key_delay_ms: Option<u64>,
     /// The wire op, flattened into the step JSON.
     #[serde(flatten)]
     pub op: Op,
@@ -76,6 +90,7 @@ impl RecipeStep {
             id: id.into(),
             needs: Vec::new(),
             screenshot: false,
+            key_delay_ms: None,
             op,
         }
     }
@@ -124,6 +139,25 @@ impl Recipe {
                     RecipeErrorCode::UnknownField,
                     format!("recipe json: unknown field `{key}`"),
                 ));
+            }
+        }
+        // `key_delay_ms` is a step field, not an op's: only `type` reads it.
+        for raw in value
+            .get("steps")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if raw.get("key_delay_ms").is_some() && op_name(raw) != "type" {
+                let id = raw.get("id").and_then(Value::as_str).unwrap_or("?");
+                return Err(err(
+                    RecipeErrorCode::UnknownField,
+                    format!(
+                        "recipe json: step `{id}` has unknown field `key_delay_ms` for op `{}` (only `type` is paced)",
+                        op_name(raw)
+                    ),
+                )
+                .at_step(id));
             }
         }
         let recipe = Self::deserialize(value)
@@ -269,6 +303,20 @@ impl<'de> Deserialize<'de> for NoDuplicateKeys {
         }
 
         deserializer.deserialize_any(Walk)
+    }
+}
+
+/// `key_delay_ms` as a recipe file writes it: a whole number of
+/// milliseconds, 1 to [`MAX_KEY_DELAY_MS`] (null and anything else are
+/// refused when the file is read, as the schema refuses them).
+fn key_delay<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    let delay = u64::deserialize(deserializer)?;
+    if (1..=MAX_KEY_DELAY_MS).contains(&delay) {
+        Ok(Some(delay))
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "key_delay_ms must be 1 to {MAX_KEY_DELAY_MS}, got {delay}"
+        )))
     }
 }
 
@@ -517,6 +565,23 @@ pub fn lint_recipe(recipe: &Recipe, registry: &Registry) -> Vec<RecipeError> {
         .filter(|param| param.omits_when_absent())
         .map(|param| param.name.as_str())
         .collect();
+
+    for step in &recipe.steps {
+        if let Some(delay) = step.key_delay_ms
+            && !(1..=MAX_KEY_DELAY_MS).contains(&delay)
+        {
+            errors.push(
+                err(
+                    Code::InvalidStep,
+                    format!(
+                        "step `{}`: key_delay_ms must be 1 to {MAX_KEY_DELAY_MS}, got {delay}",
+                        step.id
+                    ),
+                )
+                .at_step(&step.id),
+            );
+        }
+    }
 
     let mut ids = BTreeSet::new();
     for step in &recipe.steps {
@@ -1170,6 +1235,7 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         }
     });
     let fingerprint = take_fingerprint(&mut tokens)?;
+    let key_delay_ms = take_key_delay(&mut tokens)?;
     let tokens = &tokens;
     if tokens.is_empty() {
         return Err("missing op".into());
@@ -1265,12 +1331,35 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         }
         None => op,
     };
+    if key_delay_ms.is_some() && !matches!(op, Op::Type { .. }) {
+        return Err("--key-delay-ms applies to type".into());
+    }
     Ok(RecipeStep {
         id,
         needs: Vec::new(),
         screenshot,
+        key_delay_ms,
         op,
     })
+}
+
+/// Removes `--key-delay-ms <n>` (the pause between two keys of a paced
+/// `type`, JSON: `key_delay_ms`) from `tokens`.
+fn take_key_delay(tokens: &mut Vec<String>) -> Result<Option<u64>, String> {
+    let Some(at) = tokens.iter().position(|tok| tok == "--key-delay-ms") else {
+        return Ok(None);
+    };
+    let raw = tokens
+        .get(at + 1)
+        .ok_or_else(|| "--key-delay-ms needs milliseconds".to_string())?;
+    let delay = raw
+        .parse()
+        .map_err(|_| format!("--key-delay-ms needs an unsigned integer, got {raw}"))?;
+    tokens.drain(at..at + 2);
+    if tokens.iter().any(|tok| tok == "--key-delay-ms") {
+        return Err("--key-delay-ms given twice".into());
+    }
+    Ok(Some(delay))
 }
 
 /// Removes `--fp <n>` (the target's expected fingerprint, from
@@ -1847,6 +1936,79 @@ assert todo-item-1 name=$title checked=false
             ]
         );
         assert_eq!(recipe.steps[1].op.delivery(), DeliveryMode::Virtual);
+    }
+
+    #[test]
+    fn key_delay_paces_a_type_step() {
+        let recipe = Recipe::from_json(
+            r#"{"name": "r", "steps": [
+                {"id": "a", "op": "type", "target": "todo-input", "text": "1234.56", "key_delay_ms": 80}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(recipe.steps[0].key_delay_ms, Some(80));
+        validate_recipe(&recipe, &todo_registry()).unwrap();
+        let round = serde_json::to_value(&recipe.steps[0]).unwrap();
+        assert_eq!(round["key_delay_ms"], 80);
+    }
+
+    #[test]
+    fn key_delay_is_refused_on_any_op_but_type() {
+        for step in [
+            r#"{"id": "a", "op": "click", "target": "todo-add", "key_delay_ms": 80}"#,
+            r#"{"id": "a", "op": "set_value", "target": "todo-input", "value": "x", "key_delay_ms": 80}"#,
+            r#"{"id": "a", "op": "click", "target": "todo-add", "key_delay_ms": null}"#,
+        ] {
+            let err =
+                Recipe::from_json(&format!(r#"{{"name": "r", "steps": [{step}]}}"#)).unwrap_err();
+            assert_eq!(err.code, RecipeErrorCode::UnknownField, "{step}: {err}");
+            assert!(err.to_string().contains("key_delay_ms"), "{step}: {err}");
+        }
+    }
+
+    #[test]
+    fn key_delay_must_be_one_to_ten_seconds() {
+        for delay in ["0", "10001", "null", "1.5", "-1", "\"80\""] {
+            let err = Recipe::from_json(&format!(
+                r#"{{"name": "r", "steps": [{{"id": "a", "op": "type", "target": "todo-input", "text": "x", "key_delay_ms": {delay}}}]}}"#
+            ))
+            .unwrap_err();
+            assert_eq!(err.code, RecipeErrorCode::Parse, "{delay}: {err}");
+        }
+        // A recipe built in code, or from `.wants`, is checked when validated.
+        let recipe = parse_wants("type todo-input x --key-delay-ms 0", "w").unwrap();
+        let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
+        assert_eq!(err.code, RecipeErrorCode::InvalidStep, "{err}");
+        for delay in [1, MAX_KEY_DELAY_MS] {
+            let recipe = Recipe::from_json(&format!(
+                r#"{{"name": "r", "steps": [{{"id": "a", "op": "type", "target": "todo-input", "text": "x", "key_delay_ms": {delay}}}]}}"#
+            ))
+            .unwrap();
+            validate_recipe(&recipe, &todo_registry()).unwrap();
+        }
+    }
+
+    #[test]
+    fn wants_key_delay_flag() {
+        let recipe = parse_wants(
+            "type todo-input 1234.56 --key-delay-ms 80\ntype --key-delay-ms 5 todo-input x\ntype todo-input y",
+            "paced",
+        )
+        .unwrap();
+        let delays: Vec<_> = recipe.steps.iter().map(|step| step.key_delay_ms).collect();
+        assert_eq!(delays, [Some(80), Some(5), None]);
+        for (line, needle) in [
+            ("click todo-add --key-delay-ms 80", "applies to type"),
+            ("type todo-input x --key-delay-ms", "needs milliseconds"),
+            ("type todo-input x --key-delay-ms -1", "unsigned integer"),
+            (
+                "type todo-input x --key-delay-ms 1 --key-delay-ms 2",
+                "twice",
+            ),
+        ] {
+            let err = parse_wants(line, "x").unwrap_err().to_string();
+            assert!(err.contains(needle), "{line}: {err}");
+        }
     }
 
     #[test]
