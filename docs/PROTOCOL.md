@@ -466,12 +466,12 @@ any it does not list with `unsupported_op: …` before the op reaches the app.
 
 | Op | Fields | Feature |
 |---|---|---|
-| `press` | `target` or `x`,`y`; optional `expect_fingerprint` | `press` |
+| `press` | `target` or `x`,`y`; optional `within` (`{x,y}` from target top-left), `expect_fingerprint` | `press`; `press_within` when `within` is present |
 | `scroll` | `target` or `x`,`y`; `dx`,`dy` in logical points | `scroll` |
 | `hover` | `target` or `x`,`y` | `hover` |
 | `drag` | `from`,`to`, or `target` / `x`,`y` with `dx`,`dy` | `drag` |
 | `swipe` | `direction` (`up`/`down`/`left`/`right`); optional `target`, `distance` | `swipe` |
-| `long_press` | `target` or `x`,`y`; optional `duration_ms` | `long_press` |
+| `long_press` | `target` or `x`,`y`; optional `within` (`{x,y}` from target top-left), `duration_ms` | `long_press`; `press_within` when `within` is present |
 | `pinch` | `scale`; optional `target` | `pinch` |
 | `viewport` | `width`,`height` or `preset` | `viewport` |
 | `paste` | `target`, `text` | `paste` |
@@ -483,6 +483,13 @@ any it does not list with `unsupported_op: …` before the op reaches the app.
 A pointer or touch op must be refused when its target is hidden, disabled,
 outside the viewport or covered by another node; a host never moves the press
 to a different node to make it succeed.
+
+`within` is optional on `press` and `long_press`; absent means the target's
+centre. It is a point inside the target's own frame in logical points from its
+top-left. Because a host built before the field existed would ignore it and
+press the centre, a client must not send `within` unless `hello.features`
+lists `press_within`. The existing `x`/`y` fields are target-independent and
+remain ignored when `target` is set.
 
 Hosts built against gpui-agent 0.1 (the nsh adapter) exposed `press`,
 `scroll`, `hover`, `drag` and `viewport` as `invoke` names. `AgentClient::gated`

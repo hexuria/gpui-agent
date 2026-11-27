@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+The recipe wire is unchanged for recipes that do not use `within`: they validate and run as before,
+with the same plan fingerprint. The Rust API is breaking because `Op::Press` and `Op::LongPress`
+have a new public field: struct literals need `within: None`, and exhaustive matches need `..`.
+
+- **Aim inside a press target.** `press` and `long_press` may carry optional `within: {"x", "y"}`
+  (`.wants`: `--within <x>,<y>`), a finite, non-negative point in the target's own frame in logical
+  points from its top-left. Absent means centre as before. The client gates the field on the new
+  `press_within` `hello.features` capability. Before the first wave a recipe run reads the features
+  once and refuses the whole run, listing every step whose non-legacy feature is missing; nothing
+  after `hello` reaches the host. `AgentClient::as_written()` deliberately skips all local refusals,
+  including that preflight, and would send `within` to an older host exactly as written.
+
 ## 0.4.1
 
 Recipes, additive: a 0.4.0 recipe validates and runs as before, with the same plan fingerprint.

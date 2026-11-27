@@ -258,6 +258,51 @@ pub enum SnapshotFormat {
     /// One line per visible node, for token-lean drivers.
     Compact,
 }
+/// A point inside a target node's own frame, in logical points from its
+/// top-left. `within` on `press` / `long_press` uses this rather than the
+/// target-independent `x` / `y` pair.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PointOffsetWire")]
+pub struct PointOffset {
+    /// X offset in logical points from the target's left edge.
+    pub x: f64,
+    /// Y offset in logical points from the target's top edge.
+    pub y: f64,
+}
+
+impl PointOffset {
+    /// A validated offset inside a target's own frame: finite and never
+    /// negative. `0,0` is the target's top-left corner.
+    ///
+    /// # Errors
+    /// A finite-negative or non-finite coordinate.
+    pub fn new(x: f64, y: f64) -> Result<Self, String> {
+        if !x.is_finite() || !y.is_finite() {
+            return Err(format!("within offsets must be finite, got {x},{y}"));
+        }
+        if x < 0.0 || y < 0.0 {
+            return Err(format!("within offsets must be non-negative, got {x},{y}"));
+        }
+        Ok(Self { x, y })
+    }
+}
+
+#[derive(Deserialize)]
+struct PointOffsetWire {
+    #[serde(deserialize_with = "points::required")]
+    x: f64,
+    #[serde(deserialize_with = "points::required")]
+    y: f64,
+}
+
+impl TryFrom<PointOffsetWire> for PointOffset {
+    type Error = String;
+
+    fn try_from(wire: PointOffsetWire) -> Result<Self, Self::Error> {
+        Self::new(wire.x, wire.y)
+    }
+}
+
 /// The operation a [`Request`] asks the host to run: serialized as
 /// `"op": "<snake_case>"` plus the variant's fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -507,6 +552,10 @@ pub enum Op {
         )]
         /// Y coordinate in logical points.
         y: Option<f64>,
+        /// Aim inside the target's own frame, in points from its top-left.
+        /// Absent means the target's centre. Requires host feature `press_within`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        within: Option<PointOffset>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
@@ -640,6 +689,10 @@ pub enum Op {
         )]
         /// Y coordinate in logical points.
         y: Option<f64>,
+        /// Aim inside the target's own frame, in points from its top-left.
+        /// Absent means the target's centre. Requires host feature `press_within`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        within: Option<PointOffset>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
@@ -920,6 +973,9 @@ mod integers {
 /// Error prefix for an op the answering host does not implement
 /// (`unsupported_op: <feature>`). Stable: match the prefix, not the wording.
 pub const UNSUPPORTED_OP: &str = "unsupported_op";
+
+/// `hello.features` capability for exact `UiNode.states` assertions.
+pub const ASSERT_STATES_FEATURE: &str = "assert_states";
 
 /// The `unsupported_op: <feature>` error a host returns for an op it
 /// does not implement.
@@ -1267,10 +1323,17 @@ impl Op {
                 delivery,
                 expect_fingerprint: Some(fingerprint),
             },
-            Self::Press { target, x, y, .. } => Self::Press {
+            Self::Press {
                 target,
                 x,
                 y,
+                within,
+                ..
+            } => Self::Press {
+                target,
+                x,
+                y,
+                within,
                 expect_fingerprint: Some(fingerprint),
             },
             Self::Type {
@@ -1416,6 +1479,12 @@ impl Op {
     pub fn feature(&self) -> Option<&'static str> {
         Some(match self {
             Self::Screenshot { inline: true, .. } => "screenshot_inline",
+            Self::Press {
+                within: Some(_), ..
+            }
+            | Self::LongPress {
+                within: Some(_), ..
+            } => "press_within",
             Self::Press { .. } => "press",
             Self::Scroll { .. } => "scroll",
             Self::Hover { .. } => "hover",
@@ -1449,8 +1518,17 @@ impl Op {
             Self::Press {
                 expect_fingerprint: Some(_),
                 ..
+            }
+            | Self::Press {
+                within: Some(_), ..
             } => return None,
-            Self::Press { target, x, y, .. } => (
+            Self::Press {
+                target,
+                x,
+                y,
+                within: None,
+                ..
+            } => (
                 "press",
                 args(&[("target", text(target)), ("x", num(x)), ("y", num(y))]),
             ),
@@ -1723,6 +1801,7 @@ mod tests {
                     target: Some("x".into()),
                     x: None,
                     y: None,
+                    within: None,
                     expect_fingerprint: None,
                 },
                 "expect_fingerprint",
@@ -1760,6 +1839,7 @@ mod tests {
                     target: None,
                     x: None,
                     y: None,
+                    within: None,
                     duration_ms: None,
                 },
                 "duration_ms",
