@@ -300,11 +300,16 @@ assert todo-item-1 checked=true
 - `press <target>` and `long_press <target> [--duration-ms <n>]` accept
   `--within <x>,<y>` (JSON: `within: {"x": x, "y": y}`): aim that many
   logical points from the target's top-left instead of its centre. `x` and
-  `y` are finite numbers. This is a field capability, not a new wire op: the
-  client sends it only to a host listing `press_within` in `hello.features`;
-  against any other host it refuses before sending, because a 0.4.1 host
-  would ignore the field and press the centre. The target-independent `x` /
-  `y` point fields remain ignored when `target` is set and are not reused
+  `y` are finite, non-negative numbers. This is a field capability, not a
+  new wire op: before the first wave the client reads `hello.features` once
+  and refuses the whole run if any step needs a missing non-legacy feature.
+  It sends `within` only to a host listing `press_within`; against any other
+  host it refuses before sending, because a 0.4.1 host would ignore the
+  field and press the centre. `AgentClient::as_written()` deliberately skips
+  all local refusals, including this preflight, and would send `within` to
+  an older host exactly as written; use it only when that wire behaviour is
+  intended. The target-independent `x` / `y` point fields remain ignored
+  when `target` is set and are not reused
   for this aim.
 - `type` accepts `--key-delay-ms <n>` (JSON: `key_delay_ms`): the text
   is [paced](#paced-typing), `n` milliseconds between two keys.

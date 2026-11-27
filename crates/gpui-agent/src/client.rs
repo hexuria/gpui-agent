@@ -430,6 +430,12 @@ impl AgentClient {
         self
     }
 
+    /// True when capability-gated ops are sent as written, without local
+    /// refusal or legacy `invoke` rewriting.
+    pub fn is_as_written(&self) -> bool {
+        self.as_written
+    }
+
     /// Set the connect/request timeout.
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {

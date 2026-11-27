@@ -1019,10 +1019,12 @@
               ],
               "properties": {
                 "x": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": 0
                 },
                 "y": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": 0
                 }
               },
               "required": [
@@ -1325,10 +1327,12 @@
               ],
               "properties": {
                 "x": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": 0
                 },
                 "y": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": 0
                 }
               },
               "required": [

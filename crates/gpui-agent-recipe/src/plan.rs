@@ -229,16 +229,18 @@ fn annotate(op: &Op, registry: &Registry) -> (Option<String>, Vec<Effect>, bool)
         Op::Assert { .. } => lookup("assert", registry),
         Op::Screenshot { .. } => lookup("screenshot", registry),
         Op::Blob { .. } => lookup("blob", registry),
-        Op::Press { .. }
-        | Op::Scroll { .. }
-        | Op::Hover { .. }
-        | Op::Drag { .. }
-        | Op::Swipe { .. }
-        | Op::LongPress { .. }
-        | Op::Pinch { .. }
-        | Op::Viewport { .. }
-        | Op::Paste { .. }
-        | Op::System { .. } => lookup(op.feature().unwrap_or("invoke"), registry),
+        // Registry schemas name the base wire op. Dynamic capability names
+        // such as `press_within` gate delivery only; they are not schemas.
+        Op::Press { .. } => lookup("press", registry),
+        Op::Scroll { .. } => lookup("scroll", registry),
+        Op::Hover { .. } => lookup("hover", registry),
+        Op::Drag { .. } => lookup("drag", registry),
+        Op::Swipe { .. } => lookup("swipe", registry),
+        Op::LongPress { .. } => lookup("long_press", registry),
+        Op::Pinch { .. } => lookup("pinch", registry),
+        Op::Viewport { .. } => lookup("viewport", registry),
+        Op::Paste { .. } => lookup("paste", registry),
+        Op::System { .. } => lookup("system", registry),
         Op::Shutdown => lookup("shutdown", registry),
         Op::Invoke { name, args } => {
             if let Some(schema) = registry.get(name) {

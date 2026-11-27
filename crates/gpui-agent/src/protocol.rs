@@ -262,13 +262,45 @@ pub enum SnapshotFormat {
 /// top-left. `within` on `press` / `long_press` uses this rather than the
 /// target-independent `x` / `y` pair.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PointOffsetWire")]
 pub struct PointOffset {
     /// X offset in logical points from the target's left edge.
-    #[serde(deserialize_with = "points::required")]
     pub x: f64,
     /// Y offset in logical points from the target's top edge.
-    #[serde(deserialize_with = "points::required")]
     pub y: f64,
+}
+
+impl PointOffset {
+    /// A validated offset inside a target's own frame: finite and never
+    /// negative. `0,0` is the target's top-left corner.
+    ///
+    /// # Errors
+    /// A finite-negative or non-finite coordinate.
+    pub fn new(x: f64, y: f64) -> Result<Self, String> {
+        if !x.is_finite() || !y.is_finite() {
+            return Err(format!("within offsets must be finite, got {x},{y}"));
+        }
+        if x < 0.0 || y < 0.0 {
+            return Err(format!("within offsets must be non-negative, got {x},{y}"));
+        }
+        Ok(Self { x, y })
+    }
+}
+
+#[derive(Deserialize)]
+struct PointOffsetWire {
+    #[serde(deserialize_with = "points::required")]
+    x: f64,
+    #[serde(deserialize_with = "points::required")]
+    y: f64,
+}
+
+impl TryFrom<PointOffsetWire> for PointOffset {
+    type Error = String;
+
+    fn try_from(wire: PointOffsetWire) -> Result<Self, Self::Error> {
+        Self::new(wire.x, wire.y)
+    }
 }
 
 /// The operation a [`Request`] asks the host to run: serialized as

@@ -1387,10 +1387,9 @@ fn parse_within_pair(raw: &str) -> Result<PointOffset, String> {
     let (x, y) = raw
         .split_once(',')
         .ok_or_else(|| format!("--within wants X,Y, got {raw}"))?;
-    Ok(PointOffset {
-        x: x.parse().map_err(|_| format!("bad --within x `{x}`"))?,
-        y: y.parse().map_err(|_| format!("bad --within y `{y}`"))?,
-    })
+    let x: f64 = x.parse().map_err(|_| format!("bad --within x `{x}`"))?;
+    let y: f64 = y.parse().map_err(|_| format!("bad --within y `{y}`"))?;
+    PointOffset::new(x, y)
 }
 
 #[expect(
@@ -2380,6 +2379,23 @@ assert todo-item-1 name=$title checked=false
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn wants_within_refuses_non_finite_and_negative_offsets() {
+        for within in ["NaN,1", "inf,1", "1e400,1", "-1,2", "1,-2"] {
+            let err = parse_wants(&format!("press todo-add --within {within}"), "bad").unwrap_err();
+            assert!(err.to_string().contains("within"), "{within}: {err}");
+        }
+    }
+
+    #[test]
+    fn json_within_refuses_negative_offsets() {
+        let err = Recipe::from_json(
+            r#"{"name":"bad","steps":[{"id":"bad","op":"press","target":"todo-add","within":{"x":-1,"y":2}}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("within"), "{err}");
     }
 
     #[test]

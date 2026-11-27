@@ -1446,10 +1446,9 @@ fn parse_within(raw: Option<String>) -> anyhow::Result<Option<gpui_agent::protoc
         let (x, y) = raw
             .split_once(',')
             .ok_or_else(|| anyhow!("--within wants X,Y, got {raw}"))?;
-        Ok(gpui_agent::protocol::PointOffset {
-            x: x.parse().map_err(|_| anyhow!("bad --within x `{x}`"))?,
-            y: y.parse().map_err(|_| anyhow!("bad --within y `{y}`"))?,
-        })
+        let x: f64 = x.parse().map_err(|_| anyhow!("bad --within x `{x}`"))?;
+        let y: f64 = y.parse().map_err(|_| anyhow!("bad --within y `{y}`"))?;
+        gpui_agent::protocol::PointOffset::new(x, y).map_err(anyhow::Error::msg)
     })
     .transpose()
 }
@@ -1466,6 +1465,13 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::*;
+
+    #[test]
+    fn cli_within_refuses_non_finite_and_negative_offsets() {
+        for within in ["NaN,1", "inf,1", "1e400,1", "-1,2", "1,-2"] {
+            assert!(parse_within(Some(within.into())).is_err(), "{within}");
+        }
+    }
 
     #[test]
     fn wait_reply_timeout_covers_the_bound_and_preserves_longer_explicit_values() {
